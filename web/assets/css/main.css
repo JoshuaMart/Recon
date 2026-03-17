@@ -1,0 +1,77 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply font-mono bg-bg text-text-primary antialiased;
+    position: relative;
+  }
+
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9999;
+    opacity: 0.03;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+    background-repeat: repeat;
+    background-size: 256px 256px;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply bg-accent text-white font-mono font-semibold px-6 py-3
+           hover:brightness-110 active:brightness-95
+           transition-all duration-150 tracking-wide uppercase text-sm
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-ghost {
+    @apply bg-transparent text-text-secondary font-mono font-medium px-4 py-2
+           border border-transparent
+           hover:text-text-primary hover:bg-bg-card hover:border-border
+           transition-all duration-150 text-sm cursor-pointer;
+  }
+
+  .badge-alive {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-0.5 text-xs font-medium
+           bg-emerald-100 text-emerald-700 rounded-full;
+  }
+
+  .badge-dead {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-0.5 text-xs font-medium
+           bg-red-100 text-red-700 rounded-full;
+  }
+
+  .badge-unreachable {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-0.5 text-xs font-medium
+           bg-amber-100 text-amber-700 rounded-full;
+  }
+
+  .status-dot {
+    @apply w-2 h-2 rounded-full inline-block;
+  }
+
+  .status-dot.alive {
+    @apply bg-emerald-500;
+  }
+
+  .status-dot.dead {
+    @apply bg-red-500;
+  }
+
+  .status-dot.unreachable {
+    @apply bg-amber-500;
+  }
+
+  .table-row {
+    @apply border-b border-border hover:bg-bg-card transition-colors duration-100;
+  }
+
+  .section-title {
+    @apply text-xs font-semibold uppercase tracking-widest text-text-secondary mb-4;
+  }
+}

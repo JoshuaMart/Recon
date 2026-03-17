@@ -1,0 +1,29 @@
+{
+  "name": "recon-web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "generate": "nuxt generate",
+    "preview": "nuxt preview",
+    "postinstall": "nuxt prepare",
+    "lint": "biome check .",
+    "lint:fix": "biome check --fix .",
+    "format": "biome format --fix ."
+  },
+  "dependencies": {
+    "@nuxtjs/google-fonts": "^3.2.0",
+    "@nuxtjs/tailwindcss": "^6.14.0",
+    "@pinia/nuxt": "^0.11.3",
+    "devicon": "^2.17.0",
+    "lucide-vue-next": "^0.577.0",
+    "nuxt": "^4.4.2",
+    "pinia": "^3.0.4",
+    "simple-icons": "^16.12.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.7"
+  }
+}

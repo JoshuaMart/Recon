@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS recon_jobs;
+DROP TYPE IF EXISTS job_status;
+DROP TYPE IF EXISTS recon_mode;
