@@ -1,6 +1,7 @@
 package fingerprint
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -8,9 +9,21 @@ import (
 
 func TestClient_Scan_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		url := r.URL.Query().Get("url")
-		if url != "https://example.com" {
-			t.Errorf("expected url param 'https://example.com', got %q", url)
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if r.URL.Path != "/scan" {
+			t.Errorf("expected path /scan, got %s", r.URL.Path)
+		}
+
+		var req struct {
+			URL string `json:"url"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+		if req.URL != "https://example.com" {
+			t.Errorf("expected url 'https://example.com', got %q", req.URL)
 		}
 
 		w.Header().Set("Content-Type", "application/json")
