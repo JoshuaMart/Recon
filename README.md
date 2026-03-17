@@ -2,9 +2,9 @@
 
 <p align="center">
   <a href="./LICENSE"><img src="https://img.shields.io/github/license/Ileriayo/markdown-badges?style=for-the-badge"></a>
-  <img src="https://img.shields.io/badge/docker-%230db7ed.svg?style=for-the-badge&logo=docker&logoColor=white">
-  <img src="https://img.shields.io/badge/go-%2300ADD8.svg?style=for-the-badge&logo=go&logoColor=white">
-  <img src="https://img.shields.io/badge/Nuxt-002E3B?style=for-the-badge&logo=nuxt&logoColor=#00DC82">
+  <img src="https://img.shields.io/badge/docker-supported-blue?logo=docker">
+  <img src="https://img.shields.io/badge/golang-1.26-blue?logo=go">
+  <img src="https://img.shields.io/badge/nuxt-4.4-blue?logo=nuxt">
 </p>
 
 > [!WARNING]  
