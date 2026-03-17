@@ -23,6 +23,9 @@ func parsePagination(r *http.Request) pagination {
 	if p.PerPage > 200 {
 		p.PerPage = 200
 	}
+	if p.Page > 10000 {
+		p.Page = 10000
+	}
 
 	p.Offset = (p.Page - 1) * p.PerPage
 	return p
