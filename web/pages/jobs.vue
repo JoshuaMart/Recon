@@ -161,7 +161,6 @@
 </template>
 
 <script setup lang="ts">
-import { ChevronLeft, ChevronRight, X } from 'lucide-vue-next'
 import type { PaginatedResponse, ReconJob, Wildcard } from '~/types/api'
 
 const { api } = useApi()

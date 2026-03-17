@@ -289,15 +289,6 @@
 </template>
 
 <script setup lang="ts">
-import {
-  ArrowRight,
-  ChevronLeft,
-  ChevronRight,
-  ExternalLink,
-  Loader2,
-  Scan,
-  X,
-} from 'lucide-vue-next'
 import type { PaginatedResponse, WebResult, Wildcard } from '~/types/api'
 
 const ICON_BASE = '/api/_icons/'

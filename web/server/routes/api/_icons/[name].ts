@@ -1,7 +1,7 @@
-import { defineEventHandler, setResponseHeader, send, createError } from 'h3'
-import { readFileSync, existsSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { join } from 'node:path'
+import { createError, defineEventHandler, send, setResponseHeader } from 'h3'
 
 const require = createRequire(import.meta.url)
 

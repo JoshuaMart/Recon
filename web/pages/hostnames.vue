@@ -244,7 +244,6 @@
 </template>
 
 <script setup lang="ts">
-import { ChevronLeft, ChevronRight, ExternalLink, X } from 'lucide-vue-next'
 import type { Hostname, HostnameDNS, HostnamePorts, PaginatedResponse, Wildcard } from '~/types/api'
 
 const { api } = useApi()
