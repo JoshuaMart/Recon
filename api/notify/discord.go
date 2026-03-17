@@ -95,7 +95,7 @@ func (c *DiscordClient) SendDigest(info DigestInfo) {
 					{"name": "Wildcards processed", "value": fmt.Sprintf("%d", info.WildcardsProcessed), "inline": true},
 					{"name": "New hostnames", "value": fmt.Sprintf("+%d", info.NewHostnames), "inline": true},
 					{"name": "Now dead", "value": fmt.Sprintf("-%d", info.NewlyDead), "inline": true},
-					{"name": "New web services", "value": fmt.Sprintf("%d", info.NewWebServices), "inline": true},
+					{"name": webServicesLabel(info.Kind), "value": fmt.Sprintf("%d", info.NewWebServices), "inline": true},
 					{"name": "Duration", "value": formatDuration(info.Duration), "inline": true},
 				},
 				"timestamp": time.Now().UTC().Format(time.RFC3339),
@@ -104,6 +104,13 @@ func (c *DiscordClient) SendDigest(info DigestInfo) {
 	}
 
 	c.send(payload)
+}
+
+func webServicesLabel(kind string) string {
+	if kind == "revalidation" {
+		return "URLs re-scanned"
+	}
+	return "New web services"
 }
 
 func (c *DiscordClient) send(payload map[string]any) {

@@ -76,7 +76,7 @@ func main() {
 	jobHandler := handler.NewJobHandler(queries)
 	reconIngest := ingest.NewReconHandler(queries)
 	certstreamIngest := ingest.NewCertstreamHandler(queries)
-	jobStatusIngest := ingest.NewJobStatusHandler(queries)
+	jobStatusIngest := ingest.NewJobStatusHandler(queries, notifier)
 
 	// Fingerprint worker
 	fpClient := fingerprint.NewClient(cfg.FingerprinterURL)

@@ -61,6 +61,30 @@ func (q *Queries) GetJob(ctx context.Context, id pgtype.UUID) (ReconJob, error) 
 	return i, err
 }
 
+const getJobCompletionStats = `-- name: GetJobCompletionStats :one
+SELECT
+    COUNT(h.id) FILTER (WHERE h.created_at >= j.started_at) AS new_hostnames,
+    COUNT(h.id) FILTER (WHERE h.status = 'dead' AND h.updated_at >= j.started_at) AS newly_dead,
+    COUNT(DISTINCT wr.id) FILTER (WHERE wr.created_at >= j.started_at) AS new_web_services
+FROM recon_jobs j
+LEFT JOIN hostnames h ON h.wildcard_id = j.wildcard_id
+LEFT JOIN web_results wr ON wr.hostname_id = h.id AND wr.created_at >= j.started_at
+WHERE j.id = $1
+`
+
+type GetJobCompletionStatsRow struct {
+	NewHostnames   int64 `json:"new_hostnames"`
+	NewlyDead      int64 `json:"newly_dead"`
+	NewWebServices int64 `json:"new_web_services"`
+}
+
+func (q *Queries) GetJobCompletionStats(ctx context.Context, id pgtype.UUID) (GetJobCompletionStatsRow, error) {
+	row := q.db.QueryRow(ctx, getJobCompletionStats, id)
+	var i GetJobCompletionStatsRow
+	err := row.Scan(&i.NewHostnames, &i.NewlyDead, &i.NewWebServices)
+	return i, err
+}
+
 const hasActiveJobForWildcard = `-- name: HasActiveJobForWildcard :one
 SELECT EXISTS(
     SELECT 1 FROM recon_jobs WHERE wildcard_id = $1 AND status IN ('pending', 'running')
@@ -166,18 +190,18 @@ func (q *Queries) UpdateJobScalewayID(ctx context.Context, arg UpdateJobScaleway
 }
 
 const updateJobStatus = `-- name: UpdateJobStatus :exec
-UPDATE recon_jobs SET status = $2::job_status,
-    started_at = CASE WHEN $2 = 'running' THEN now() ELSE started_at END,
-    completed_at = CASE WHEN $2 IN ('completed', 'failed') THEN now() ELSE completed_at END
-WHERE id = $1
+UPDATE recon_jobs SET status = $1::job_status,
+    started_at = CASE WHEN $1 = 'running' THEN now() ELSE started_at END,
+    completed_at = CASE WHEN $1 IN ('completed', 'failed') THEN now() ELSE completed_at END
+WHERE id = $2
 `
 
 type UpdateJobStatusParams struct {
-	ID     pgtype.UUID `json:"id"`
 	Status JobStatus   `json:"status"`
+	ID     pgtype.UUID `json:"id"`
 }
 
 func (q *Queries) UpdateJobStatus(ctx context.Context, arg UpdateJobStatusParams) error {
-	_, err := q.db.Exec(ctx, updateJobStatus, arg.ID, arg.Status)
+	_, err := q.db.Exec(ctx, updateJobStatus, arg.Status, arg.ID)
 	return err
 }

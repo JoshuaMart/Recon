@@ -136,13 +136,6 @@ func (s *Scheduler) runRecon() {
 
 	duration := time.Since(start)
 	log.Printf("Scheduler: recon completed, launched %d jobs in %s", launched, duration)
-
-	if s.onDigest != nil {
-		s.onDigest(ctx, "recon", DigestStats{
-			WildcardsProcessed: len(wildcards),
-			Duration:           duration,
-		})
-	}
 }
 
 func (s *Scheduler) runRevalidation() {
