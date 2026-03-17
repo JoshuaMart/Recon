@@ -1,10 +1,10 @@
 ![Image](https://github.com/user-attachments/assets/31c456aa-e173-4d04-8d8a-d1385abd7cdf)
 
 <p align="center">
-  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-green.svg"></a>
-  <img src="https://img.shields.io/badge/Docker-Supported-blue.svg">
-  <img src="https://img.shields.io/badge/Golang-1.26-blue.svg">
-  <img src="https://img.shields.io/badge/Nuxt-4-green.svg">
+  <a href="./LICENSE"><img src="https://img.shields.io/github/license/Ileriayo/markdown-badges?style=for-the-badge"></a>
+  <img src="https://img.shields.io/badge/docker-%230db7ed.svg?style=for-the-badge&logo=docker&logoColor=white">
+  <img src="https://img.shields.io/badge/go-%2300ADD8.svg?style=for-the-badge&logo=go&logoColor=white">
+  <img src="https://img.shields.io/badge/Nuxt-002E3B?style=for-the-badge&logo=nuxt&logoColor=#00DC82">
 </p>
 
 > [!WARNING]  
