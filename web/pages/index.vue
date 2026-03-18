@@ -122,6 +122,7 @@
 </template>
 
 <script setup lang="ts">
+import { Loader2, Play, RefreshCw } from 'lucide-vue-next'
 import type { PaginatedResponse, ReconJob, Wildcard } from '~/types/api'
 
 const { api } = useApi()

@@ -188,6 +188,7 @@
 </template>
 
 <script setup lang="ts">
+import { Loader2, Play, RefreshCw, Trash2 } from 'lucide-vue-next'
 import type { Wildcard } from '~/types/api'
 
 const { api } = useApi()
