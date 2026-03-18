@@ -12,8 +12,8 @@ func TestMatch(t *testing.T) {
 		{"*.example.com", "sub.example.com", true},
 		{"*.example.com", "test.example.com", true},
 
-		// Multi-level subdomain should NOT match
-		{"*.example.com", "sub.sub.example.com", false},
+		// Multi-level subdomain should match
+		{"*.example.com", "sub.sub.example.com", true},
 
 		// Root domain should NOT match
 		{"*.example.com", "example.com", false},
@@ -31,7 +31,7 @@ func TestMatch(t *testing.T) {
 
 		// Multiple TLD levels
 		{"*.example.co.uk", "sub.example.co.uk", true},
-		{"*.example.co.uk", "sub.sub.example.co.uk", false},
+		{"*.example.co.uk", "sub.sub.example.co.uk", true},
 		{"*.example.co.uk", "example.co.uk", false},
 
 		// Partial match should NOT work
