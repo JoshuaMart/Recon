@@ -23,7 +23,7 @@ RETURNING *;
 -- name: UpdateJobStatus :exec
 UPDATE recon_jobs SET status = @status::job_status,
     started_at = CASE WHEN @status = 'running' THEN now() ELSE started_at END,
-    completed_at = CASE WHEN @status IN ('completed', 'failed') THEN now() ELSE completed_at END
+    completed_at = CASE WHEN @status IN ('completed', 'failed', 'timeout') THEN now() ELSE completed_at END
 WHERE id = @id;
 
 -- name: UpdateJobScalewayID :exec

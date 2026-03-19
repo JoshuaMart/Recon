@@ -26,6 +26,7 @@
         <option value="running">Running</option>
         <option value="completed">Completed</option>
         <option value="failed">Failed</option>
+        <option value="timeout">Timeout</option>
       </select>
     </div>
 
@@ -225,6 +226,7 @@ function statusBadgeClass(status: string): string {
     running: `${base} bg-blue-100 text-blue-700`,
     completed: `${base} bg-emerald-100 text-emerald-700`,
     failed: `${base} bg-red-100 text-red-700`,
+    timeout: `${base} bg-orange-100 text-orange-700`,
   }
   return map[status] || base
 }
@@ -235,6 +237,7 @@ function statusDotClass(status: string): string {
     running: 'bg-blue-500',
     completed: 'bg-emerald-500',
     failed: 'bg-red-500',
+    timeout: 'bg-orange-500',
   }
   return map[status] || 'bg-gray-500'
 }

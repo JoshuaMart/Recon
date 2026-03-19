@@ -192,7 +192,7 @@ func (q *Queries) UpdateJobScalewayID(ctx context.Context, arg UpdateJobScaleway
 const updateJobStatus = `-- name: UpdateJobStatus :exec
 UPDATE recon_jobs SET status = $1::job_status,
     started_at = CASE WHEN $1 = 'running' THEN now() ELSE started_at END,
-    completed_at = CASE WHEN $1 IN ('completed', 'failed') THEN now() ELSE completed_at END
+    completed_at = CASE WHEN $1 IN ('completed', 'failed', 'timeout') THEN now() ELSE completed_at END
 WHERE id = $2
 `
 

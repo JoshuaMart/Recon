@@ -81,7 +81,7 @@ export interface ReconJob {
   id: string
   wildcard_id: string
   mode: 'normal' | 'intensive'
-  status: 'pending' | 'running' | 'completed' | 'failed'
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'timeout'
   scaleway_job_id: string
   started_at: string | null
   completed_at: string | null

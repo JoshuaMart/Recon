@@ -105,6 +105,7 @@ const (
 	JobStatusRunning   JobStatus = "running"
 	JobStatusCompleted JobStatus = "completed"
 	JobStatusFailed    JobStatus = "failed"
+	JobStatusTimeout   JobStatus = "timeout"
 )
 
 func (e *JobStatus) Scan(src interface{}) error {

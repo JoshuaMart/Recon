@@ -42,10 +42,10 @@ func (h *JobStatusHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	status := db.JobStatus(req.Status)
 	switch status {
-	case db.JobStatusRunning, db.JobStatusCompleted, db.JobStatusFailed:
+	case db.JobStatusRunning, db.JobStatusCompleted, db.JobStatusFailed, db.JobStatusTimeout:
 		// valid
 	default:
-		http.Error(w, `{"error":"invalid status, must be running, completed or failed"}`, http.StatusBadRequest)
+		http.Error(w, `{"error":"invalid status, must be running, completed, failed or timeout"}`, http.StatusBadRequest)
 		return
 	}
 

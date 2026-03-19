@@ -1,5 +1,5 @@
 CREATE TYPE recon_mode AS ENUM ('normal', 'intensive');
-CREATE TYPE job_status AS ENUM ('pending', 'running', 'completed', 'failed');
+CREATE TYPE job_status AS ENUM ('pending', 'running', 'completed', 'failed', 'timeout');
 
 CREATE TABLE recon_jobs (
     id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
