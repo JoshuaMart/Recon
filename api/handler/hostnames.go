@@ -20,22 +20,22 @@ func NewHostnameHandler(queries *db.Queries) *HostnameHandler {
 }
 
 type hostnameListItem struct {
-	ID         string  `json:"id"`
-	WildcardID string  `json:"wildcard_id"`
-	FQDN       string  `json:"fqdn"`
-	IP         *string `json:"ip"`
-	CDN        *string `json:"cdn"`
-	Status     string  `json:"status"`
-	Type       string  `json:"type"`
-	LastSeenAt *string `json:"last_seen_at"`
-	CreatedAt  string  `json:"created_at"`
-	UpdatedAt  string  `json:"updated_at"`
+	ID         string          `json:"id"`
+	WildcardID string          `json:"wildcard_id"`
+	FQDN       string          `json:"fqdn"`
+	IP         *string         `json:"ip"`
+	CDN        *string         `json:"cdn"`
+	Status     string          `json:"status"`
+	Type       string          `json:"type"`
+	Ports      json.RawMessage `json:"ports"`
+	LastSeenAt *string         `json:"last_seen_at"`
+	CreatedAt  string          `json:"created_at"`
+	UpdatedAt  string          `json:"updated_at"`
 }
 
 type hostnameDetail struct {
 	hostnameListItem
-	DNS   json.RawMessage `json:"dns"`
-	Ports json.RawMessage `json:"ports"`
+	DNS json.RawMessage `json:"dns"`
 }
 
 func (h *HostnameHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -116,12 +116,12 @@ func (h *HostnameHandler) Get(w http.ResponseWriter, r *http.Request) {
 			CDN:        textToString(row.Cdn),
 			Status:     string(row.Status),
 			Type:       string(row.Type),
+			Ports:      jsonOrNull(row.Ports),
 			LastSeenAt: timestampToString(row.LastSeenAt),
 			CreatedAt:  timestampToStringVal(row.CreatedAt),
 			UpdatedAt:  timestampToStringVal(row.UpdatedAt),
 		},
-		DNS:   jsonOrNull(row.Dns),
-		Ports: jsonOrNull(row.Ports),
+		DNS: jsonOrNull(row.Dns),
 	}
 
 	writeJSON(w, http.StatusOK, detail)
@@ -136,6 +136,7 @@ func toHostnameListItem(row db.ListHostnamesRow) hostnameListItem {
 		CDN:        textToString(row.Cdn),
 		Status:     string(row.Status),
 		Type:       string(row.Type),
+		Ports:      jsonOrNull(row.Ports),
 		LastSeenAt: timestampToString(row.LastSeenAt),
 		CreatedAt:  timestampToStringVal(row.CreatedAt),
 		UpdatedAt:  timestampToStringVal(row.UpdatedAt),

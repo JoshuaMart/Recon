@@ -48,6 +48,7 @@
               <th class="pb-3 pr-4 hidden sm:table-cell">IP</th>
               <th class="pb-3 pr-4 hidden md:table-cell">CDN</th>
               <th class="pb-3 pr-4">Status</th>
+              <th class="pb-3 pr-4 hidden md:table-cell">Ports</th>
               <th class="pb-3 pr-4 hidden md:table-cell">Type</th>
               <th class="pb-3 hidden lg:table-cell">Last Seen</th>
             </tr>
@@ -67,6 +68,18 @@
                   <span :class="`status-dot ${h.status}`" />
                   {{ h.status }}
                 </span>
+              </td>
+              <td class="py-3 pr-4 hidden md:table-cell">
+                <div v-if="h.ports && h.ports.tcp && Object.keys(h.ports.tcp).length" class="flex flex-wrap gap-1">
+                  <span
+                    v-for="port in Object.keys(h.ports.tcp)"
+                    :key="port"
+                    class="text-xs px-1.5 py-0.5 bg-bg border border-border font-mono"
+                  >
+                    {{ port }}
+                  </span>
+                </div>
+                <span v-else class="text-text-secondary">—</span>
               </td>
               <td class="py-3 pr-4 hidden md:table-cell">
                 <span class="text-xs text-text-secondary px-2 py-0.5 border border-border rounded-full">

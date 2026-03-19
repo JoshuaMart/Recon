@@ -82,7 +82,7 @@ func (q *Queries) GetHostnameByFQDN(ctx context.Context, fqdn string) (Hostname,
 }
 
 const listHostnames = `-- name: ListHostnames :many
-SELECT id, wildcard_id, fqdn, ip, cdn, status, type, last_seen_at, created_at, updated_at
+SELECT id, wildcard_id, fqdn, ip, cdn, status, type, ports, last_seen_at, created_at, updated_at
 FROM hostnames
 WHERE
     ($3::UUID IS NULL OR wildcard_id = $3) AND
@@ -108,6 +108,7 @@ type ListHostnamesRow struct {
 	Cdn        pgtype.Text        `json:"cdn"`
 	Status     HostnameStatus     `json:"status"`
 	Type       HostnameType       `json:"type"`
+	Ports      []byte             `json:"ports"`
 	LastSeenAt pgtype.Timestamptz `json:"last_seen_at"`
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
@@ -136,6 +137,7 @@ func (q *Queries) ListHostnames(ctx context.Context, arg ListHostnamesParams) ([
 			&i.Cdn,
 			&i.Status,
 			&i.Type,
+			&i.Ports,
 			&i.LastSeenAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,

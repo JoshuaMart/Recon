@@ -1,5 +1,5 @@
 -- name: ListHostnames :many
-SELECT id, wildcard_id, fqdn, ip, cdn, status, type, last_seen_at, created_at, updated_at
+SELECT id, wildcard_id, fqdn, ip, cdn, status, type, ports, last_seen_at, created_at, updated_at
 FROM hostnames
 WHERE
     (sqlc.narg('wildcard_id')::UUID IS NULL OR wildcard_id = sqlc.narg('wildcard_id')) AND
