@@ -11,6 +11,12 @@ export default defineNuxtConfig({
     },
   },
 
+  vite: {
+    server: {
+      allowedHosts: [],
+    },
+  },
+
   googleFonts: {
     families: {
       'JetBrains Mono': [400, 500, 600, 700],
