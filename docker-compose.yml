@@ -60,6 +60,7 @@ services:
       - "3000:3000"
     environment:
       NUXT_PUBLIC_API_URL: http://localhost:3002
+      NUXT_VITE_ALLOWED_HOSTS: "recon.domain.tld"
     depends_on:
       - api
 
