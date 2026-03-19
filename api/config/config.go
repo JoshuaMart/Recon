@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -11,8 +12,9 @@ import (
 
 type Config struct {
 	// Server
-	Port       string
-	APIBaseURL string
+	Port        string
+	APIBaseURL  string
+	CORSOrigins []string
 
 	// Database
 	DatabaseURL string
@@ -145,6 +147,13 @@ func Load() (*Config, error) {
 	}
 
 	cfg.APIBaseURL = os.Getenv("API_BASE_URL")
+
+	corsOrigins := os.Getenv("CORS_ORIGINS")
+	if corsOrigins == "" {
+		cfg.CORSOrigins = []string{"http://localhost:3000"}
+	} else {
+		cfg.CORSOrigins = strings.Split(corsOrigins, ",")
+	}
 
 	// Optional (no default, no-op if empty)
 	cfg.DiscordWebhookURL = os.Getenv("DISCORD_WEBHOOK_URL")
