@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/jomar/recon/api/db"
 )
@@ -58,6 +60,15 @@ func (h *URLHandler) List(w http.ResponseWriter, r *http.Request) {
 		params.HostnameID = u
 	}
 
+	if v := q.Get("status_code"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 5 {
+			writeError(w, http.StatusBadRequest, "invalid status_code, must be 1-5 (e.g. 2 for 2xx)")
+			return
+		}
+		params.StatusCodeClass = pgtype.Int4{Int32: int32(n), Valid: true}
+	}
+
 	rows, err := h.queries.ListWebResults(r.Context(), params)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list urls")
@@ -65,8 +76,9 @@ func (h *URLHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	countParams := db.CountWebResultsParams{
-		WildcardID: params.WildcardID,
-		HostnameID: params.HostnameID,
+		WildcardID:      params.WildcardID,
+		HostnameID:      params.HostnameID,
+		StatusCodeClass: params.StatusCodeClass,
 	}
 	total, err := h.queries.CountWebResults(r.Context(), countParams)
 	if err != nil {

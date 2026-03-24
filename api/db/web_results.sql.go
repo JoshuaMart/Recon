@@ -16,16 +16,18 @@ SELECT COUNT(*) FROM web_results wr
 JOIN hostnames h ON h.id = wr.hostname_id
 WHERE
     ($1::UUID IS NULL OR h.wildcard_id = $1) AND
-    ($2::UUID IS NULL OR wr.hostname_id = $2)
+    ($2::UUID IS NULL OR wr.hostname_id = $2) AND
+    ($3::INT IS NULL OR (wr.chain->0->>'status_code')::INT / 100 = $3)
 `
 
 type CountWebResultsParams struct {
-	WildcardID pgtype.UUID `json:"wildcard_id"`
-	HostnameID pgtype.UUID `json:"hostname_id"`
+	WildcardID      pgtype.UUID `json:"wildcard_id"`
+	HostnameID      pgtype.UUID `json:"hostname_id"`
+	StatusCodeClass pgtype.Int4 `json:"status_code_class"`
 }
 
 func (q *Queries) CountWebResults(ctx context.Context, arg CountWebResultsParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countWebResults, arg.WildcardID, arg.HostnameID)
+	row := q.db.QueryRow(ctx, countWebResults, arg.WildcardID, arg.HostnameID, arg.StatusCodeClass)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -89,16 +91,18 @@ FROM web_results wr
 JOIN hostnames h ON h.id = wr.hostname_id
 WHERE
     ($3::UUID IS NULL OR h.wildcard_id = $3) AND
-    ($4::UUID IS NULL OR wr.hostname_id = $4)
+    ($4::UUID IS NULL OR wr.hostname_id = $4) AND
+    ($5::INT IS NULL OR (wr.chain->0->>'status_code')::INT / 100 = $5)
 ORDER BY wr.scanned_at DESC NULLS LAST
 LIMIT $1 OFFSET $2
 `
 
 type ListWebResultsParams struct {
-	Limit      int32       `json:"limit"`
-	Offset     int32       `json:"offset"`
-	WildcardID pgtype.UUID `json:"wildcard_id"`
-	HostnameID pgtype.UUID `json:"hostname_id"`
+	Limit           int32       `json:"limit"`
+	Offset          int32       `json:"offset"`
+	WildcardID      pgtype.UUID `json:"wildcard_id"`
+	HostnameID      pgtype.UUID `json:"hostname_id"`
+	StatusCodeClass pgtype.Int4 `json:"status_code_class"`
 }
 
 type ListWebResultsRow struct {
@@ -119,6 +123,7 @@ func (q *Queries) ListWebResults(ctx context.Context, arg ListWebResultsParams) 
 		arg.Offset,
 		arg.WildcardID,
 		arg.HostnameID,
+		arg.StatusCodeClass,
 	)
 	if err != nil {
 		return nil, err
