@@ -27,6 +27,17 @@
         <option value="5">5xx</option>
       </select>
 
+      <input
+        v-model="filters.technology"
+        type="text"
+        class="bg-bg border border-border px-3 py-2 text-sm font-mono
+               focus:outline-none focus:border-accent transition-colors
+               placeholder:text-text-secondary/40"
+        placeholder="Technology..."
+        @keydown.enter="resetAndFetch"
+        @blur="resetAndFetch"
+      />
+
       <div class="ml-auto flex gap-2 items-end">
         <input
           v-model="fingerprintUrl"
@@ -333,6 +344,7 @@ const fingerprintError = ref(false)
 const filters = reactive({
   wildcard_id: '',
   status_code: '',
+  technology: '',
 })
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / perPage)))
@@ -448,6 +460,7 @@ async function fetchUrls() {
     }
     if (filters.wildcard_id) params.wildcard_id = filters.wildcard_id
     if (filters.status_code) params.status_code = filters.status_code
+    if (filters.technology) params.technology = filters.technology
 
     const res = await api<PaginatedResponse<WebResult>>('/api/urls', { params })
     urls.value = res.data

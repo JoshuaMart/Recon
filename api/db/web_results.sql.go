@@ -17,17 +17,22 @@ JOIN hostnames h ON h.id = wr.hostname_id
 WHERE
     ($1::UUID IS NULL OR h.wildcard_id = $1) AND
     ($2::UUID IS NULL OR wr.hostname_id = $2) AND
-    ($3::INT IS NULL OR (wr.chain->0->>'status_code')::INT / 100 = $3)
+    ($3::INT IS NULL OR (wr.chain->0->>'status_code')::INT / 100 = $3) AND
+    ($4::TEXT IS NULL OR EXISTS (
+        SELECT 1 FROM jsonb_array_elements(wr.technologies) AS t
+        WHERE LOWER(t->>'name') LIKE '%' || LOWER($4) || '%'
+    ))
 `
 
 type CountWebResultsParams struct {
 	WildcardID      pgtype.UUID `json:"wildcard_id"`
 	HostnameID      pgtype.UUID `json:"hostname_id"`
 	StatusCodeClass pgtype.Int4 `json:"status_code_class"`
+	Technology      pgtype.Text `json:"technology"`
 }
 
 func (q *Queries) CountWebResults(ctx context.Context, arg CountWebResultsParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countWebResults, arg.WildcardID, arg.HostnameID, arg.StatusCodeClass)
+	row := q.db.QueryRow(ctx, countWebResults, arg.WildcardID, arg.HostnameID, arg.StatusCodeClass, arg.Technology)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -92,7 +97,11 @@ JOIN hostnames h ON h.id = wr.hostname_id
 WHERE
     ($3::UUID IS NULL OR h.wildcard_id = $3) AND
     ($4::UUID IS NULL OR wr.hostname_id = $4) AND
-    ($5::INT IS NULL OR (wr.chain->0->>'status_code')::INT / 100 = $5)
+    ($5::INT IS NULL OR (wr.chain->0->>'status_code')::INT / 100 = $5) AND
+    ($6::TEXT IS NULL OR EXISTS (
+        SELECT 1 FROM jsonb_array_elements(wr.technologies) AS t
+        WHERE LOWER(t->>'name') LIKE '%' || LOWER($6) || '%'
+    ))
 ORDER BY wr.scanned_at DESC NULLS LAST
 LIMIT $1 OFFSET $2
 `
@@ -103,6 +112,7 @@ type ListWebResultsParams struct {
 	WildcardID      pgtype.UUID `json:"wildcard_id"`
 	HostnameID      pgtype.UUID `json:"hostname_id"`
 	StatusCodeClass pgtype.Int4 `json:"status_code_class"`
+	Technology      pgtype.Text `json:"technology"`
 }
 
 type ListWebResultsRow struct {
@@ -124,6 +134,7 @@ func (q *Queries) ListWebResults(ctx context.Context, arg ListWebResultsParams) 
 		arg.WildcardID,
 		arg.HostnameID,
 		arg.StatusCodeClass,
+		arg.Technology,
 	)
 	if err != nil {
 		return nil, err

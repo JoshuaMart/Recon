@@ -69,6 +69,10 @@ func (h *URLHandler) List(w http.ResponseWriter, r *http.Request) {
 		params.StatusCodeClass = pgtype.Int4{Int32: int32(n), Valid: true}
 	}
 
+	if v := q.Get("technology"); v != "" {
+		params.Technology = pgtype.Text{String: v, Valid: true}
+	}
+
 	rows, err := h.queries.ListWebResults(r.Context(), params)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list urls")
@@ -79,6 +83,7 @@ func (h *URLHandler) List(w http.ResponseWriter, r *http.Request) {
 		WildcardID:      params.WildcardID,
 		HostnameID:      params.HostnameID,
 		StatusCodeClass: params.StatusCodeClass,
+		Technology:      params.Technology,
 	}
 	total, err := h.queries.CountWebResults(r.Context(), countParams)
 	if err != nil {

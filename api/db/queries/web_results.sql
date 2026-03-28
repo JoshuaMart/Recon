@@ -11,7 +11,11 @@ JOIN hostnames h ON h.id = wr.hostname_id
 WHERE
     (sqlc.narg('wildcard_id')::UUID IS NULL OR h.wildcard_id = sqlc.narg('wildcard_id')) AND
     (sqlc.narg('hostname_id')::UUID IS NULL OR wr.hostname_id = sqlc.narg('hostname_id')) AND
-    (sqlc.narg('status_code_class')::INT IS NULL OR (wr.chain->0->>'status_code')::INT / 100 = sqlc.narg('status_code_class'))
+    (sqlc.narg('status_code_class')::INT IS NULL OR (wr.chain->0->>'status_code')::INT / 100 = sqlc.narg('status_code_class')) AND
+    (sqlc.narg('technology')::TEXT IS NULL OR EXISTS (
+        SELECT 1 FROM jsonb_array_elements(wr.technologies) AS t
+        WHERE LOWER(t->>'name') LIKE '%' || LOWER(sqlc.narg('technology')) || '%'
+    ))
 ORDER BY wr.scanned_at DESC NULLS LAST
 LIMIT $1 OFFSET $2;
 
@@ -21,7 +25,11 @@ JOIN hostnames h ON h.id = wr.hostname_id
 WHERE
     (sqlc.narg('wildcard_id')::UUID IS NULL OR h.wildcard_id = sqlc.narg('wildcard_id')) AND
     (sqlc.narg('hostname_id')::UUID IS NULL OR wr.hostname_id = sqlc.narg('hostname_id')) AND
-    (sqlc.narg('status_code_class')::INT IS NULL OR (wr.chain->0->>'status_code')::INT / 100 = sqlc.narg('status_code_class'));
+    (sqlc.narg('status_code_class')::INT IS NULL OR (wr.chain->0->>'status_code')::INT / 100 = sqlc.narg('status_code_class')) AND
+    (sqlc.narg('technology')::TEXT IS NULL OR EXISTS (
+        SELECT 1 FROM jsonb_array_elements(wr.technologies) AS t
+        WHERE LOWER(t->>'name') LIKE '%' || LOWER(sqlc.narg('technology')) || '%'
+    ));
 
 -- name: GetWebResult :one
 SELECT * FROM web_results WHERE id = $1;
