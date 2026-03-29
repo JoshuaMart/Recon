@@ -24,5 +24,11 @@ export default defineNuxtConfig({
     display: 'swap',
   },
 
+  nitro: {
+    externals: {
+      external: ['simple-icons', 'devicon'],
+    },
+  },
+
   compatibilityDate: '2025-01-01',
 })

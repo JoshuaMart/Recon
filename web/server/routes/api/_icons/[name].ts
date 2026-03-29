@@ -11,13 +11,13 @@ const cache = new Map<string, string>()
 // Build a title→icon lookup from simple-icons at startup
 let simpleIconsByTitle: Map<string, { svg: string; hex: string }> | null = null
 
-function getSimpleIcons() {
+async function getSimpleIcons() {
   if (simpleIconsByTitle) return simpleIconsByTitle
   simpleIconsByTitle = new Map()
   try {
-    const icons = require('simple-icons')
+    const icons = await import('simple-icons')
     for (const key of Object.keys(icons)) {
-      const icon = icons[key]
+      const icon = icons[key as keyof typeof icons] as any
       if (icon?.title && icon?.svg) {
         simpleIconsByTitle.set(icon.title.toLowerCase(), { svg: icon.svg, hex: icon.hex })
       }
@@ -28,8 +28,8 @@ function getSimpleIcons() {
   return simpleIconsByTitle
 }
 
-function findInSimpleIcons(name: string): string | null {
-  const icons = getSimpleIcons()
+async function findInSimpleIcons(name: string): Promise<string | null> {
+  const icons = await getSimpleIcons()
   const entry = icons.get(name.toLowerCase())
   if (entry) return entry.svg
   return null
@@ -65,7 +65,7 @@ function findCustomIcon(name: string): string | null {
   return null
 }
 
-export default defineEventHandler((event) => {
+export default defineEventHandler(async (event) => {
   const raw = event.context.params?.name
   if (!raw) {
     throw createError({ statusCode: 400, statusMessage: 'Missing icon name' })
@@ -82,7 +82,7 @@ export default defineEventHandler((event) => {
   }
 
   // 1. Try simple-icons
-  let svg = findInSimpleIcons(name)
+  let svg = await findInSimpleIcons(name)
 
   // 2. Try devicon
   if (!svg) {
