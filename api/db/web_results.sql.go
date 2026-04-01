@@ -32,7 +32,12 @@ type CountWebResultsParams struct {
 }
 
 func (q *Queries) CountWebResults(ctx context.Context, arg CountWebResultsParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countWebResults, arg.WildcardID, arg.HostnameID, arg.StatusCodeClass, arg.Technology)
+	row := q.db.QueryRow(ctx, countWebResults,
+		arg.WildcardID,
+		arg.HostnameID,
+		arg.StatusCodeClass,
+		arg.Technology,
+	)
 	var count int64
 	err := row.Scan(&count)
 	return count, err

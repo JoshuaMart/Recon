@@ -98,7 +98,7 @@ func main() {
 	fpWorker.Start(context.Background(), cfg.FingerprintWorkers)
 
 	// Scheduler
-	sched := scheduler.New(queries, scwClient, revalService.RevalidateWildcard, func(_ context.Context, kind string, stats scheduler.DigestStats) {
+	sched := scheduler.New(queries, scwClient, scwClient, revalService.RevalidateWildcard, func(_ context.Context, kind string, stats scheduler.DigestStats) {
 		notifier.NotifyDigest(kind, notify.DigestInfo{
 			Kind:               kind,
 			WildcardsProcessed: stats.WildcardsProcessed,

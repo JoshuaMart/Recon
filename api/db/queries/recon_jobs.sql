@@ -37,6 +37,10 @@ SELECT EXISTS(
     SELECT 1 FROM recon_jobs WHERE wildcard_id = $1 AND status IN ('pending', 'running')
 ) AS has_active;
 
+-- name: GetActiveJobsWithScalewayID :many
+SELECT id, scaleway_job_id, status FROM recon_jobs
+WHERE status IN ('pending', 'running') AND scaleway_job_id IS NOT NULL;
+
 -- name: GetJobCompletionStats :one
 SELECT
     COUNT(h.id) FILTER (WHERE h.created_at >= j.started_at) AS new_hostnames,

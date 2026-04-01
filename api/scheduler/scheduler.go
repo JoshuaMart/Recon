@@ -27,19 +27,21 @@ type DigestFunc func(ctx context.Context, kind string, stats DigestStats)
 type RevalidateFunc func(ctx context.Context, wildcard db.Wildcard) DigestStats
 
 type Scheduler struct {
-	queries    *db.Queries
-	launcher   handler.JobLauncher
-	revalidate RevalidateFunc
-	onDigest   DigestFunc
-	mu         sync.Mutex
+	queries       *db.Queries
+	launcher      handler.JobLauncher
+	statusChecker handler.JobStatusChecker
+	revalidate    RevalidateFunc
+	onDigest      DigestFunc
+	mu            sync.Mutex
 }
 
-func New(queries *db.Queries, launcher handler.JobLauncher, revalidate RevalidateFunc, onDigest DigestFunc) *Scheduler {
+func New(queries *db.Queries, launcher handler.JobLauncher, statusChecker handler.JobStatusChecker, revalidate RevalidateFunc, onDigest DigestFunc) *Scheduler {
 	return &Scheduler{
-		queries:    queries,
-		launcher:   launcher,
-		revalidate: revalidate,
-		onDigest:   onDigest,
+		queries:       queries,
+		launcher:      launcher,
+		statusChecker: statusChecker,
+		revalidate:    revalidate,
+		onDigest:      onDigest,
 	}
 }
 
@@ -65,8 +67,16 @@ func (s *Scheduler) Start(reconCron, revalidationCron string) error {
 		return fmt.Errorf("failed to schedule revalidation job: %w", err)
 	}
 
+	_, err = sched.NewJob(
+		gocron.DurationJob(5*time.Minute),
+		gocron.NewTask(s.syncJobStatuses),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to schedule job status sync: %w", err)
+	}
+
 	sched.Start()
-	log.Printf("Scheduler started (recon=%q, revalidation=%q)", reconCron, revalidationCron)
+	log.Printf("Scheduler started (recon=%q, revalidation=%q, job-sync=every 5m)", reconCron, revalidationCron)
 	return nil
 }
 
@@ -120,7 +130,7 @@ func (s *Scheduler) runRecon() {
 		// Launch via Scaleway
 		if s.launcher != nil {
 			jobID := uuidToString(job.ID)
-			_, err := s.launcher.LaunchJob(wc.Value, jobID, "normal")
+			scwID, err := s.launcher.LaunchJob(wc.Value, jobID, "normal")
 			if err != nil {
 				log.Printf("Scheduler: failed to launch job for %s: %v", wc.Value, err)
 				_ = s.queries.UpdateJobStatus(ctx, db.UpdateJobStatusParams{
@@ -129,6 +139,10 @@ func (s *Scheduler) runRecon() {
 				})
 				continue
 			}
+			_ = s.queries.UpdateJobScalewayID(ctx, db.UpdateJobScalewayIDParams{
+				ID:            job.ID,
+				ScalewayJobID: pgtype.Text{String: scwID, Valid: true},
+			})
 		}
 
 		launched++
@@ -173,6 +187,44 @@ func (s *Scheduler) runRevalidation() {
 
 	if s.onDigest != nil {
 		s.onDigest(ctx, "revalidation", totalStats)
+	}
+}
+
+func (s *Scheduler) syncJobStatuses() {
+	if s.statusChecker == nil {
+		return
+	}
+
+	ctx := context.Background()
+
+	activeJobs, err := s.queries.GetActiveJobsWithScalewayID(ctx)
+	if err != nil {
+		log.Printf("Scheduler: failed to get active jobs for sync: %v", err)
+		return
+	}
+
+	for _, job := range activeJobs {
+		scwState, err := s.statusChecker.GetJobStatus(job.ScalewayJobID.String)
+		if err != nil {
+			log.Printf("Scheduler: failed to get Scaleway status for job %s: %v", uuidToString(job.ID), err)
+			continue
+		}
+
+		var newStatus db.JobStatus
+		switch scwState {
+		case "failed", "canceled", "internal_error":
+			newStatus = db.JobStatusFailed
+		case "succeeded":
+			newStatus = db.JobStatusCompleted
+		default:
+			continue
+		}
+
+		log.Printf("Scheduler: syncing job %s status to %s (scaleway state: %s)", uuidToString(job.ID), newStatus, scwState)
+		_ = s.queries.UpdateJobStatus(ctx, db.UpdateJobStatusParams{
+			ID:     job.ID,
+			Status: newStatus,
+		})
 	}
 }
 

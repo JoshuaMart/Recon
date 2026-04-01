@@ -41,6 +41,37 @@ func (q *Queries) CountJobs(ctx context.Context, arg CountJobsParams) (int64, er
 	return count, err
 }
 
+const getActiveJobsWithScalewayID = `-- name: GetActiveJobsWithScalewayID :many
+SELECT id, scaleway_job_id, status FROM recon_jobs
+WHERE status IN ('pending', 'running') AND scaleway_job_id IS NOT NULL
+`
+
+type GetActiveJobsWithScalewayIDRow struct {
+	ID            pgtype.UUID `json:"id"`
+	ScalewayJobID pgtype.Text `json:"scaleway_job_id"`
+	Status        JobStatus   `json:"status"`
+}
+
+func (q *Queries) GetActiveJobsWithScalewayID(ctx context.Context) ([]GetActiveJobsWithScalewayIDRow, error) {
+	rows, err := q.db.Query(ctx, getActiveJobsWithScalewayID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetActiveJobsWithScalewayIDRow{}
+	for rows.Next() {
+		var i GetActiveJobsWithScalewayIDRow
+		if err := rows.Scan(&i.ID, &i.ScalewayJobID, &i.Status); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getJob = `-- name: GetJob :one
 SELECT id, wildcard_id, mode, status, scaleway_job_id, started_at, completed_at, created_at FROM recon_jobs WHERE id = $1
 `

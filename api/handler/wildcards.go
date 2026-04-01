@@ -19,6 +19,10 @@ type JobLauncher interface {
 	LaunchJob(wildcardValue, jobID, mode string) (scalewayJobID string, err error)
 }
 
+type JobStatusChecker interface {
+	GetJobStatus(jobRunID string) (string, error)
+}
+
 type RevalidateFunc func(ctx context.Context, wc db.Wildcard)
 
 type WildcardHandler struct {
