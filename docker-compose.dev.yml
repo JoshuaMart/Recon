@@ -22,8 +22,6 @@ services:
       - "3001:3001"
     volumes:
       - ./fingerprinter/config.yml:/app/config.yml:ro
-    environment:
-      - FINGERPRINTER_BROWSER_CONTROL_URL=http://chrome:9222
     depends_on:
       chrome:
         condition: service_healthy
