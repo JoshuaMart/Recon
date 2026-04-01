@@ -1,8 +1,28 @@
+x-chrome: &chrome
+  image: chromedp/headless-shell
+  command:
+    - --ignore-certificate-errors
+    - --remote-allow-origins=*
+    - --disable-dev-shm-usage
+    - --disable-gpu
+  restart: always
+  shm_size: '512m'
+  deploy:
+    resources:
+      limits:
+        memory: 2G
+  healthcheck:
+    test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/9222' 2>/dev/null"]
+    interval: 5s
+    timeout: 3s
+    retries: 5
+    start_period: 10s
+  networks:
+    - recon
+
 services:
   postgres:
     image: postgres:17-alpine
-    ports:
-      - "5432:5432"
     environment:
       POSTGRES_DB: recon
       POSTGRES_USER: recon
@@ -15,33 +35,28 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
+    networks:
+      - recon
 
   fingerprinter:
     image: ghcr.io/joshuamart/fingerprinter
-    ports:
-      - "3001:3001"
     volumes:
       - ./fingerprinter/config.yml:/app/config.yml:ro
     depends_on:
       chrome:
         condition: service_healthy
+    networks:
+      - recon
 
-  chrome:
-    image: chromedp/headless-shell
-    command:
-      - --ignore-certificate-errors
-      - --remote-allow-origins=*
-    healthcheck:
-      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/9222' 2>/dev/null"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 10s
+  chrome-1:
+    <<: *chrome
+  chrome-2:
+    <<: *chrome
+  chrome-3:
+    <<: *chrome
 
   api:
     image: ghcr.io/joshuamart/recon/api
-    ports:
-      - "3002:3002"
     env_file:
       - ./api/.env
     depends_on:
@@ -51,15 +66,20 @@ services:
         condition: service_started
       chrome:
         condition: service_healthy
+    networks:
+      - recon
 
   web:
     image: ghcr.io/joshuamart/recon/web
-    ports:
-      - "3000:3000"
     environment:
       NUXT_PUBLIC_API_URL: http://localhost:3002
     depends_on:
       - api
+    networks:
+      - recon
 
 volumes:
   pgdata:
+
+networks:
+  recon:
