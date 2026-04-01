@@ -58,7 +58,7 @@ function findInDevicon(name: string): string | null {
 
 function findCustomIcon(name: string): string | null {
   const basePath = join(process.cwd(), 'public', 'icons', 'tech')
-  const filePath = join(basePath, `${name}.svg`)
+  const filePath = join(basePath, `${name.toLowerCase().replace(/\s+/g, '-')}.svg`)
   if (existsSync(filePath)) {
     return readFileSync(filePath, 'utf-8')
   }
