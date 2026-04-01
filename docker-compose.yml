@@ -43,7 +43,11 @@ services:
     volumes:
       - ./fingerprinter/config.yml:/app/config.yml:ro
     depends_on:
-      chrome:
+      chrome-1:
+        condition: service_healthy
+      chrome-2:
+        condition: service_healthy
+      chrome-3:
         condition: service_healthy
     networks:
       - recon
@@ -64,8 +68,6 @@ services:
         condition: service_healthy
       fingerprinter:
         condition: service_started
-      chrome:
-        condition: service_healthy
     networks:
       - recon
 
