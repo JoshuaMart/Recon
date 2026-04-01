@@ -210,15 +210,11 @@ func (s *Scheduler) syncJobStatuses() {
 			continue
 		}
 
-		var newStatus db.JobStatus
-		switch scwState {
-		case "failed", "canceled", "internal_error":
-			newStatus = db.JobStatusFailed
-		case "succeeded":
-			newStatus = db.JobStatusCompleted
-		default:
+		// Only sync failure states — success is always reported by Detective
+		if scwState != "failed" && scwState != "canceled" && scwState != "internal_error" {
 			continue
 		}
+		newStatus := db.JobStatusFailed
 
 		log.Printf("Scheduler: syncing job %s status to %s (scaleway state: %s)", uuidToString(job.ID), newStatus, scwState)
 		_ = s.queries.UpdateJobStatus(ctx, db.UpdateJobStatusParams{
