@@ -39,7 +39,7 @@ func TestClient_Scan_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := NewClient(srv.URL)
+	client := NewClient(srv.URL, 30)
 	result, err := client.Scan("https://example.com")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -66,7 +66,7 @@ func TestClient_Scan_ErrorResponse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := NewClient(srv.URL)
+	client := NewClient(srv.URL, 30)
 	result, err := client.Scan("https://invalid.example.com")
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -82,7 +82,7 @@ func TestClient_Scan_HTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := NewClient(srv.URL)
+	client := NewClient(srv.URL, 30)
 	_, err := client.Scan("https://example.com")
 	if err == nil {
 		t.Fatal("expected error for 500 status")
@@ -95,7 +95,7 @@ func TestClient_Scan_InvalidJSON(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := NewClient(srv.URL)
+	client := NewClient(srv.URL, 30)
 	_, err := client.Scan("https://example.com")
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
@@ -103,7 +103,7 @@ func TestClient_Scan_InvalidJSON(t *testing.T) {
 }
 
 func TestClient_Scan_ConnectionRefused(t *testing.T) {
-	client := NewClient("http://127.0.0.1:1") // port 1 should refuse
+	client := NewClient("http://127.0.0.1:1", 30) // port 1 should refuse
 	_, err := client.Scan("https://example.com")
 	if err == nil {
 		t.Fatal("expected error for connection refused")

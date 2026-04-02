@@ -2,12 +2,14 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/jomar/recon/api/db"
@@ -169,13 +171,13 @@ func (h *URLHandler) Fingerprint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enqueue for fingerprinting
+	// Enqueue for fingerprinting (duplicate URLs are silently ignored)
 	_, err = h.queries.EnqueueFingerprint(r.Context(), db.EnqueueFingerprintParams{
 		Url:        req.URL,
 		HostnameID: hostname.ID,
 		Source:     "manual",
 	})
-	if err != nil {
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusInternalServerError, "failed to enqueue fingerprint")
 		return
 	}

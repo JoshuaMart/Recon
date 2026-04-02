@@ -26,8 +26,9 @@ type Config struct {
 	IngestAPIKey string
 
 	// Fingerprinter
-	FingerprinterURL string
-	FingerprintWorkers int
+	FingerprinterURL     string
+	FingerprintWorkers   int
+	FingerprintTimeout   int // seconds, sent to fingerprinter as timeout_seconds
 
 	// Scaleway
 	ScalewayAccessKey string
@@ -135,9 +136,20 @@ func Load() (*Config, error) {
 		cfg.RevalidationCron = "0 2 * * 4"
 	}
 
+	timeoutStr := os.Getenv("FINGERPRINT_TIMEOUT")
+	if timeoutStr == "" {
+		cfg.FingerprintTimeout = 30
+	} else {
+		t, err := strconv.Atoi(timeoutStr)
+		if err != nil || t < 1 {
+			return nil, fmt.Errorf("invalid FINGERPRINT_TIMEOUT %q: must be a positive integer", timeoutStr)
+		}
+		cfg.FingerprintTimeout = t
+	}
+
 	workersStr := os.Getenv("FINGERPRINT_WORKERS")
 	if workersStr == "" {
-		cfg.FingerprintWorkers = 3
+		cfg.FingerprintWorkers = 10
 	} else {
 		w, err := strconv.Atoi(workersStr)
 		if err != nil || w < 1 {

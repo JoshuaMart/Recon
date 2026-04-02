@@ -31,6 +31,23 @@ func (w *Worker) Start(ctx context.Context, workers int) {
 	for i := range workers {
 		go w.run(ctx, i)
 	}
+	go w.maintenance(ctx)
+}
+
+// maintenance periodically recovers stale "processing" items (orphaned by crashed workers).
+func (w *Worker) maintenance(ctx context.Context) {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := w.queries.RecoverStaleProcessing(ctx); err != nil {
+				log.Printf("Failed to recover stale processing items: %v", err)
+			}
+		}
+	}
 }
 
 func (w *Worker) run(ctx context.Context, id int) {

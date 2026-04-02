@@ -79,7 +79,7 @@ func main() {
 	jobStatusIngest := ingest.NewJobStatusHandler(queries, notifier)
 
 	// Fingerprint worker
-	fpClient := fingerprint.NewClient(cfg.FingerprinterURL)
+	fpClient := fingerprint.NewClient(cfg.FingerprinterURL, cfg.FingerprintTimeout)
 	fpWorker := fingerprint.NewWorker(queries, fpClient, func(ctx context.Context, hostname db.Hostname, result *fingerprint.Result) {
 		// Resolve wildcard value for notification
 		wc, err := queries.GetWildcard(ctx, hostname.WildcardID)

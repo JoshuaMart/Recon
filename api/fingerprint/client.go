@@ -9,15 +9,17 @@ import (
 )
 
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
+	baseURL        string
+	httpClient     *http.Client
+	timeoutSeconds int
 }
 
-func NewClient(baseURL string) *Client {
+func NewClient(baseURL string, timeoutSeconds int) *Client {
 	return &Client{
-		baseURL: baseURL,
+		baseURL:        baseURL,
+		timeoutSeconds: timeoutSeconds,
 		httpClient: &http.Client{
-			Timeout: 60 * time.Second,
+			Timeout: time.Duration(timeoutSeconds+10) * time.Second, // HTTP timeout > scan timeout
 		},
 	}
 }
@@ -52,7 +54,7 @@ func (c *Client) Scan(targetURL string) (*Result, error) {
 		URL: targetURL,
 		Options: scanOptions{
 			BrowserDetection: true,
-			TimeoutSeconds:   30,
+			TimeoutSeconds:   c.timeoutSeconds,
 			MaxRedirects:     10,
 		},
 	})

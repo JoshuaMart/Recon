@@ -46,6 +46,7 @@ SET status = 'processing', updated_at = now()
 WHERE id = (
     SELECT id FROM fingerprint_queue
     WHERE status = 'pending'
+       OR (status = 'failed' AND retry_count < 3)
     ORDER BY created_at
     LIMIT 1
     FOR UPDATE SKIP LOCKED
@@ -72,6 +73,7 @@ func (q *Queries) DequeueFingerprint(ctx context.Context) (FingerprintQueue, err
 const enqueueFingerprint = `-- name: EnqueueFingerprint :one
 INSERT INTO fingerprint_queue (url, hostname_id, source)
 VALUES ($1, $2, $3)
+ON CONFLICT (url, hostname_id) WHERE status IN ('pending', 'processing') DO NOTHING
 RETURNING id, url, hostname_id, source, status, retry_count, created_at, updated_at
 `
 
@@ -112,5 +114,17 @@ UPDATE fingerprint_queue SET status = 'failed', retry_count = retry_count + 1, u
 
 func (q *Queries) MarkFingerprintFailed(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, markFingerprintFailed, id)
+	return err
+}
+
+const recoverStaleProcessing = `-- name: RecoverStaleProcessing :exec
+UPDATE fingerprint_queue
+SET status = 'pending', updated_at = now()
+WHERE status = 'processing'
+  AND updated_at < now() - interval '2 minutes'
+`
+
+func (q *Queries) RecoverStaleProcessing(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, recoverStaleProcessing)
 	return err
 }

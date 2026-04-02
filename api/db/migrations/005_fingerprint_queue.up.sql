@@ -10,3 +10,4 @@ CREATE TABLE fingerprint_queue (
 );
 
 CREATE INDEX idx_fingerprint_queue_pending ON fingerprint_queue(status) WHERE status = 'pending';
+CREATE UNIQUE INDEX idx_fingerprint_queue_dedup ON fingerprint_queue (url, hostname_id) WHERE status IN ('pending', 'processing');
