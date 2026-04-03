@@ -34,6 +34,15 @@
         <option value="other">Other</option>
         <option value="unknown">Unknown</option>
       </select>
+      <input
+        v-model="filters.port"
+        type="text"
+        inputmode="numeric"
+        placeholder="Port"
+        class="bg-bg border border-border px-3 py-2 text-sm font-mono focus:outline-none focus:border-accent transition-colors w-24"
+        @keyup.enter="resetAndFetch"
+        @blur="resetAndFetch"
+      >
     </div>
 
     <!-- Table -->
@@ -275,6 +284,7 @@ const filters = reactive({
   wildcard_id: '',
   status: '',
   type: '',
+  port: '',
 })
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / perPage)))
@@ -344,6 +354,7 @@ async function fetchHostnames() {
     if (filters.wildcard_id) params.wildcard_id = filters.wildcard_id
     if (filters.status) params.status = filters.status
     if (filters.type) params.type = filters.type
+    if (filters.port) params.port = filters.port
 
     const res = await api<PaginatedResponse<Hostname>>('/api/hostnames', { params })
     hostnames.value = res.data

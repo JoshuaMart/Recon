@@ -17,17 +17,24 @@ SELECT COUNT(*) FROM hostnames
 WHERE
     ($1::UUID IS NULL OR wildcard_id = $1) AND
     ($2::hostname_status IS NULL OR status = $2) AND
-    ($3::hostname_type IS NULL OR type = $3)
+    ($3::hostname_type IS NULL OR type = $3) AND
+    ($4::TEXT IS NULL OR (ports->'tcp') ? $4)
 `
 
 type CountHostnamesParams struct {
 	WildcardID pgtype.UUID        `json:"wildcard_id"`
 	Status     NullHostnameStatus `json:"status"`
 	Type       NullHostnameType   `json:"type"`
+	Port       pgtype.Text        `json:"port"`
 }
 
 func (q *Queries) CountHostnames(ctx context.Context, arg CountHostnamesParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countHostnames, arg.WildcardID, arg.Status, arg.Type)
+	row := q.db.QueryRow(ctx, countHostnames,
+		arg.WildcardID,
+		arg.Status,
+		arg.Type,
+		arg.Port,
+	)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
@@ -87,7 +94,8 @@ FROM hostnames
 WHERE
     ($3::UUID IS NULL OR wildcard_id = $3) AND
     ($4::hostname_status IS NULL OR status = $4) AND
-    ($5::hostname_type IS NULL OR type = $5)
+    ($5::hostname_type IS NULL OR type = $5) AND
+    ($6::TEXT IS NULL OR (ports->'tcp') ? $6)
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2
 `
@@ -98,6 +106,7 @@ type ListHostnamesParams struct {
 	WildcardID pgtype.UUID        `json:"wildcard_id"`
 	Status     NullHostnameStatus `json:"status"`
 	Type       NullHostnameType   `json:"type"`
+	Port       pgtype.Text        `json:"port"`
 }
 
 type ListHostnamesRow struct {
@@ -121,6 +130,7 @@ func (q *Queries) ListHostnames(ctx context.Context, arg ListHostnamesParams) ([
 		arg.WildcardID,
 		arg.Status,
 		arg.Type,
+		arg.Port,
 	)
 	if err != nil {
 		return nil, err

@@ -4,7 +4,8 @@ FROM hostnames
 WHERE
     (sqlc.narg('wildcard_id')::UUID IS NULL OR wildcard_id = sqlc.narg('wildcard_id')) AND
     (sqlc.narg('status')::hostname_status IS NULL OR status = sqlc.narg('status')) AND
-    (sqlc.narg('type')::hostname_type IS NULL OR type = sqlc.narg('type'))
+    (sqlc.narg('type')::hostname_type IS NULL OR type = sqlc.narg('type')) AND
+    (sqlc.narg('port')::TEXT IS NULL OR (ports->'tcp') ? sqlc.narg('port'))
 ORDER BY created_at DESC
 LIMIT $1 OFFSET $2;
 
@@ -13,7 +14,8 @@ SELECT COUNT(*) FROM hostnames
 WHERE
     (sqlc.narg('wildcard_id')::UUID IS NULL OR wildcard_id = sqlc.narg('wildcard_id')) AND
     (sqlc.narg('status')::hostname_status IS NULL OR status = sqlc.narg('status')) AND
-    (sqlc.narg('type')::hostname_type IS NULL OR type = sqlc.narg('type'));
+    (sqlc.narg('type')::hostname_type IS NULL OR type = sqlc.narg('type')) AND
+    (sqlc.narg('port')::TEXT IS NULL OR (ports->'tcp') ? sqlc.narg('port'));
 
 -- name: GetHostname :one
 SELECT * FROM hostnames WHERE id = $1;

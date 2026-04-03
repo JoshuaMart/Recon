@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/netip"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -64,6 +65,15 @@ func (h *HostnameHandler) List(w http.ResponseWriter, r *http.Request) {
 		params.Type = db.NullHostnameType{HostnameType: db.HostnameType(v), Valid: true}
 	}
 
+	if v := q.Get("port"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 65535 {
+			writeError(w, http.StatusBadRequest, "invalid port, must be 1-65535")
+			return
+		}
+		params.Port = pgtype.Text{String: v, Valid: true}
+	}
+
 	rows, err := h.queries.ListHostnames(r.Context(), params)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list hostnames")
@@ -74,6 +84,7 @@ func (h *HostnameHandler) List(w http.ResponseWriter, r *http.Request) {
 		WildcardID: params.WildcardID,
 		Status:     params.Status,
 		Type:       params.Type,
+		Port:       params.Port,
 	}
 	total, err := h.queries.CountHostnames(r.Context(), countParams)
 	if err != nil {
