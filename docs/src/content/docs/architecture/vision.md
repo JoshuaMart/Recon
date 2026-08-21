@@ -22,10 +22,3 @@ constant checks. The architecture separates them so they draw on different budge
 Personal use first, but built from the start so that becoming a multi-tenant service is a
 configuration change rather than a rewrite. The decisions that make that true are listed in
 [Security and multi-tenancy](/architecture/security/); they are the ones that cannot be retrofitted.
-
-## 1.1 Non-goals for v1
-
-- No automated vulnerability scanning. Nuclei and its family come later, downstream of the inventory.
-- No deep crawl or spider.
-- No organization discovery: ASN walking, acquisitions, reverse WHOIS.
-- No collaborative multi-user interface. The backend is ready for it; the screens are not built.

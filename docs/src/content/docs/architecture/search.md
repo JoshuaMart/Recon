@@ -211,6 +211,19 @@ perimeter mostly fronted by a CDN, every asset of one provider shares it, so the
 generic results and is not actionable. Compare with an internal bundle hash, which groups the handful of hosts
 running the same application.
 
+**The certificate key is measured by the HTTP layer and not by the render**, and the reason is coverage
+rather than tidiness. A browser render would get the hash for free, since it already completed the
+handshake, while the probe pays one extra handshake per HTTPS service. But the probe sees **every** HTTPS
+service on every full pass, and a render happens on five triggers that can be three weeks apart, or never on
+an asset that has not earned a baseline. A pivot present on a fraction of the inventory joins nothing, and the
+fraction it would miss is the [protected regime](/architecture/verification/#86-reachability-per-observer),
+which is where the interesting targets tend to sit. The extra handshake is the price of the coverage that
+makes it a pivot at all.
+
+There is a second reason, smaller and still decisive: a browser follows redirects, so "which certificate"
+stops having one answer. The probe records a certificate only for a connection that was itself TLS, on the
+port being described, which is the right subject.
+
 A hash is kept in the model only if it serves as a pivot. Anything that was merely change detection is compared
 in the clear by the Notifier ([12.1](/architecture/notifications/#121-structured-diffs)).
 

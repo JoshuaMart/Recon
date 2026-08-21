@@ -109,6 +109,16 @@ The direction is settled and worth keeping. Two rules found the hard way and che
 - **Rounded cards over sharp controls.** The radii are tokens, because mixing the two by hand is what makes an
   interface look assembled.
 
+**The icons are Lucide**, through its Svelte package, which exposes one component per icon so only what a
+screen uses ships. ISC licensed, so nothing has to be carried into the interface to use it.
+
+They are stroke icons, and two consequences follow. They take `stroke: currentColor`, so an icon inherits the
+colour of the text it sits next to and a status colour needs no icon variant. And the stroke width is a token:
+Lucide draws at 2 by default, which reads heavy at the sizes a dense list uses, so it is set once at 1.5 rather
+than adjusted per screen.
+
+Nothing is fetched at runtime. No icon font, no sprite sheet, no request for decoration.
+
 | Token | Value | Use |
 |---|---|---|
 | `--signal` / `--signal-bg` | `#06c68a` / `#e0f8ef` | the accent, and the switcher swatch |
@@ -122,6 +132,7 @@ The direction is settled and worth keeping. Two rules found the hard way and che
 | `--unobs` / `--unobs-bg` | `#b06ad8` / `#f6ecfc` | `unobservable`, and it is **not a shade of dead** |
 | `--temporal-bg` | `#fbf9f2` | the temporal band |
 | `--font-sans` / `--font-mono` | Space Grotesk / JetBrains Mono | interface, and every piece of data |
+| `--icon-stroke` | `1.5` | Lucide's default of 2 is heavy at list density |
 
 The `--unobs` line is the one to protect. One is an absence of measurement and the other is a measurement
 ([10.7](/architecture/search/#unobservable-and-inactive-each-say-a-sentence)), so making the second a lighter

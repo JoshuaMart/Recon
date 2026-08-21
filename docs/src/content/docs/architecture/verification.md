@@ -154,17 +154,47 @@ error.
 `favicon` says it was over the size bound. A consumer confusing them would conclude that a 90 KB icon
 does not exist, when it has a hash, a counter and a badge, and only the thumbnail is missing.
 
-### Saturation
+### Saturation, and why nothing is lost
 
-The service answers **429 when its pool is saturated**, with a `Retry-After` in seconds. The refusal
-comes when no slot frees up within `acquire_timeout`, not the instant the pool fills: a scan lasts a few
-seconds, so refusing on the spot would reject callers a slot was about to open for. The caller applies
-its own jitter on top, because everyone refused at the same instant received the same `Retry-After`, and
-waiting exactly that long reconstitutes the convoy.
+The service answers **429 when its pool is saturated**, with a `Retry-After` in seconds. The refusal comes
+when no slot frees up within its acquire timeout, not the instant the pool fills: a scan lasts a few
+seconds, so refusing on the spot would reject callers a slot was about to open for.
 
-**A persistent refusal stops the batch, not the target.** A saturated service is a state of the service:
-the next four hundred targets would meet the same refusal. The pass stops cleanly and the remaining due
-dates are simply not moved, so the next tick picks them up.
+**A 429 is a state of the service, so it must not touch the asset.** No observation, no counter, no
+streak, no `last_fingerprint_at`. This is the rule of
+[a probe error against a measurement failure](#a-probe-error-and-a-measurement-failure-are-two-things),
+and it is the trap worth naming: a render that reached the target and got nothing writes an observation,
+while a render that never happened writes nothing at all. Confusing the two walks assets toward
+`unobservable` for a reason that has nothing to do with them, and `unobservable` is supposed to mean the
+target cannot be observed, not that we were busy.
+
+**Nothing is lost, and the reason is structural rather than a retry.** A render has no lease: the due
+date **is** the queue. A refused asset simply keeps `next_fingerprint_at` in the past, so it is still due
+on the next tick. There is no state to reconcile, no reservation to expire, and no path where a crash
+between the refusal and the retry drops the work. The only way to lose a render would be to move the due
+date on the way out, which is exactly why it moves on ingestion and nowhere else.
+
+**Refused work keeps its place, without a priority mechanism.** Selection orders on the due date, and a
+refused asset's date is older than everything queued behind it. So it comes back first on the next pass by
+the same ordering that put it there, and the two [priority queues](#two-priorities) keep meaning what they
+mean.
+
+**Waiting is bounded, and jittered.** The caller honours `Retry-After` and spreads it between half and one
+and a half times the announced delay: everyone refused at the same instant received the same value, and
+waiting exactly that long reconstitutes the convoy the refusal was meant to break. After a few consecutive
+refusals the pass stops rather than keeps knocking, because a saturated service will refuse the next four
+hundred targets for the same reason. Stopping costs nothing here, which is the point of the paragraph
+above.
+
+**A refusal gives the budget back.** The [render budget](/architecture/deployment/#95-rate-limiting) is
+charged before the call, because charging after would let a burst reach the target before anything counted
+it. A 429 means nothing reached the target, so the charge is returned. Without that, a saturated service
+would throttle a program's real renders on behalf of renders that never happened, which is the opposite of
+what the budget protects.
+
+**Saturation is visible without reading logs.** It shows as the fingerprint queue deepening, which is the
+one [queue depth](/architecture/deployment/#99-reading-the-queue) worth watching: its unit costs two orders
+of magnitude more than a probe, so its depth translates directly into minutes of browser.
 
 ## 8.3 When a render happens
 

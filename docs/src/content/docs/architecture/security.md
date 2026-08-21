@@ -11,7 +11,7 @@ Two distinct axes:
 - **Multi-user**, several people inside one organization. Mostly retrofittable; only six points have to be
   frozen now.
 
-The collaborative interface stays a [v1 non-goal](/architecture/vision/#11-non-goals-for-v1). The backend
+The collaborative interface is not built in v1. The backend
 has to be ready for it.
 
 ## 11.1 Irreversible decisions
