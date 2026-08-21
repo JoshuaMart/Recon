@@ -545,13 +545,14 @@ func tcpOutcome(host Host) string {
 	if len(host.Ports) > 0 {
 		return OutcomeOK
 	}
-	if host.Scan == nil || host.Scan.Scanned == 0 {
+	if host.Scan == nil || !host.Scan.Accounted() {
 		return ""
 	}
-	// The host answers and nothing listens. A single filtered port breaks it:
-	// what is filtered is indistinguishable from what is banned, and a service
-	// could be sitting behind it.
-	if host.Scan.Refused > 0 && host.Scan.Filtered == 0 {
+	// The host answers and nothing listens. Three things break it, and each is
+	// a different way of not having tried: a filtered port is
+	// indistinguishable from a banned one and could be hiding a service, and
+	// an unknown one was never measured at all.
+	if host.Scan.Refused > 0 && host.Scan.Filtered == 0 && host.Scan.Unknown == 0 {
 		return OutcomeFail
 	}
 	return OutcomeError

@@ -109,12 +109,30 @@ type Host struct {
 	Scan *Scan `json:"scan,omitempty"`
 }
 
-// Scan is the port sweep's own accounting for one host.
+// Scan is the port sweep's own accounting for one host, summed over every
+// address the host resolved to.
+//
+// The four buckets have to add up to Scanned, and that is not bookkeeping. A
+// probe that failed on a local limit, running out of file descriptors, says
+// nothing about the target and is neither refused nor filtered; a sweep that
+// dropped it silently would leave "every port refused" true over a set of
+// ports that was never actually tried.
 type Scan struct {
 	Scanned  int `json:"scanned"`
 	Open     int `json:"open"`
 	Refused  int `json:"refused"`
 	Filtered int `json:"filtered"`
+	// Unknown is what the observer could not measure, as opposed to what the
+	// target did.
+	Unknown int `json:"unknown"`
+}
+
+// Accounted reports whether the buckets cover the sweep.
+//
+// A report whose counts do not add up is one this cannot read, and reading it
+// anyway would conclude a death over ports nobody can account for.
+func (s Scan) Accounted() bool {
+	return s.Scanned > 0 && s.Open+s.Refused+s.Filtered+s.Unknown == s.Scanned
 }
 
 // CDN records that some of a host's addresses sit behind an edge.

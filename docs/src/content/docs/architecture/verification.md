@@ -53,19 +53,26 @@ indistinguishable from a host that closed everything.
 So the report carries what the sweep actually tried, as counts per host:
 
 ```json
-{ "scan": { "scanned": 100, "open": 0, "refused": 100, "filtered": 0 } }
+{ "scan": { "scanned": 100, "open": 0, "refused": 100, "filtered": 0, "unknown": 0 } }
 ```
 
 | Counts | Reading | `outcome` |
 |---|---|---|
 | `open > 0` | something listens | `ok` |
-| `open = 0`, `refused > 0`, `filtered = 0` | the host answers, nothing listens | **`fail`**, informative |
-| `open = 0`, any `filtered` | indistinguishable from a ban | `error` |
+| `open = 0`, `refused > 0`, `filtered = 0`, `unknown = 0` | the host answers, nothing listens | **`fail`**, informative |
+| `open = 0`, any `filtered` or `unknown` | indistinguishable from a ban, or never measured | `error` |
+| the buckets do not sum to `scanned` | the counts cannot be read | **no observation** |
 | no counts at all | the sweep said nothing | **no observation** |
 
 **A single filtered port breaks the death**, and that is deliberate rather than cautious: what is
 filtered is exactly what could be hiding a service, and a verdict that ignores it would archive hosts on
 the strength of the ports that were *not* interesting.
+
+**The four buckets have to add up**, and that is the same rule one level down. A probe that failed on a
+local limit says nothing about the target and belongs in neither `refused` nor `filtered`, so it gets a
+bucket of its own; a sweep that dropped it silently would leave "every port refused" true over a set of
+ports that was never tried. Counts that do not cover what the sweep says it attempted are counts this
+cannot read, and reading them anyway concludes a death over the difference.
 
 Until the scanner carries the counts the last line applies, so the `tcp` layer writes nothing rather than
 a verdict it cannot support. Nothing else degrades: `dns` and `http` conclude on their own evidence, and

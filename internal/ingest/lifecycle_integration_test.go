@@ -529,6 +529,21 @@ func TestTheTCPLayerConcludesOnlyWhatTheSweepCounted(t *testing.T) {
 		t.Fatalf("a sweep with a filtered port concluded a death: %q informative=%d non_informative=%d",
 			state, informative, nonInformative)
 	}
+
+	// And a sweep whose buckets do not cover what it says it tried is one this
+	// cannot read at all. Reading it anyway would conclude a death over ports
+	// nobody can account for, which is the same mistake as reading an empty
+	// list of open ports.
+	short := liveHost("short.acme.test")
+	short.Hosts[0].Scan = &ingest.Scan{Scanned: 32, Open: 0, Refused: 30}
+	h.walk(t, c, ing, set, 12*time.Hour, short, short, short)
+
+	if n := h.count(t,
+		`SELECT count(*) FROM observation o JOIN asset a ON a.id = o.asset_id
+		  WHERE a.program_id = $1 AND a.key = 'short.acme.test' AND o.layer = 'tcp'`,
+		h.program); n != 0 {
+		t.Fatalf("%d tcp observations from a sweep whose counts do not add up", n)
+	}
 }
 
 func TestAHandEnteredHostIsDueForFullOnItsFirstRun(t *testing.T) {
