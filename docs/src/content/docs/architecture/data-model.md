@@ -120,6 +120,9 @@ CREATE TABLE asset_current (
   next_resolve_at     timestamptz,
   next_full_at        timestamptz,
   next_fingerprint_at timestamptz,
+  -- low = 100, high = 50. Sorted before the due date, so a change detected
+  -- after a mass baseline does not queue behind it (see 8.3).
+  fingerprint_priority smallint NOT NULL DEFAULT 100,
   backoff_tier        int NOT NULL DEFAULT 0,
 
   -- which observer gets a result on this target, see 8.6

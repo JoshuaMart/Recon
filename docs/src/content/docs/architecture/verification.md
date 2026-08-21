@@ -253,10 +253,25 @@ adds no smoothing.
 
 ### The render pass
 
-The queue is a **predicate, not a list**: `next_fingerprint_at <= now`, ordered by priority then by due
-date, capped at a batch size. It is re-evaluated on every tick and holds no state between two of them.
-That is what makes the whole path idempotent, and it is the reason the section below can claim nothing is
-lost without pointing at a recovery mechanism.
+The queue is a **predicate, not a list**:
+
+```sql
+SELECT asset_id, key FROM asset_current
+WHERE next_fingerprint_at <= now()
+  AND lifecycle <> 'archived'
+ORDER BY fingerprint_priority, next_fingerprint_at, asset_id
+LIMIT $batch;
+```
+
+It is re-evaluated on every tick and holds no state between two of them. That is what makes the whole path
+idempotent, and it is the reason the section below can claim nothing is lost without pointing at a
+recovery mechanism.
+
+**Priority sorts before the due date**, and that ordering is what protects the urgent case. A first scan
+makes thousands of baselines due at the same instant, and a render triggered by a detected change five
+minutes later carries a *later* due date. Ordered on the date alone it would sort behind every one of
+them. In the `high` queue it goes first, which is the whole point of
+[having two](#two-priorities).
 
 The service takes **one URL per call**, so a pass is a bounded number of calls made concurrently, never a
 list handed over.

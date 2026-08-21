@@ -103,7 +103,7 @@ There is no queue table and no lease. Three due dates and a backoff tier live on
 SELECT asset_id, key FROM asset_current
 WHERE next_resolve_at <= now()
   AND lifecycle <> 'archived'
-ORDER BY next_resolve_at
+ORDER BY next_resolve_at, asset_id
 LIMIT $batch;
 ```
 
@@ -111,6 +111,17 @@ The selected keys become the target list of one run
 ([9.1](/architecture/deployment/#91-the-run-contract)). Ingestion of the report reschedules them. A run
 that dies takes nothing with it: the due dates were never moved, so the next tick selects the same
 assets again.
+
+**The tiebreaker is not decoration.** Assets are written in bulk, so thousands of rows routinely carry
+the **same** due date to the microsecond: one report writes them in one transaction. With `LIMIT` over a
+set of ties and nothing to break them, which rows come back is the planner's choice, and it can differ
+between two ticks for reasons nothing in this document controls. Ordering on the identity as well makes
+the walk deterministic, which is what lets a stalled batch be reasoned about at all.
+
+**A clump of identical due dates is normal and needs no spreading.** What a due date decides is
+*eligibility*; what goes out is decided by the batch size, by the concurrency of the pass and by the
+program's budget. Spreading the clump would buy nothing and cost freshness, which is the same argument
+that keeps a [baseline due when it is earned](/architecture/verification/#the-baseline-filter).
 
 ### Scheduling is per host
 
