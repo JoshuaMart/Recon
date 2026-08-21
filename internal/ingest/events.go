@@ -86,7 +86,6 @@ func (i *Ingestor) announce(run Run, st *state, obs observation, discoverySource
 			st.announced = true
 		}
 	}
-
 }
 
 // diffEvents tells what this observation changed about the world.
