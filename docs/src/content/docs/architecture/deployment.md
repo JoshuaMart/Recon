@@ -255,6 +255,55 @@ does it without being told.
 
 ## 9.8 Starting runs
 
+### What actually starts one
+
+**The control plane never starts a container.** Doing so needs a socket that grants root on the host, in the
+process that already holds the database credentials. That is a worse privilege than the one connect scanning
+removed, and it would be acquired for convenience rather than for a capability.
+
+The scanner is deployed **once**, as a job definition, out of band. Starting a run is a single API call that
+starts that definition while **overriding its arguments and environment for that run**, which is what lets
+one generic definition serve every program: the perimeter, the stage scope, the port list, the targets URL
+and the report destination are all overrides.
+
+Four consequences, and the first is the one that bites in silence.
+
+**The control plane starts, it never updates.** The API call that modifies a definition **replaces** its
+whole environment map rather than merging into it, so a control plane that wrote its run definition that way
+would wipe the source API keys the definition carries. Nothing would fail: the next run would simply query
+fewer sources and find less, which is the exact failure mode
+[7.3](/architecture/discovery/#73-source-credentials) exists to make visible. Credentials live on the
+definition, and the definition is somebody's deployment, never the control plane's write path.
+
+**Its credential is scoped to starting definitions**, and to nothing else on the account. It sits in the
+process that already holds the inventory, so the only thing bounding the damage of that process being
+compromised is how narrow this key is.
+
+**The timeouts nest, and Recon owns only the inner one.** The run's own budget has to expire before the
+platform's, so that a long run still delivers a truncated report instead of being killed with nothing. The
+outer bound is on the definition, which Recon does not control, so the inner value is configuration and has
+to be set to match. The `deadline` on the run row derives from the same value.
+
+**Platform retries stay off.** A scanner distinguishes several exit codes and only one of them is worth
+retrying, which a platform that sees only "non-zero" cannot single out. Retrying the others re-runs work
+whose report was already delivered. Recon's retry is the due date, which is the same mechanism as everywhere
+else: nothing moved, so the next tick reselects.
+
+**When the platform refuses**, on a quota or an outage, the run row stays `pending` and the deadline sweeper
+expires it. The signed token and the frozen target list expire with it, and the due dates were never moved,
+so the next tick starts a fresh run over the same assets. Nothing has to be repaired, which is the property
+[9.2](#92-a-run-has-a-row) is built around.
+
+**The spend ceiling stops being theoretical here.** A run now costs money per execution, so the cap on
+concurrent runs per program is what bounds a bill rather than a queue. A bound that has never bound anything
+has never been calibrated either, and this is the moment it starts mattering.
+
+**In development there is no platform.** The control plane renders the run definition and the console shows
+it, and a person runs the image with it. That is the same shape as production minus the call, which is what
+keeps the local path from becoming a second way of starting a run.
+
+### When one starts
+
 Two paths, complementary rather than alternative: scheduled for regular coverage, manual to re-run after a
 scope change.
 

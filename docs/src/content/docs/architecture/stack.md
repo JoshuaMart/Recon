@@ -74,13 +74,20 @@ startup.
 Choosing self-hosting transfers durability to the project. The database is the **only** non reproducible data
 in the system: runs can be replayed, observation history cannot ([P3](/architecture/principles/)).
 
-Continuous WAL archiving to object storage, with retention aligned on the observation retention policy. And
-**a restore that has been exercised is worth a backup; an untested backup is worth nothing.** The restore test
-belongs to the first milestone, not to an incident.
+Continuous WAL archiving, with retention aligned on the observation retention policy. And **a restore that
+has been exercised is worth a backup; an untested backup is worth nothing.** The restore test belongs to the
+first milestone, not to an incident.
 
-This is the one thing that puts object storage back in the deployment, and it is a different bucket, a
-different credential and a different lifecycle from the one [13.7](#137-what-is-deliberately-not-a-dependency)
-declines.
+**The archive destination is configuration**, a local path in development and a bucket in production. That
+is what makes the restore verifiable on a laptop instead of waiting for a production host to exist, and an
+assertion that cannot go green until the end of the project is an assertion everyone learns to skip.
+
+It has a second effect worth having: the restore path is exercised before it is needed, which is the only
+moment anyone can afford to get it wrong.
+
+In production this is the one thing that puts object storage back in the deployment, and it is a different
+bucket, a different credential and a different lifecycle from the one
+[13.7](#137-what-is-deliberately-not-a-dependency) declines.
 
 ## 13.4 Migrations: goose
 

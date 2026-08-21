@@ -1,6 +1,6 @@
 ---
 title: Roadmap
-description: Eight phases in a constrained order, each closed by a milestone made of testable assertions.
+description: Nine phases in a constrained order, each closed by a milestone made of testable assertions.
 sidebar:
   order: 15
 ---
@@ -24,7 +24,7 @@ risk of this project.
 - [ ] [Minimal CI](/architecture/stack/#138-tooling-and-ci): lint, tests, build
 - [ ] [Typed configuration](/architecture/stack/#136-configuration-and-secrets), no hard coded value
 - [ ] [Secrets out of the repository](/architecture/stack/#136-configuration-and-secrets), injected from the environment
-- [ ] [Database backup](/architecture/stack/#backups-the-consequence-of-self-hosting)
+- [ ] [Database backup](/architecture/stack/#backups-the-consequence-of-self-hosting), archiving to a destination that is configuration, so the restore is exercised locally
 - [ ] [Two PostgreSQL roles](/architecture/deployment/#96-postgresql-roles), before any business migration
 
 ### Milestone 0
@@ -32,7 +32,7 @@ risk of this project.
 - [ ] `docker compose up` starts everything in under 60 s on a clean machine
 - [ ] A migration can be applied then rolled back without loss
 - [ ] CI passes on an empty pull request
-- [ ] A backup is restored into an empty database and the content is identical
+- [ ] A backup is restored into an empty database from the configured archive destination, and the content is identical
 - [ ] Connected as `asm_app`: `CREATE TABLE` fails, `DROP TABLE` fails on a table the owner created, and reading and writing that table succeeds through the default privileges
 - [ ] From the fingerprinter's container, `psql` to the database fails, and the same connection succeeds from the control plane network
 
@@ -78,7 +78,7 @@ phase testable before discovery exists.
 - [ ] Deadline sweeper for runs, and the console refusal that names the run
 - [ ] [Backoff with jitter](/architecture/lifecycle/#backoff-curves), two curves
 - [ ] [Failure qualification](/architecture/lifecycle/#where-the-qualification-is-carried), informative against non informative
-- [ ] [The `lifecycle` state machine](/architecture/lifecycle/#62-state-machine), excluding `unobservable`, which depends on phase 2b
+- [ ] [The `lifecycle` state machine](/architecture/lifecycle/#62-state-machine), excluding `unobservable`, which depends on phase 3
 - [ ] [Projection onto `asset_current`](/architecture/lifecycle/#three-layers-one-lifecycle): layer states, promoted columns, reachability counters
 - [ ] [An open port becomes an asset](/architecture/verification/#an-open-port-becomes-an-asset), with its bound
 - [ ] [Dangling CNAME detection](/architecture/verification/#takeover-candidates) into a structured field
@@ -96,9 +96,9 @@ phase testable before discovery exists.
 - [ ] A run killed mid flight blocks nothing: its targets are selected again on the next tick
 - [ ] Two concurrent runs never hold the same host
 - [ ] A port found open becomes a `service` asset, and 25 open ports on one host derive nothing
-- [ ] A dangling CNAME is recorded with `kind`, target, signature and timestamp, which is enough for phase 4 without recollecting anything
+- [ ] A dangling CNAME is recorded with `kind`, target, signature and timestamp, which is enough for phase 5 without recollecting anything
 
-## Phase 2b: Fingerprinting
+## Phase 3: Fingerprinting
 
 **Goal**: [baseline, reachability, and death behind a CDN](/architecture/verification/#82-the-fingerprinter).
 Inseparable from phase 2 in use.
@@ -115,7 +115,7 @@ Inseparable from phase 2 in use.
 - [ ] [`producer_version` and `last_producer_version`](/architecture/verification/#87-dating-the-instrument)
 - [ ] [Periodic cadence modulated by volatility](/architecture/verification/#cadence-of-the-periodic-render)
 
-### Milestone 2b
+### Milestone 3
 
 - [ ] From the service's container, `psql` to the database **fails**, and the same connection **succeeds** from the control plane network
 - [ ] A request toward `169.254.169.254` is refused, and so is a redirect hop toward an internal range
@@ -127,7 +127,7 @@ Inseparable from phase 2 in use.
 - [ ] `last_fingerprint_at` does not move on a render that obtained no page
 - [ ] A pass over 500 assets does not exceed the program's rate limit
 
-## Phase 3: Discovery
+## Phase 4: Discovery
 
 **Goal**: [FastRecon over a program's apexes](/architecture/discovery/), feeding the loop of phase 2.
 
@@ -138,7 +138,7 @@ Inseparable from phase 2 in use.
 - [ ] Assets entering through the normal path: ingestion, scope, due dates
 - [ ] [Per host source attribution](/architecture/data-model/#44-lineage) feeding lineage
 
-### Milestone 3
+### Milestone 4
 
 - [ ] A run killed midway keeps everything already delivered
 - [ ] No out of scope asset receives a due date
@@ -147,7 +147,7 @@ Inseparable from phase 2 in use.
 - [ ] [`discovery_path`](/architecture/data-model/#44-lineage) is populated and usable on every asset
 - [ ] A source without a key reports itself, and the run says in one line what it could query
 
-## Phase 4: Diff and notifications
+## Phase 5: Diff and notifications
 
 **Goal**: [the system becomes better than a script](/architecture/notifications/).
 
@@ -162,7 +162,7 @@ Inseparable from phase 2 in use.
 - [ ] [Anti-flood](/architecture/notifications/#124-aggregation-and-anti-flood) and the [first run grace](/architecture/notifications/#125-the-first-run-of-a-program) with its age guardrail
 - [ ] [Per organization channels](/architecture/notifications/#channels-belong-to-an-organization) and a generic templated webhook
 
-### Milestone 4
+### Milestone 5
 
 - [ ] An application version bump produces a readable notification saying *what* changed
 - [ ] A rescan with no real change produces **no** notification
@@ -178,7 +178,7 @@ Inseparable from phase 2 in use.
 - [ ] A grace nothing ends expires at 7 days, emits its summary and reports the incident
 - [ ] The ingestion cost stays under budget, events included, on a batch where everything changes
 
-## Phase 5: Search and facets
+## Phase 6: Search and facets
 
 - [ ] [Pivot promotion into `asset_current`](/architecture/search/#102-what-the-projection-carries), the precondition for everything else
 - [ ] [Structured AST to parameterized SQL](/architecture/search/#101-three-principles), with a field registry
@@ -191,7 +191,7 @@ Inseparable from phase 2 in use.
 - [ ] [`external_host_dead`](/architecture/notifications/#what-external_host_dead-can-actually-see), both halves
 - [ ] [The third role and the second pool](/architecture/deployment/#96-postgresql-roles), and [Row-Level Security](/architecture/security/#row-level-security-two-roles-rather-than-one-variable) enabled
 
-### Milestone 5
+### Milestone 6
 
 - [ ] The RLS suite **refuses to run** if `current_user` is a superuser, carries `BYPASSRLS`, or owns the tables
 - [ ] An `asm_app` session set to one organization reads **no** row of another, without the query carrying `org_id`
@@ -206,7 +206,7 @@ Inseparable from phase 2 in use.
 - [ ] The ingestion cost stays under budget, pivots included, measured on a batch that moves some
 - [ ] **No query touches `observation`**, proved by revoking the privilege
 
-## Phase 6: Console
+## Phase 7: Console
 
 - [ ] [`recon bootstrap`](/architecture/deployment/#97-bootstrap), a precondition for the rest of the phase
 - [ ] [SvelteKit console](/architecture/console/) with no database credential, and the token exchange
@@ -219,7 +219,7 @@ Inseparable from phase 2 in use.
 - [ ] [Program and scope management](/architecture/scope/#55-managing-the-perimeter), reclassifying in the same transaction
 - [ ] [Queue view](/architecture/deployment/#99-reading-the-queue)
 
-### Milestone 6
+### Milestone 7
 
 - [ ] Deciding "open it or move on" on a row in under a second
 - [ ] No composite score, no severity, no environment label, held by a test on the **contract** rather than on a screen
@@ -236,9 +236,18 @@ Inseparable from phase 2 in use.
 - [ ] A write carrying a stale version answers 409 and applies **nothing**
 - [ ] The console **refuses to start** without `ORIGIN` outside development; in a production build, a cross-origin POST and a POST with no `Origin` both answer 403 where the same form in same origin answers 200
 
-## Phase 7: Certificate Transparency
+## Phase 8: Certificate Transparency
 
 **Goal**: [the freshness advantage](/architecture/vision/) becomes real.
+
+**It comes last, and that is a decision rather than a leftover.** Nothing in the phases before it consumes
+Certificate Transparency: its output is candidate assets, which the verification loop already knows how to
+handle. Everything else it would need, the aggressive backoff and the single host run, is built by then. So
+it can move without dragging anything, which is exactly what makes it the safe thing to put after the
+console.
+
+What the position costs is worth writing rather than discovered later: CT is what the vision calls the
+freshness advantage, so it is the differentiator. Deferring it blocks nothing and delays precisely that.
 
 - [ ] [`certstream-server-go`](/architecture/discovery/#75-certificate-transparency) deployed
 - [ ] [Matching by label walk in an in-memory set](/architecture/discovery/#75-certificate-transparency), **no regex**
@@ -249,7 +258,7 @@ Inseparable from phase 2 in use.
 - [ ] [Wildcard certificate detection](/architecture/discovery/#75-certificate-transparency) into a program flag
 - [ ] Per program CT coverage metric
 
-### Milestone 7
+### Milestone 8
 
 - [ ] A certificate issued for a tracked apex produces an asset in under 30 s
 - [ ] The service absorbs the full CT stream on a single core
@@ -279,10 +288,11 @@ Inseparable from phase 2 in use.
    when it demands something outside its own phase's scope: that is a drafting error in the milestone, not a
    relaxation. The correction is documented.
 2. **No phase ends without its regression test.** The milestones become the integration suite.
-3. **Phases 2 and 2b do not ship separately.** They are numbered that way for implementation order, not for
-   release.
-4. **The interface comes last.** It is the most rewarding thing to build and the most useless without the
-   phases before it.
+3. **Phases 2 and 3 do not ship separately.** They are split for implementation order, not for release: a
+   detector with no enricher cannot tell a dead origin from a live one.
+4. **The interface comes after everything it displays.** It is the most rewarding thing to build and the
+   most useless on an empty inventory. Certificate Transparency is the one phase that follows it, and the
+   reason is in that phase.
 5. **Any structural decision not planned here goes through this document first**, never straight into code.
 6. **Deferring an implementation is not closing a phase.** Reordering the code is free; closing a milestone
    with a red assertion is not.
