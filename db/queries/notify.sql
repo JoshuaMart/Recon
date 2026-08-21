@@ -127,3 +127,37 @@ SELECT count(*) FROM notification_event
 -- name: PurgeSuppressed :execrows
 DELETE FROM notification_event
  WHERE suppressed AND created_at < @before::timestamptz;
+
+-- OnboardingDue finds the programmes whose first run is over and whose flood
+-- has never been summarised.
+--
+-- The summary is emitted when the grace ends, not during. Summarising while the
+-- run is going would produce one summary per batch, each carrying a count
+-- already wrong by the time it is written.
+--
+-- And it is emitted at all, which is the point: an overflow must never produce
+-- the absence of a notification. That is how an anti-flood turns into a loss of
+-- signal, and a first run that says nothing at all is the same failure wearing
+-- a different name.
+--
+-- name: OnboardingDue :many
+WITH held AS (
+    SELECT e.org_id, e.program_id, count(*) AS held
+      FROM notification_event e
+     WHERE e.suppressed
+       AND e.kind = 'new_active'
+       AND NOT EXISTS (
+             SELECT 1 FROM notification_event d
+              WHERE d.program_id = e.program_id AND d.kind = 'digest')
+     GROUP BY e.org_id, e.program_id
+)
+SELECT h.org_id, h.program_id, p.name, p.created_at, h.held,
+       EXISTS (SELECT 1 FROM run r
+                WHERE r.program_id = p.id AND r.kind = 'discovery'
+                  AND r.state = 'completed') AS completed_discovery,
+       EXISTS (SELECT 1 FROM run r
+                WHERE r.program_id = p.id AND r.kind = 'discovery') AS any_discovery,
+       (SELECT count(*) FROM asset a WHERE a.program_id = p.id) AS assets
+  FROM held h
+  JOIN program p ON p.id = h.program_id
+ ORDER BY h.program_id;

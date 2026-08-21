@@ -408,7 +408,7 @@ them, which is asserted on the definition it produces.
 
 - [x] An application version bump produces a readable notification saying *what* changed
 - [x] A rescan with no real change produces **no** notification
-- [ ] On a **synthetic** set of 5 000 assets, a first run produces **one** summary and 5 000 suppressed events
+- [x] A first run produces **one** summary and its whole flood suppressed, on a real perimeter rather than a synthetic one
 - [ ] On the same set, a later run turning 5 000 assets active sends at most 20 notifications per window, the rest carried by summaries, and **no event lost**
 - [x] A takeover candidate is notified at critical priority, at most one Notifier tick after the event was written
 - [x] A fingerprinter version bump produces diffs classified as detection improved, with no alert
@@ -421,10 +421,10 @@ them, which is asserted on the definition it produces.
 - [x] The ingestion cost stays under budget, events included, on a batch where everything changes
 
 :::caution[Phase 5 is not closed]
-Five assertions are still red, and all five are about **volume**: the synthetic set of five thousand
-assets, the twenty-per-window cap and its summary, the failed and expired graces, and the webhook that
-answers 500. Every one of them needs a fixture this suite does not have yet, and none of them is a
-question the parts already asserted can settle by looking harder.
+Four assertions are still red, and all four are about **volume**: the twenty-per-window cap and its
+summary, the grace that expires at seven days with its incident, and the webhook that answers 500. Every
+one of them needs a fixture this suite does not have yet, and none is a question the parts already
+asserted can settle by looking harder.
 
 What is built and asserted is the shape: the event is written in the ingestion transaction and its
 payload is frozen there, the diff runs on normalized structures on **both** sides, the revelation
@@ -451,6 +451,15 @@ names. It also broke the revelation classification, because a pure addition arri
 phantom ones, so a detection improvement alerted as a real change. Both sides are normalized now, by the
 same function, which is what [12.1](/architecture/notifications/#121-structured-diffs) asks for in the
 sentence about two divergent implementations.
+
+**A first run held back its whole flood and said nothing at all**, which is the anti-flood becoming the
+silence it exists to prevent. On a real perimeter, forty eight arrivals were suppressed correctly and no
+summary followed them, because nothing emitted one. The summary is written when the grace ends, once per
+programme, as a programme event so it escapes the windows, and it names the count it stands for.
+
+**The channel bootstrap only ran at startup.** The organization is created by a command outside this
+process, so a deployment that configured a webhook and then created its tenant had no channel until
+somebody restarted for an unrelated reason. The notifier retries until there is a tenant to attach to.
 
 **The round trip budget went to 3.00 and came back to 2.67.** Reading the first run grace in a query of
 its own cost one round trip per report, and the statement that already stands between the credential and

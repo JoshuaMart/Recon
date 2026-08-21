@@ -104,17 +104,19 @@ func run() error {
 	// The pass that provisions enumeration, distinct from the one on due dates.
 	go runs.NewCadence(pool, scheduler, cfg.Verification.SweepInterval, log).Run(ctx)
 
-	// The configured channel becomes the single row that carries it, and only
-	// where exactly one organization exists: a configuration file cannot name a
-	// tenant.
-	if err := notify.Bootstrap(ctx, sqlcgen.New(pool),
-		cfg.Notify.WebhookURL, cfg.Notify.Template, cfg.Notify.MinPriority, log); err != nil {
-		return err
-	}
 	// The only asynchronous half of the alert path. Producing an event is
 	// ingestion's job, in its transaction; this can lag without consequence.
+	//
+	// The configured channel becomes the single row that carries it, and only
+	// where exactly one organization exists: a configuration file cannot name a
+	// tenant. The loop retries that until there is one, because the
+	// organization is created by a command outside this process.
 	notifier := notify.New(pool, notify.NewSender(cfg.Notify.Timeout, nil), cfg.Notify.Batch, log)
-	go notify.NewLoop(notifier, cfg.Notify.Interval, cfg.Notify.UnobservableAlert).Run(ctx)
+	go notify.NewLoop(notifier, cfg.Notify.Interval, cfg.Notify.UnobservableAlert, notify.ConfigChannel{
+		URL:         cfg.Notify.WebhookURL,
+		Template:    cfg.Notify.Template,
+		MinPriority: cfg.Notify.MinPriority,
+	}).Run(ctx)
 
 	// The browser loop, and the one thing here that is optional. A deployment
 	// with no rendering service is a deployment that only probes: the assets

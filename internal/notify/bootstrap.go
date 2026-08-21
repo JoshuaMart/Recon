@@ -23,25 +23,29 @@ import (
 // URL. Without that marker, changing the configured URL and restarting inserts
 // a second active row without disabling the first, and every alert goes out
 // twice, one of them to the destination just replaced.
-func Bootstrap(ctx context.Context, q *sqlcgen.Queries, url, template, minPriority string, log *slog.Logger) error {
+func Bootstrap(ctx context.Context, q *sqlcgen.Queries, url, template, minPriority string, log *slog.Logger) (bool, error) {
 	if url == "" {
 		log.InfoContext(ctx, "no configured notification channel")
-		return nil
+		return true, nil
 	}
 
 	orgs, err := q.OneOrganization(ctx)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("read the organizations: %w", err)
+		return false, fmt.Errorf("read the organizations: %w", err)
 	}
 	switch len(orgs) {
 	case 0:
+		// Not settled. The organization is created by a command that runs
+		// outside this process, so a channel bootstrapped only at startup
+		// would silently not exist until somebody restarted for an unrelated
+		// reason. The notifier retries until there is a tenant to attach to.
 		log.InfoContext(ctx, "no organization yet, the configured channel waits for one")
-		return nil
+		return false, nil
 	case 1:
 	default:
 		log.WarnContext(ctx, "several organizations exist, so the configured channel is not applied",
 			"reason", "a configuration file cannot name a tenant")
-		return nil
+		return true, nil
 	}
 
 	params := sqlcgen.UpsertConfigChannelParams{
@@ -54,10 +58,10 @@ func Bootstrap(ctx context.Context, q *sqlcgen.Queries, url, template, minPriori
 		params.Template = &template
 	}
 	if err := q.UpsertConfigChannel(ctx, params); err != nil {
-		return fmt.Errorf("bootstrap the configured channel: %w", err)
+		return false, fmt.Errorf("bootstrap the configured channel: %w", err)
 	}
 
 	log.InfoContext(ctx, "configured notification channel",
 		"org", uuid.UUID(orgs[0].Bytes), "min_priority", minPriority)
-	return nil
+	return true, nil
 }

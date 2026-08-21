@@ -111,6 +111,80 @@ func (q *Queries) MarkNotified(ctx context.Context, arg MarkNotifiedParams) erro
 	return err
 }
 
+const onboardingDue = `-- name: OnboardingDue :many
+WITH held AS (
+    SELECT e.org_id, e.program_id, count(*) AS held
+      FROM notification_event e
+     WHERE e.suppressed
+       AND e.kind = 'new_active'
+       AND NOT EXISTS (
+             SELECT 1 FROM notification_event d
+              WHERE d.program_id = e.program_id AND d.kind = 'digest')
+     GROUP BY e.org_id, e.program_id
+)
+SELECT h.org_id, h.program_id, p.name, p.created_at, h.held,
+       EXISTS (SELECT 1 FROM run r
+                WHERE r.program_id = p.id AND r.kind = 'discovery'
+                  AND r.state = 'completed') AS completed_discovery,
+       EXISTS (SELECT 1 FROM run r
+                WHERE r.program_id = p.id AND r.kind = 'discovery') AS any_discovery,
+       (SELECT count(*) FROM asset a WHERE a.program_id = p.id) AS assets
+  FROM held h
+  JOIN program p ON p.id = h.program_id
+ ORDER BY h.program_id
+`
+
+type OnboardingDueRow struct {
+	OrgID              pgtype.UUID
+	ProgramID          pgtype.UUID
+	Name               string
+	CreatedAt          pgtype.Timestamptz
+	Held               int64
+	CompletedDiscovery bool
+	AnyDiscovery       bool
+	Assets             int64
+}
+
+// OnboardingDue finds the programmes whose first run is over and whose flood
+// has never been summarised.
+//
+// The summary is emitted when the grace ends, not during. Summarising while the
+// run is going would produce one summary per batch, each carrying a count
+// already wrong by the time it is written.
+//
+// And it is emitted at all, which is the point: an overflow must never produce
+// the absence of a notification. That is how an anti-flood turns into a loss of
+// signal, and a first run that says nothing at all is the same failure wearing
+// a different name.
+func (q *Queries) OnboardingDue(ctx context.Context) ([]OnboardingDueRow, error) {
+	rows, err := q.db.Query(ctx, onboardingDue)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []OnboardingDueRow{}
+	for rows.Next() {
+		var i OnboardingDueRow
+		if err := rows.Scan(
+			&i.OrgID,
+			&i.ProgramID,
+			&i.Name,
+			&i.CreatedAt,
+			&i.Held,
+			&i.CompletedDiscovery,
+			&i.AnyDiscovery,
+			&i.Assets,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const oneOrganization = `-- name: OneOrganization :many
 SELECT id FROM org ORDER BY created_at LIMIT 2
 `
