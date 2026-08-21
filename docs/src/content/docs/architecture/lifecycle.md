@@ -69,6 +69,16 @@ An asset that no probe gets a result on belongs to none of these lines. It is no
   nothing can be said ([8.6](/architecture/verification/#86-reachability-per-observer)).
 - **ARCHIVED**, out of the scheduler. Reactivated manually or on rediscovery.
 
+An archived asset carries no due date, so nothing selects it and the only observation that can reach one
+is an enumeration finding it again. That is what rediscovery means here, and it is why a **success**
+brings it back while a failure does not: an observation that measured nothing must not pull an asset
+into a queue it left. The reading is on the observation and never on the layer's state, for the same
+reason [leaving `unobservable`](#64-qualifying-a-failure) reads the current observation: a layer keeps
+the verdict of its last conclusive measurement, so an asset archived long after a success still carries
+a healthy layer, and reading that column would let a timeout revive it. The other way back is somebody
+entering the asset [by hand](/architecture/scope/#entering-an-asset-by-hand), which is an act rather
+than an observation.
+
 ### Where the transitions live
 
 Transitions are computed **in the ingestion path**, in the same transaction that writes the
@@ -221,6 +231,15 @@ before it is hardened. That is where the freshness advantage actually is.
 
 **Jitter applies to every delay**, including the nominal cadence. Without it, the assets of one
 discovery run come back together on every round for good.
+
+**A curve is written for the cheap rung, and the expensive one has a floor.** Fifteen minutes of
+resolution is one round trip to a resolver pool. The same fifteen minutes of `full` is a hundred
+connections per host plus an HTTP probe, four times an hour, and an asset reaches `FLAPPING` from the
+`tcp` and `http` layers as readily as from `dns`, where the target is answering and the sweep costs
+everything it says. Worse, a failing asset always holds the earliest due date, so it takes the head of
+every batch and starves the inventory of its nominal passes. So the curve is clamped upwards on `full`,
+at a value that is configuration. The floor is on a backoff and never on the schedule: an asset that is
+fine keeps its nominal cadence.
 
 `total_attempts` separates "given up after forty tries" from "never managed to test". The second
 category usually points at a local problem, a resolver or a banned address, not at the target, and it

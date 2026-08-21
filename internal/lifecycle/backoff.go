@@ -80,6 +80,17 @@ type Cadence struct {
 	// thousands of assets one discovery run wrote share a due date and come
 	// back together forever.
 	Jitter time.Duration
+	// FullFloor is how often the expensive rung may run at its fastest.
+	//
+	// A backoff curve is a confirmation rate, and it is written for the cheap
+	// rung: fifteen minutes of resolution costs one round trip to a resolver
+	// pool. The same fifteen minutes on the full rung is a hundred connections
+	// per host plus an HTTP probe, four times an hour, and an asset can reach
+	// the failing state from the tcp or the http layer, where the target is
+	// answering and the sweep costs everything it says on the tin. Worse, a
+	// failing asset always holds the earliest due date, so it takes the head of
+	// every batch and starves the inventory of its nominal passes.
+	FullFloor time.Duration
 }
 
 // DefaultCadence is what a deployment inherits when it says nothing.
@@ -90,6 +101,7 @@ func DefaultCadence() Cadence {
 		Fingerprint: 21 * 24 * time.Hour,
 		Inactive:    7 * 24 * time.Hour,
 		Jitter:      15 * time.Minute,
+		FullFloor:   6 * time.Hour,
 	}
 }
 
@@ -124,18 +136,36 @@ func (c Cadence) Spread(delay time.Duration, r float64) time.Duration {
 // a single success puts the asset back on its normal rhythm rather than
 // walking the curve back down.
 func (c Cadence) Delay(state string, rung string, tier int) time.Duration {
+	var delay time.Duration
 	switch state {
 	case Flapping:
-		return FlappingCurve.At(tier)
+		delay = FlappingCurve.At(tier)
 	case Candidate:
-		return CandidateCurve.At(tier)
+		delay = CandidateCurve.At(tier)
 	case Inactive, Unobservable:
-		return c.Inactive
+		delay = c.Inactive
+	case Archived:
+		return 0
+	default:
+		if rung == RungFull {
+			return c.Full
+		}
+		return c.Resolve
 	}
-	if rung == RungFull {
-		return c.Full
+
+	// The curve accelerates confirmation, and the expensive rung has a floor on
+	// how fast it may be asked to confirm. Without it a curve written for one
+	// round trip to a resolver pool is applied to a hundred connections per
+	// host, and an asset failing on the tcp or http layer, where the target is
+	// answering and the sweep really costs what it says, runs a full pass four
+	// times an hour.
+	//
+	// The nominal cadence is never affected: this is a floor on a backoff, not
+	// on the schedule.
+	if rung == RungFull && delay < c.FullFloor {
+		return c.FullFloor
 	}
-	return c.Resolve
+	return delay
 }
 
 // The rungs of the ladder a due date belongs to. A run's scope decides which

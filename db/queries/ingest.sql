@@ -28,6 +28,12 @@ WITH input AS (
         @seen_at::timestamptz     AS seen_at,
         sqlc.narg(next_resolve_at)::timestamptz AS next_resolve_at,
         sqlc.narg(next_full_at)::timestamptz    AS next_full_at,
+        -- Somebody typed this asset in, which is an act rather than an
+        -- observation. It is the documented way an archived asset comes back
+        -- by hand, and without it the write hands back due dates that every
+        -- selection then filters out on the lifecycle, so the answer claims a
+        -- schedule nothing will ever read.
+        @revive::boolean         AS revive,
         -- Derived in the control plane from the address the run connected to.
         -- They travel with the upsert rather than in a statement of their own:
         -- the enrichment is in hand at the moment the row is written, and a
@@ -122,7 +128,11 @@ projected AS (
         next_full_at    = CASE WHEN EXCLUDED.scope_status = 'in_scope'
                                THEN COALESCE(asset_current.next_full_at, EXCLUDED.next_full_at) END,
         next_fingerprint_at = CASE WHEN EXCLUDED.scope_status = 'in_scope'
-                                   THEN asset_current.next_fingerprint_at END
+                                   THEN asset_current.next_fingerprint_at END,
+        lifecycle = CASE
+            WHEN (SELECT i.revive FROM input i) AND asset_current.lifecycle = 'archived'
+                THEN 'candidate'
+            ELSE asset_current.lifecycle END
     RETURNING asset_id
 )
 -- A left join rather than scalar subqueries, so that the generator can see

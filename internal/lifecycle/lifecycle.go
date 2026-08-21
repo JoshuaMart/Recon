@@ -129,6 +129,23 @@ func Next(prev Counters, outcome string, at time.Time) Counters {
 	return next
 }
 
+// Revived reports whether an archived asset comes back on this observation.
+//
+// It reads the observation and never the layer's state, and that distinction is
+// the whole rule. A layer keeps the state of its last conclusive measurement,
+// so an asset archived months after a success still carries a healthy dns
+// layer: reading the column would let a timeout arriving today revive it, which
+// is the opposite of what happened.
+//
+// An archived asset carries no due date, so the only observation that can reach
+// one is an enumeration finding it again. That is what rediscovery means here,
+// and it is one of the two documented ways back. The other is somebody entering
+// the asset by hand, which is an act rather than an observation and does not go
+// through here.
+func Revived(current, outcome string) bool {
+	return current == Archived && outcome == OutcomeOK
+}
+
 // Decide reads the asset's state off its layers.
 //
 // The most severe layer wins, and that rule is what the CDN case forces. On a
@@ -140,12 +157,6 @@ func Next(prev Counters, outcome string, at time.Time) Counters {
 // The counterpart holds: a success on the failing layer resets its counters, so
 // the asset returns to active in a single probe.
 func Decide(current string, layers ...Counters) string {
-	// Archived is out of the scheduler and comes back by hand or on
-	// rediscovery, never because a stray observation landed.
-	if current == Archived {
-		return Archived
-	}
-
 	worst := ""
 	for _, layer := range layers {
 		if !layer.Measured() {
@@ -163,6 +174,12 @@ func Decide(current string, layers ...Counters) string {
 				worst = LayerHealthy
 			}
 		}
+	}
+
+	// Archived is out of the scheduler and comes back through Revived, which
+	// reads the observation rather than these counters.
+	if current == Archived {
+		return Archived
 	}
 
 	switch worst {

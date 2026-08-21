@@ -545,17 +545,23 @@ WITH input AS (
         $13::timestamptz     AS seen_at,
         $14::timestamptz AS next_resolve_at,
         $15::timestamptz    AS next_full_at,
+        -- Somebody typed this asset in, which is an act rather than an
+        -- observation. It is the documented way an archived asset comes back
+        -- by hand, and without it the write hands back due dates that every
+        -- selection then filters out on the lifecycle, so the answer claims a
+        -- schedule nothing will ever read.
+        $16::boolean         AS revive,
         -- Derived in the control plane from the address the run connected to.
         -- They travel with the upsert rather than in a statement of their own:
         -- the enrichment is in hand at the moment the row is written, and a
         -- second round trip on the hottest write path is the thing the budget
         -- exists to refuse.
-        $16::inet      AS ip,
-        $17::int      AS asn,
-        $18::text AS asn_org,
-        $19::char(2) AS country,
-        $20::text  AS region,
-        $21::text    AS city
+        $17::inet      AS ip,
+        $18::int      AS asn,
+        $19::text AS asn_org,
+        $20::char(2) AS country,
+        $21::text  AS region,
+        $22::text    AS city
 ),
 previous AS (
     SELECT a.id, a.scope_status, a.discovery_source, c.lifecycle, c.backoff_tier,
@@ -639,7 +645,11 @@ projected AS (
         next_full_at    = CASE WHEN EXCLUDED.scope_status = 'in_scope'
                                THEN COALESCE(asset_current.next_full_at, EXCLUDED.next_full_at) END,
         next_fingerprint_at = CASE WHEN EXCLUDED.scope_status = 'in_scope'
-                                   THEN asset_current.next_fingerprint_at END
+                                   THEN asset_current.next_fingerprint_at END,
+        lifecycle = CASE
+            WHEN (SELECT i.revive FROM input i) AND asset_current.lifecycle = 'archived'
+                THEN 'candidate'
+            ELSE asset_current.lifecycle END
     RETURNING asset_id
 )
 SELECT
@@ -675,6 +685,7 @@ type UpsertAssetAndProjectionParams struct {
 	SeenAt          pgtype.Timestamptz
 	NextResolveAt   pgtype.Timestamptz
 	NextFullAt      pgtype.Timestamptz
+	Revive          bool
 	Ip              netip.Addr
 	Asn             *int32
 	AsnOrg          *string
@@ -734,6 +745,7 @@ func (q *Queries) UpsertAssetAndProjection(ctx context.Context, arg UpsertAssetA
 		arg.SeenAt,
 		arg.NextResolveAt,
 		arg.NextFullAt,
+		arg.Revive,
 		arg.Ip,
 		arg.Asn,
 		arg.AsnOrg,

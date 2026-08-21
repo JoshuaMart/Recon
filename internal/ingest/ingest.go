@@ -241,6 +241,20 @@ func (i *Ingestor) edge(host Host) promoted {
 		operator = i.enricher.Lookup(addrs[0]).ASNOrg
 	}
 
+	// A pass that had nothing to look at has no opinion, which is not the same
+	// as an opinion that the asset is not fronted. A resolution that timed out
+	// carries no address, no CNAME and no provider, and writing false from it
+	// would clear the flag and the provider on a fronted asset every time the
+	// name failed to answer.
+	//
+	// A name that resolved is a name this looked at, whatever the enrichment
+	// could add: the scanner's own determination and the terminal CNAME are
+	// both real evidence, and the operator is the third source rather than the
+	// first.
+	if provider == "" && len(host.CNAME) == 0 && len(host.Addresses) == 0 {
+		return promoted{}
+	}
+
 	fronted, name := signals.CDN(provider, host.CNAME, operator)
 	return promoted{IsCDN: &fronted, CDNProvider: text(name)}
 }
@@ -384,11 +398,14 @@ func (i *Ingestor) writeHostObservations(
 		tcp["scan"] = jsonAny(host.Scan)
 	}
 	if err := i.apply(ctx, q, run, report, st, observation{
-		layer:        normalize.LayerTCP,
-		outcome:      outcome,
-		data:         tcp,
-		promoted:     edge,
-		takeoverKind: signals.KindOrphanCNAME,
+		layer:    normalize.LayerTCP,
+		outcome:  outcome,
+		data:     tcp,
+		promoted: edge,
+		// No takeover kind. A finding is cleared only by the layer that could
+		// have produced it, and this one produces none: claiming the orphan
+		// CNAME kind here let a tcp observation delete, in the same report,
+		// the finding the dns observation had just written.
 	}, summary); err != nil {
 		return true, err
 	}
@@ -548,11 +565,14 @@ func tcpOutcome(host Host) string {
 	if host.Scan == nil || !host.Scan.Accounted() {
 		return ""
 	}
-	// The host answers and nothing listens. Three things break it, and each is
-	// a different way of not having tried: a filtered port is
-	// indistinguishable from a banned one and could be hiding a service, and
-	// an unknown one was never measured at all.
-	if host.Scan.Refused > 0 && host.Scan.Filtered == 0 && host.Scan.Unknown == 0 {
+	// The host answers and nothing listens. Four things break it. Three are a
+	// different way of not having tried: a filtered port is indistinguishable
+	// from a banned one and could be hiding a service, and an unknown one was
+	// never measured at all. The fourth is the counts contradicting the port
+	// list, which the walk above already returned on, and which a report this
+	// does not trust must not be able to turn into a death anyway.
+	if host.Scan.Open == 0 && host.Scan.Refused > 0 &&
+		host.Scan.Filtered == 0 && host.Scan.Unknown == 0 {
 		return OutcomeFail
 	}
 	return OutcomeError

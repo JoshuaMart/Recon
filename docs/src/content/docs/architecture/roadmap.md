@@ -177,10 +177,25 @@ place: `degraded` sits **inside** `run` and this read it from the top level of t
 and every test that built a report in Go passed, because the position of a field only exists once a real
 document is decoded. There is now one test that decodes one, and removing the fix fails it.
 
-**Six fixes were checked by removing them**: the lease exclusion, the silence of a truncated run, the
+**Every fix was checked by removing it**: the lease exclusion, the silence of a truncated run, the
 downgrade of a degraded one, the filtered-port guard, the persistence of the backoff tier, and the three
 result threshold on reachability. Each leaves the rest of the suite green and fails only its own
 assertion, which is the whole of what rule 8 asks.
+
+**A review after the milestone found eight defects, all of them real, and two of them silent and total.**
+A discovered host never received a `full` due date, because the list of scopes that move it named the
+ones that sweep and missed the one every discovery run carries, so nothing would ever have swept a
+discovered host's ports a second time: a port opened next week was invisible, which is the single thing
+scanning exists for. And an archived asset could never come back, by hand or on rediscovery, while the
+endpoint answered that it had been scheduled. Both were ticked boxes with a passing suite, and the
+harness hid the first by leaving a run's scope empty.
+
+The other six: one live verification run per programme was a check rather than a fact, so two
+overlapping ticks froze the same hosts; Cloudflare 522 was named in a comment and missing from the guard
+beside it; a `tcp` observation claimed it could clear a takeover finding only `dns` can produce; a
+resolution that timed out cleared the CDN flag on a fronted asset; the backoff curve was applied
+unchanged to the expensive rung; and a sweep reporting open ports could still be read as a host with
+nothing listening.
 
 **Two boxes were ticked before anything asserted them, and writing the assertions found a bug.** The
 backoff tier and the reachability counters were implemented, unit tested where the arithmetic lives, and

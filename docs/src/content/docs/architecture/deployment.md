@@ -75,6 +75,12 @@ excludes assets already listed in a non terminal run, so two runs never scan the
 time, and the reservation expires when the run does. There is no per asset lease column, no lease
 token, no partial restitution and no heartbeat.
 
+**One live run per kind per programme, and the database is what says so.** Selection reads what is held
+and then writes what it takes, and no transaction sees another's uncommitted rows, so two overlapping
+ticks both find nothing in flight and both freeze the same hosts. A partial unique index on
+`(program_id)` for each kind makes the second one lose, which turns the reservation into a fact rather
+than the outcome of a check. The refusal a caller sees is the same either way.
+
 **A run that dies takes nothing with it.** Due dates are moved only when a report is ingested, so an
 abandoned run leaves the inventory exactly as it found it and the next tick selects the same assets
 again. A sweeper marks runs past their deadline `expired`, which frees their targets and makes the

@@ -825,3 +825,149 @@ func (h *harness) expectReach(t *testing.T, key string, streak int, reachable *b
 		t.Fatalf("http_reachable is %v, want %v", *flag, *reachable)
 	}
 }
+
+// A discovery run walks the whole ladder, so a host it found is eligible for a
+// later sweep. Without the full date nothing ever port scans that host again,
+// and a port opened next week is never seen: the one thing scanning is for.
+func TestADiscoveryRunLeavesItsHostsEligibleForASweep(t *testing.T) {
+	h := newHarness(t)
+	set := h.scope(t, include("acme.test"))
+	c := &clock{now: time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)}
+	ing := h.dated(c)
+
+	found := h.run()
+	found.Kind = "discovery"
+	found.Scope = "enum"
+	if _, err := ing.Report(context.Background(), h.queries, found, set, liveHost("new.acme.test")); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+
+	var full *time.Time
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT next_full_at FROM asset_current WHERE program_id = $1 AND key = 'new.acme.test'`,
+		h.program).Scan(&full); err != nil {
+		t.Fatalf("read the full due date: %v", err)
+	}
+	if full == nil {
+		t.Fatal("a discovered host carries no full due date, so nothing will ever sweep its ports again")
+	}
+	if !full.Equal(c.now.Add(72 * time.Hour)) {
+		t.Fatalf("the full date is %s, want %s", full.UTC(), c.now.Add(72*time.Hour))
+	}
+}
+
+// Archived is out of the scheduler, and the design says it comes back by hand
+// or on rediscovery. Neither worked: the projection kept the state, and every
+// selection filters it out, so the API reported a schedule nothing would read.
+func TestAnArchivedAssetComesBack(t *testing.T) {
+	h := newHarness(t)
+	set := h.scope(t, include("acme.test"))
+	c := &clock{now: time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)}
+	ing := h.dated(c)
+
+	h.walk(t, c, ing, set, time.Hour, liveHost("lost.acme.test"))
+	exec(t, h.pool, `UPDATE asset_current SET lifecycle = 'archived',
+	              next_resolve_at = NULL, next_full_at = NULL
+	            WHERE program_id = $1 AND key = 'lost.acme.test'`, h.program)
+
+	// By hand. Somebody typed it in, which is an act rather than an
+	// observation, and the answer must not claim a schedule that is not there.
+	entered, err := ing.Enter(context.Background(), h.queries, h.run(), set, []string{"lost.acme.test"})
+	if err != nil {
+		t.Fatalf("enter: %v", err)
+	}
+	if !entered.Accepted[0].Scheduled {
+		t.Fatal("the answer says the asset was not scheduled")
+	}
+	if state := h.lifecycleOf(t, "lost.acme.test"); state == lifecycle.Archived {
+		t.Fatal("a hand entered asset stayed archived, so no selection will ever return it")
+	}
+
+	// On rediscovery. An archived asset has no due date, so the only thing
+	// that can reach it is an enumeration finding it again, which is exactly
+	// what rediscovery means here.
+	exec(t, h.pool, `UPDATE asset_current SET lifecycle = 'archived',
+	              next_resolve_at = NULL, next_full_at = NULL
+	            WHERE program_id = $1 AND key = 'lost.acme.test'`, h.program)
+
+	h.walk(t, c, ing, set, time.Hour, liveHost("lost.acme.test"))
+	if state := h.lifecycleOf(t, "lost.acme.test"); state != lifecycle.Active {
+		t.Fatalf("a rediscovered host is %q", state)
+	}
+
+	// But a failure is not a rediscovery. An observation that measures nothing
+	// must not pull an asset back into a queue it left.
+	exec(t, h.pool, `UPDATE asset_current SET lifecycle = 'archived' WHERE program_id = $1 AND key = 'lost.acme.test'`, h.program)
+	h.walk(t, c, ing, set, time.Hour, deadHost("lost.acme.test", ingest.ReasonTimeout))
+	if state := h.lifecycleOf(t, "lost.acme.test"); state != lifecycle.Archived {
+		t.Fatalf("a timeout reopened an archived asset as %q", state)
+	}
+}
+
+// A finding is cleared only by the layer that could have produced it, and the
+// tcp layer produces none. Claiming the orphan CNAME kind there let a tcp
+// observation delete, in the same report, the finding the dns observation had
+// just written.
+func TestATCPObservationDoesNotEraseADanglingCNAME(t *testing.T) {
+	h := newHarness(t)
+	set := h.scope(t, include("acme.test"))
+	c := &clock{now: time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)}
+
+	orphan := deadHost("orphan.acme.test", ingest.ReasonNXDomain, "bucket.s3.example.net.")
+	// A sweep that reports counts for a name that does not resolve. The
+	// scanner does not do this today, and a scanner is untrusted by
+	// assumption: a report that could delete a finding by adding a block to it
+	// is a door left open.
+	orphan.Hosts[0].Scan = &ingest.Scan{Scanned: 32, Unknown: 32}
+
+	h.walk(t, c, h.dated(c), set, time.Hour, orphan)
+
+	if !h.hasTakeover(t, "orphan.acme.test") {
+		t.Fatal("the tcp observation erased the finding the dns observation had just written")
+	}
+}
+
+// A pass that had nothing to look at has no opinion, which is not the same as
+// an opinion that the asset is not fronted.
+func TestAResolutionThatFailedDoesNotClearTheEdge(t *testing.T) {
+	h := newHarness(t)
+	set := h.scope(t, include("acme.test"))
+	c := &clock{now: time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)}
+	ing := h.dated(c)
+
+	fronted := liveHost("edge.acme.test")
+	fronted.Hosts[0].CDN = []ingest.CDN{{Name: "cloudflare", Type: "cdn", ScanLimited: true}}
+	h.walk(t, c, ing, set, time.Hour, fronted)
+	h.expectEdge(t, "edge.acme.test", true, "cloudflare")
+
+	// The name stops answering. No address, no CNAME, no provider: nothing
+	// this pass could have looked at.
+	h.walk(t, c, ing, set, time.Hour, deadHost("edge.acme.test", ingest.ReasonTimeout))
+	h.expectEdge(t, "edge.acme.test", true, "cloudflare")
+
+	// A pass that did look and found nothing is a real answer, and it clears
+	// both together: a provider beside a false flag is worse than neither.
+	h.walk(t, c, ing, set, time.Hour, liveHost("edge.acme.test"))
+	h.expectEdge(t, "edge.acme.test", false, "")
+}
+
+func (h *harness) expectEdge(t *testing.T, key string, fronted bool, provider string) {
+	t.Helper()
+
+	var got *bool
+	var name *string
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT is_cdn, cdn_provider FROM asset_current WHERE program_id = $1 AND key = $2`,
+		h.program, key).Scan(&got, &name); err != nil {
+		t.Fatalf("read the edge of %s: %v", key, err)
+	}
+	if got == nil || *got != fronted {
+		t.Fatalf("is_cdn is %v, want %v", got, fronted)
+	}
+	switch {
+	case provider == "" && name != nil:
+		t.Fatalf("cdn_provider is %q beside is_cdn=false", *name)
+	case provider != "" && (name == nil || *name != provider):
+		t.Fatalf("cdn_provider is %v, want %q", name, provider)
+	}
+}

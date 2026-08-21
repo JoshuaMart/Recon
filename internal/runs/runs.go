@@ -20,7 +20,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/JoshuaMart/recon/internal/auth"
@@ -140,6 +142,7 @@ func (s *Scheduler) Cadence() lifecycle.Cadence {
 		Fingerprint: s.cfg.Fingerprint,
 		Inactive:    s.cfg.Inactive,
 		Jitter:      s.cfg.Jitter,
+		FullFloor:   s.cfg.FullFloor,
 	}
 }
 
@@ -296,6 +299,13 @@ func (s *Scheduler) create(
 		params.TargetCount = &count
 	}
 	if err := q.CreateRun(ctx, params); err != nil {
+		// The index is the reservation, and the check above is only the
+		// readable half of it. Two transactions that never saw each other's
+		// rows both reach here, and one of them loses.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == pgerrcode.UniqueViolation {
+			return nil, fmt.Errorf("%w: another run of the same kind was created first", ErrRunInFlight)
+		}
 		return nil, fmt.Errorf("create run: %w", err)
 	}
 

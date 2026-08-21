@@ -156,3 +156,22 @@ func TestTheEdgeIsReadFromWhicheverSourceCanSeeIt(t *testing.T) {
 		})
 	}
 }
+
+// 522 is an origin connection timeout and is the most common of the three in
+// practice. The comment beside the guard named it and the guard did not match
+// it, so a fronted asset whose origin is gone stayed alive forever.
+func TestEveryOriginUnreachableCodeIsADeath(t *testing.T) {
+	t.Parallel()
+
+	for _, status := range []int{521, 522, 523} {
+		v := signals.Read(signals.Response{
+			StatusCode: status, Server: "cloudflare", Fronted: true, Provider: "cloudflare",
+		})
+		if v.Dead == "" {
+			t.Errorf("%d read as a live origin, and on a fronted target it is the only death signal there is", status)
+		}
+		if v.Usable() {
+			t.Errorf("%d counted as a measurement of the service", status)
+		}
+	}
+}

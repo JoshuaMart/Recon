@@ -6,6 +6,7 @@ package runs_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
@@ -349,4 +351,69 @@ func TestDiscoveryIsRecordedWhenItIsProvisioned(t *testing.T) {
 	if len(programs) != 0 {
 		t.Fatalf("%d programmes were due while a discovery run was in flight", len(programs))
 	}
+}
+
+// The in-flight check is a read followed by a write, and a transaction cannot
+// see another's uncommitted rows. Two of them overlapping both pass the check
+// and both freeze the same hosts, which is double scan traffic against
+// somebody's perimeter.
+//
+// The overlap is forced rather than raced: the second transaction takes its
+// snapshot before the first commits and holds it, which is exactly the window
+// the check has and a sleep would only sometimes reproduce. Discovery has
+// carried a partial unique index since the first migration; verification did
+// not, and this is the assertion that says so.
+func TestTwoOverlappingRunsCannotBothBeCreated(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.due(t, "one.acme.test", "two.acme.test")
+
+	first, err := h.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = first.Rollback(ctx) }()
+
+	second, err := h.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = second.Rollback(ctx) }()
+
+	if _, err := h.sched.Verification(ctx, sqlcgen.New(first), h.org, h.program, "resolve"); err != nil {
+		t.Fatalf("the first run: %v", err)
+	}
+
+	// Taken while the first is still uncommitted, and held.
+	if _, err := second.Exec(ctx, `SELECT count(*) FROM run`); err != nil {
+		t.Fatalf("fix the snapshot: %v", err)
+	}
+	if err := first.Commit(ctx); err != nil {
+		t.Fatalf("commit the first: %v", err)
+	}
+
+	// The second still sees a programme with nothing in flight and hosts
+	// nothing holds. Only the write can stop it.
+	_, err = h.sched.Verification(ctx, sqlcgen.New(second), h.org, h.program, "resolve")
+	if err == nil {
+		t.Fatal("two runs were created over the same hosts, and each of them will scan those hosts")
+	}
+	if !errors.Is(err, runs.ErrRunInFlight) {
+		t.Fatalf("the loser reports %v, and a caller has to be able to tell this from a failure", err)
+	}
+
+	if n := h.count(t, `SELECT count(*) FROM run WHERE program_id = $1 AND state IN ('pending','running')`,
+		h.program); n != 1 {
+		t.Fatalf("%d live runs", n)
+	}
+}
+
+func (h *harness) count(t *testing.T, sql string, args ...any) int {
+	t.Helper()
+
+	var n int
+	if err := h.pool.QueryRow(context.Background(), sql, args...).Scan(&n); err != nil {
+		t.Fatalf("count %q: %v", sql, err)
+	}
+	return n
 }

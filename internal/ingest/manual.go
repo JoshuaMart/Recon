@@ -165,6 +165,9 @@ func (i *Ingestor) enterAsset(
 		DiscoveryPath:   path,
 		ScopeStatus:     string(status),
 		SeenAt:          stamp(i.now()),
+		// An act rather than an observation, and the one documented way an
+		// archived asset comes back by hand.
+		Revive: true,
 	}
 	if key.Port != 0 {
 		params.Port = portPtr(key.Port)

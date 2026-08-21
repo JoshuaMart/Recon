@@ -91,6 +91,7 @@ So the presence of a response is not liveness. The **semantics** of the response
 |---|---|
 | Cloudflare error 1016 | origin DNS error, takeover candidate |
 | Cloudflare error 1001 | DNS resolution error |
+| Cloudflare 521, 522 and 523 | origin refused, timed out or unreachable |
 | 404 with `Server: AkamaiGHost` and a reference number | origin dead, edge alive |
 | 403 with a mitigation signature | alive but protected, not dead |
 

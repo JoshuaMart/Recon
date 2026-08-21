@@ -119,12 +119,29 @@ func TestALayerNothingMeasuredHasNoOpinion(t *testing.T) {
 	}
 }
 
-// Archived is out of the scheduler and comes back by hand or on rediscovery,
-// never because a stray observation landed on it.
-func TestArchivedIsNotReopenedByAnObservation(t *testing.T) {
+// Archived is out of the scheduler and comes back on rediscovery. An archived
+// asset carries no due date, so the only observation that can reach one is an
+// enumeration finding it again, which is exactly what rediscovery is here.
+func TestArchivedComesBackOnASuccessAndOnNothingElse(t *testing.T) {
+	if !lifecycle.Revived(lifecycle.Archived, lifecycle.OutcomeOK) {
+		t.Fatal("a success on an archived asset is a rediscovery, and nothing else can ever reach it")
+	}
+
+	// A failure is not a rediscovery. An observation that measured nothing, or
+	// one that measured a death, must not pull an asset back into a queue it
+	// left.
+	for _, outcome := range []string{lifecycle.OutcomeError, lifecycle.OutcomeFail} {
+		if lifecycle.Revived(lifecycle.Archived, outcome) {
+			t.Errorf("%q reopened an archived asset", outcome)
+		}
+	}
+
+	// And the reading is on the observation, never on the counters. A layer
+	// holds the state of its last conclusive measurement, so an archived asset
+	// still carrying a healthy layer would be revived by a timeout.
 	healthy := run(0, lifecycle.OutcomeOK)
 	if state := lifecycle.Decide(lifecycle.Archived, healthy); state != lifecycle.Archived {
-		t.Fatalf("an archived asset was reopened as %q", state)
+		t.Fatalf("a stale healthy layer reopened an archived asset as %q", state)
 	}
 }
 
@@ -172,5 +189,29 @@ func TestACandidateBudgetRunsOut(t *testing.T) {
 	}
 	if !lifecycle.Exhausted(start, start.Add(15*24*time.Hour)) {
 		t.Fatal("a candidate was still being chased at 15 days")
+	}
+}
+
+// A backoff curve is a confirmation rate, and it is written for the cheap rung.
+// Applying it unchanged to the expensive one asks for a hundred connections per
+// host four times an hour, on an asset that can be failing on a layer where the
+// target is answering and the sweep costs everything it says.
+func TestTheExpensiveRungHasAFloorAndTheCheapOneDoesNot(t *testing.T) {
+	cadence := lifecycle.DefaultCadence()
+
+	if got := cadence.Delay(lifecycle.Flapping, lifecycle.RungResolve, 0); got != 15*time.Minute {
+		t.Errorf("the cheap rung waits %s, and the curve asks for 15m", got)
+	}
+	if got := cadence.Delay(lifecycle.Flapping, lifecycle.RungFull, 0); got != cadence.FullFloor {
+		t.Errorf("the expensive rung waits %s, want the floor of %s", got, cadence.FullFloor)
+	}
+	// The floor is on a backoff, never on the schedule: an asset that is fine
+	// keeps its nominal cadence.
+	if got := cadence.Delay(lifecycle.Active, lifecycle.RungFull, 0); got != cadence.Full {
+		t.Errorf("a healthy asset waits %s, want the nominal %s", got, cadence.Full)
+	}
+	// And a rung the curve already puts past the floor is left alone.
+	if got := cadence.Delay(lifecycle.Flapping, lifecycle.RungFull, 3); got != 24*time.Hour {
+		t.Errorf("the last rung became %s", got)
 	}
 }

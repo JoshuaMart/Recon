@@ -80,6 +80,10 @@ type Verification struct {
 	Fingerprint time.Duration `koanf:"fingerprint"`
 	Inactive    time.Duration `koanf:"inactive"`
 	Jitter      time.Duration `koanf:"jitter"`
+	// FullFloor is how often a failing asset's port sweep may run at its
+	// fastest. A backoff curve is written for the cheap rung, and applying it
+	// unchanged to the expensive one turns a confirmation into a flood.
+	FullFloor time.Duration `koanf:"full_floor"`
 	// BatchSize is how many hosts one run freezes. It is what actually bounds
 	// a pass: a due date decides eligibility, and this decides what goes out.
 	BatchSize int `koanf:"batch_size"`
@@ -194,6 +198,7 @@ func Defaults() Config {
 			Fingerprint:   21 * 24 * time.Hour,
 			Inactive:      7 * 24 * time.Hour,
 			Jitter:        15 * time.Minute,
+			FullFloor:     6 * time.Hour,
 			BatchSize:     500,
 			Timeout:       30 * time.Minute,
 			Grace:         10 * time.Minute,
@@ -380,6 +385,7 @@ func (c *Config) Validate(role Role) error {
 			"resolve": c.Verification.Resolve, "full": c.Verification.Full,
 			"fingerprint": c.Verification.Fingerprint, "inactive": c.Verification.Inactive,
 			"timeout": c.Verification.Timeout, "sweep_interval": c.Verification.SweepInterval,
+			"full_floor": c.Verification.FullFloor,
 		} {
 			if value <= 0 {
 				fail("verification.%s must be positive, got %s", name, value)

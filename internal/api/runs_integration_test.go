@@ -137,7 +137,17 @@ func TestATargetListIsServedOnlyToItsOwnRun(t *testing.T) {
 
 	// The signature names one run. Pointing it at another is a refusal rather
 	// than an answer about whether that one exists.
-	other, _ := h.run(t, "verification")
+	//
+	// The other run lives under its own programme, because one live
+	// verification run per programme is now a fact of the schema rather than a
+	// check somebody can forget to make.
+	elsewhereProgram := uuid.New()
+	h.exec(t, `INSERT INTO program (id, org_id, name, authorized_from)
+	           VALUES ($1, $2, 'other', now() - interval '1 day')`, elsewhereProgram, h.org)
+	other := uuid.New()
+	h.exec(t, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline)
+	           VALUES ($1, $2, $3, 'verification', 'full', 'pending', now() + interval '1 hour')`,
+		other, h.org, elsewhereProgram)
 	swapped := strings.Replace(path, runID, other.String(), 1)
 	elsewhere, err := http.Get(h.server.URL + swapped)
 	if err != nil {

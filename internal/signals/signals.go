@@ -73,7 +73,8 @@ func Read(r Response) Verdict {
 
 	// The edge is up, the origin is not answering at all. 521, 522 and 523 are
 	// a refused connection, a timeout and an unreachable origin.
-	case (r.StatusCode == 521 || r.StatusCode == 523) && strings.Contains(server, "cloudflare"):
+	case (r.StatusCode == 521 || r.StatusCode == 522 || r.StatusCode == 523) &&
+		strings.Contains(server, "cloudflare"):
 		v.Dead = "cloudflare_origin_down"
 		v.Vendor = "cloudflare"
 

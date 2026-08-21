@@ -98,7 +98,17 @@ func (s *state) decide(layer normalize.Layer, outcome string, at time.Time) (lif
 	for _, c := range s.layers {
 		all = append(all, c)
 	}
-	s.lifecycle = lifecycle.Decide(s.lifecycle, all...)
+
+	current := s.lifecycle
+	// A rediscovery is a success on an asset nothing was still watching. It is
+	// cleared here rather than inside Decide because Decide sees only the
+	// counters, and a layer holds the state of its last conclusive measurement:
+	// an archived asset still carrying a healthy layer would be revived by a
+	// timeout.
+	if lifecycle.Revived(current, outcome) {
+		current = ""
+	}
+	s.lifecycle = lifecycle.Decide(current, all...)
 	return counters, s.lifecycle
 }
 
@@ -321,6 +331,11 @@ func (i *Ingestor) reschedule(ctx context.Context, q *sqlcgen.Queries, run Run, 
 // movesFull reports whether this run's scope reached the expensive rung. An
 // asset due for full does not need a resolve run, because full runs every rung
 // below it, and the reverse is not true.
-func (r Run) movesFull() bool {
-	return r.Scope == lifecycle.RungFull || r.Scope == "ports" || r.Scope == ""
-}
+//
+// Only a resolve run leaves the full date alone, and the list used to be the
+// other way round: it named the scopes that do sweep and missed the one every
+// discovery run carries. The consequence was silent and total, because a
+// discovered host is created with no full date at all: nothing would ever have
+// swept a discovered host's ports a second time, so a port opened next week was
+// invisible, which is the single thing scanning exists for.
+func (r Run) movesFull() bool { return r.Scope != lifecycle.RungResolve }
