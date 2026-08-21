@@ -162,7 +162,7 @@ func TestADegradedRunCannotConcludeADeath(t *testing.T) {
 	c := &clock{now: time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)}
 
 	gone := deadHost("unsure.acme.test", ingest.ReasonNXDomain)
-	gone.Degraded = []string{ingest.DegradedResolversUnvalidated}
+	gone.Run.Degraded = []string{ingest.DegradedResolversUnvalidated}
 	h.walk(t, c, h.dated(c), set, 12*time.Hour, gone, gone, gone)
 
 	if state := h.lifecycleOf(t, "unsure.acme.test"); state == lifecycle.Inactive {

@@ -20,11 +20,6 @@ type Report struct {
 	Hosts         []Host     `json:"hosts"`
 	Excluded      []Excluded `json:"excluded,omitempty"`
 	Warnings      []string   `json:"warnings,omitempty"`
-	// Degraded names what this run could not guarantee. A run that says it ran
-	// degraded produces no informative failure: a resolver pool that could not
-	// be validated turns every dead host into a live one, or every live host
-	// into a timeout, and those are the two signals a death is read from.
-	Degraded []string `json:"degraded,omitempty"`
 }
 
 // RunInfo is the execution's own metadata.
@@ -44,6 +39,16 @@ type RunInfo struct {
 	TruncatedByTimeout bool      `json:"truncated_by_timeout"`
 	Version            string    `json:"version"`
 	Environment        string    `json:"environment"`
+	// Degraded names what this run could not guarantee. A run that says it ran
+	// degraded produces no informative failure: a resolver pool that could not
+	// be validated turns every dead host into a live one, or every live host
+	// into a timeout, and those are the two signals a death is read from.
+	//
+	// It sits inside the run rather than beside it in the document, which is
+	// where the scanner puts it. That distinction is invisible to a test that
+	// builds this structure in Go and only exists once a real document is
+	// decoded, which is what the round trip test is for.
+	Degraded []string `json:"degraded,omitempty"`
 }
 
 // Source records what one enumeration source contributed. Every source appears
@@ -197,4 +202,4 @@ const (
 // itself. Truncation is the other direction and is already respected by the
 // walk: a host the run did not reach comes back as discovered and produces no
 // observation at all.
-func (r Report) RanDegraded() bool { return len(r.Degraded) > 0 }
+func (r Report) RanDegraded() bool { return len(r.Run.Degraded) > 0 }

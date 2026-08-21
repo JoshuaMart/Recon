@@ -169,12 +169,13 @@ counters, the lifecycle and the promoted columns travel in the statement that wr
 so the transitions cost nothing extra; what the difference buys is the rescheduling of each host and one
 sweep per report for declared URLs.
 
-**The `tcp` layer concludes nothing yet, on purpose.** A report that lists only open ports cannot tell
-"nothing was open" from "nothing was tried", so the code reads the sweep counts when they are there and
-writes no observation when they are not
-([8.1](/architecture/verification/#what-the-port-sweep-can-conclude)). The scanner does not carry them
-today. `dns` and `http` conclude on their own evidence, which is what every assertion above rests on,
-and the day the counts arrive the layer starts speaking without a line changing here.
+**The `tcp` layer speaks.** The sweep counts landed in the scanner at schema 1.1 while this phase was
+being closed, so the layer that was written to stay silent without them now concludes on its own
+evidence ([8.1](/architecture/verification/#what-the-port-sweep-can-conclude)). Nothing changed here to
+make that happen, which was the point of writing it that way, but the transcription was wrong in one
+place: `degraded` sits **inside** `run` and this read it from the top level of the document. It compiled,
+and every test that built a report in Go passed, because the position of a field only exists once a real
+document is decoded. There is now one test that decodes one, and removing the fix fails it.
 
 **Four fixes were checked by removing them**: the lease exclusion, the silence of a truncated run, the
 downgrade of a degraded one, and the filtered-port guard. Each leaves the rest of the suite green and
