@@ -284,6 +284,21 @@ low queue would have been empty and the high queue would have held the whole inv
 obtained, the observation written with its chain and its producer version, no screenshot anywhere in the
 database, and the next render three weeks out.
 
+**Six boxes were ticked before anything asserted them**, and the habit from phase 2 held: the five
+triggers had one tested out of five, the regime cadences were asserted on the arithmetic and never
+through the database, and the mass tip alert existed with nothing reading it. Writing those assertions
+found no new bug, which is a result rather than an anticlimax: it is the first time in this project that
+the audit came back empty, and it only means something because the previous two did not.
+
+**One of those checks proved nothing the first time.** Reverting the port filter left the package
+failing to compile, and the pattern matching the test output hid the build error, so the run looked
+green. A revert that does not compile asserts nothing at all, and the fix is to read the whole output
+rather than the lines a filter expects.
+
+**The unobservable census is throttled**, at five minutes rather than at the pass. It groups over the
+whole projection and the number it produces only moves when observations do, so taking it on every tick
+would buy nothing for a full scan a minute.
+
 **The local topology cannot express "calls but is not called by".** Joining the control plane to the
 scan network would let the browser side resolve `postgres` and `controlplane` by name, so the call goes
 out through the host gateway instead, which is the path the isolation script already names rather than

@@ -311,3 +311,104 @@ func (h *harness) expectRenderReach(t *testing.T, key string, streak int, reacha
 		t.Fatalf("fingerprint_reachable is %v, want %v", flag, *reachable)
 	}
 }
+
+// A certain failure is not a measurement. Chrome answers ERR_UNSAFE_PORT on its
+// own restricted list, so pointing a browser at one of those ports is known to
+// fail before the call, and it would push an SSH service toward a state that
+// qualifies what is unknown rather than what is not the web.
+func TestAPortABrowserRefusesEarnsNoBaseline(t *testing.T) {
+	h := newHarness(t)
+	set := h.scope(t, include("acme.test"))
+	c := &clock{now: time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)}
+
+	report := liveHost("box.acme.test",
+		ingest.Port{Port: 22, Protocol: "tcp", State: "open"},
+		ingest.Port{Port: 8090, Protocol: "tcp", State: "open"},
+	)
+	h.walk(t, c, h.dated(c), set, time.Hour, report)
+
+	if due := h.renderDueOf(t, "box.acme.test:22/tcp"); due != nil {
+		t.Fatalf("port 22 is queued for a browser at %s", due)
+	}
+	// And the ordinary case is not filtered out with it. A forgotten
+	// application on an unusual port is the reason this platform exists, so a
+	// hand written list of "non web" ports would be the mistake.
+	if due := h.renderDueOf(t, "box.acme.test:8090/tcp"); due == nil {
+		t.Fatal("port 8090 earned no baseline, and it is exactly what a scan is for")
+	}
+}
+
+// Trigger 2: a change the HTTP layer detected buys a render, and only where
+// that layer is still the detector.
+func TestAChangeBuysARenderOnlyWhileTheProbeIsTheDetector(t *testing.T) {
+	h := newHarness(t)
+	set := h.scope(t, include("acme.test"))
+	c := &clock{now: time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)}
+	ing := h.dated(c)
+
+	// A first contact is not a change. It has its own trigger, its own filter
+	// and its own queue, and promoting it here would put every service of a
+	// fresh perimeter into the queue that exists to stay short.
+	h.answering(t, c, ing, set, 200, "App", "nginx")
+	if priority := h.renderPriorityOf(t, service); priority != lifecycle.PriorityBaseline {
+		t.Fatalf("a first contact entered at priority %d", priority)
+	}
+
+	// The page changed. That is worth a browser.
+	h.answering(t, c, ing, set, 200, "App v2", "nginx")
+	if priority := h.renderPriorityOf(t, service); priority != lifecycle.PriorityChange {
+		t.Fatalf("a detected change entered at priority %d", priority)
+	}
+
+	// Now the raw client stops getting through. Its diff no longer buys a
+	// render: the probe keeps running for reachability and for TLS, but what it
+	// sees of a target refusing it is not a change worth paying a browser for.
+	exec(t, h.pool, `UPDATE asset_current SET http_reachable = false,
+	        fingerprint_priority = $1 WHERE program_id = $2 AND key = $3`,
+		lifecycle.PriorityBaseline, h.program, service)
+
+	h.answering(t, c, ing, set, 403, "Just a moment...", "cloudflare")
+	if priority := h.renderPriorityOf(t, service); priority != lifecycle.PriorityBaseline {
+		t.Fatalf("a diff from a blocked probe entered at priority %d", priority)
+	}
+}
+
+func (h *harness) renderPriorityOf(t *testing.T, key string) int16 {
+	t.Helper()
+
+	var priority int16
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT fingerprint_priority FROM asset_current WHERE program_id = $1 AND key = $2`,
+		h.program, key).Scan(&priority); err != nil {
+		t.Fatalf("read the render priority of %s: %v", key, err)
+	}
+	return priority
+}
+
+// When the raw client is the one being turned away, the renderer is the only
+// detector left and has to run at a detector's rate rather than at a
+// three weekly one.
+func TestTheSoleDetectorRendersAtItsOwnRate(t *testing.T) {
+	h := newHarness(t)
+	set := h.scope(t, include("acme.test"))
+	c := &clock{now: time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)}
+	ing := h.dated(c)
+
+	for range lifecycle.ReachThreshold {
+		h.answering(t, c, ing, set, 403, "Just a moment...", "cloudflare")
+	}
+	for range lifecycle.ReachThreshold {
+		if _, err := ing.Render(context.Background(), h.queries, h.target(t), page(200, "Dashboard", "cloudflare")); err != nil {
+			t.Fatalf("render: %v", err)
+		}
+	}
+
+	cadence := lifecycle.DefaultCadence()
+	due := h.renderDueOf(t, service)
+	if due == nil {
+		t.Fatal("the service has no next render")
+	}
+	if want := c.now.Add(cadence.RenderSole); !due.Equal(want) {
+		t.Fatalf("the next render is at %s, want %s: the renderer is the only detector left", due.UTC(), want)
+	}
+}

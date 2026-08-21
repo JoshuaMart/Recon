@@ -29,6 +29,11 @@ import (
 // the same ordering that put it there.
 const maxRefusals = 3
 
+// censusInterval is how often the unobservable count is taken. The number moves
+// only when observations do, and the query groups over the whole projection, so
+// taking it on every tick would buy nothing for a full scan a minute.
+const censusInterval = 5 * time.Minute
+
 // Pass renders what is due.
 type Pass struct {
 	pool     *pgxpool.Pool
@@ -47,9 +52,15 @@ type Pass struct {
 	// the pass stops: the due dates were never moved, so everything it did not
 	// reach is still due on the next tick.
 	maxWait time.Duration
-	sleep   func(context.Context, time.Duration) bool
-	now     func() time.Time
-	log     *slog.Logger
+	// lastCensus throttles the unobservable count. It groups over the whole
+	// projection, so running it on every tick would put a full scan of the
+	// inventory on a loop that runs every minute for a number that moves when
+	// observations do.
+	censusMu   sync.Mutex
+	lastCensus time.Time
+	sleep      func(context.Context, time.Duration) bool
+	now        func() time.Time
+	log        *slog.Logger
 }
 
 // Options configure a pass.
@@ -310,6 +321,15 @@ func (p *Pass) write(ctx context.Context, row sqlcgen.SelectDueRendersRow, targe
 // challenges. Until the notification path exists this is a log at error level,
 // which is the ops signal; phase 5 turns it into an event.
 func (p *Pass) alertUnobservable(ctx context.Context, queries *sqlcgen.Queries) {
+	p.censusMu.Lock()
+	now := p.now()
+	if !p.lastCensus.IsZero() && now.Sub(p.lastCensus) < censusInterval {
+		p.censusMu.Unlock()
+		return
+	}
+	p.lastCensus = now
+	p.censusMu.Unlock()
+
 	rows, err := queries.CountUnobservable(ctx)
 	if err != nil {
 		p.log.ErrorContext(ctx, "unobservable census failed", "error", err)

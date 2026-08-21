@@ -112,6 +112,9 @@ func newHarness(t *testing.T) *harness {
 	programs := api.NewPrograms(pool, h.sched, ingestor, quiet)
 	mux.Handle("POST /programs/{program}/runs", guard.Require(auth.ActionManageJobs, programs.StartRun))
 	mux.Handle("POST /programs/{program}/assets", guard.Require(auth.ActionManageScope, programs.EnterAssets))
+	renders := api.NewRenders(pool, 72*time.Hour, quiet)
+	mux.Handle("POST /assets/{asset}/render", guard.Require(auth.ActionManageJobs, renders.Request))
+	mux.Handle("POST /renders/replan", guard.Require(auth.ActionManageJobs, renders.Replan))
 
 	h.server = httptest.NewServer(mux)
 	t.Cleanup(h.server.Close)

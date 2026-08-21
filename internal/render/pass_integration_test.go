@@ -12,6 +12,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strconv"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -288,4 +291,100 @@ func writeRender(w http.ResponseWriter, url string) {
 			Headers: map[string]string{"Server": "nginx"},
 		}},
 	})
+}
+
+// A mass tip into unobservable is a different event from one asset going quiet,
+// and it usually says something about the observer rather than about the
+// targets: an address that got banned, an egress that broke, a renderer that
+// stopped clearing challenges. Swallowed by a per asset view it is invisible
+// exactly when it matters.
+func TestAProgrammeTippingWholesaleIsAnAlert(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	// One asset to make the pass do something, and nine to be counted.
+	h.service(t, "app.acme.test:443/tcp", 443, lifecycle.PriorityBaseline, time.Now().Add(-time.Hour))
+	for port := 8000; port < 8009; port++ {
+		h.service(t, key(port), port, lifecycle.PriorityBaseline, time.Now().Add(24*time.Hour))
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			URL string `json:"url"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		writeRender(w, body.URL)
+	}))
+	defer server.Close()
+
+	records := &recorder{}
+	build := func() *render.Pass {
+		return render.New(h.pool,
+			fingerprint.New(server.URL, 5*time.Second, permissive()),
+			ingest.New(nil, lifecycle.DefaultCadence(), quiet()),
+			render.NewBudget(30, nil),
+			render.Options{Batch: 10, Concurrency: 1, UnobservableAlert: 0.2},
+			slog.New(records))
+	}
+
+	// One in ten is below the threshold. A single asset nobody can reach is an
+	// asset, not an incident.
+	h.exec(t, `UPDATE asset_current SET lifecycle = 'unobservable' WHERE key = $1`, key(8000))
+	if _, err := build().Once(ctx); err != nil {
+		t.Fatalf("pass: %v", err)
+	}
+	if records.alerted() {
+		t.Fatal("one asset in ten raised the alert that exists for a programme tipping")
+	}
+
+	// Three in ten is not.
+	h.exec(t, `UPDATE asset_current SET lifecycle = 'unobservable' WHERE key = ANY($1)`,
+		[]string{key(8001), key(8002)})
+	// A fresh pass, because the census is throttled inside one.
+	records.reset()
+	h.exec(t, `UPDATE asset_current SET next_fingerprint_at = now() - interval '1 hour'
+	           WHERE key = 'app.acme.test:443/tcp'`)
+	if _, err := build().Once(ctx); err != nil {
+		t.Fatalf("pass: %v", err)
+	}
+	if !records.alerted() {
+		t.Fatal("a programme with three assets in ten unobservable raised nothing")
+	}
+}
+
+func key(port int) string { return "app.acme.test:" + strconv.Itoa(port) + "/tcp" }
+
+// recorder keeps what was logged, so an alert can be asserted rather than read.
+type recorder struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (r *recorder) Enabled(context.Context, slog.Level) bool { return true }
+
+func (r *recorder) Handle(_ context.Context, record slog.Record) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.records = append(r.records, record)
+	return nil
+}
+
+func (r *recorder) WithAttrs([]slog.Attr) slog.Handler { return r }
+func (r *recorder) WithGroup(string) slog.Handler      { return r }
+
+func (r *recorder) reset() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.records = nil
+}
+
+func (r *recorder) alerted() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, record := range r.records {
+		if record.Level >= slog.LevelError && strings.Contains(record.Message, "unobservable") {
+			return true
+		}
+	}
+	return false
 }
