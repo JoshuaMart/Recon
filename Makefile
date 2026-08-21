@@ -38,7 +38,7 @@ test-integration: ## Tests that need a container
 check: lint test ## What a pull request has to pass
 
 .PHONY: up
-up: .env ## Start the local stack
+up: .env no-stray-env ## Start the local stack
 	$(COMPOSE) up -d --build
 
 .PHONY: down
@@ -73,3 +73,18 @@ hooks: ## Install the git hooks, which is what makes the secret scan local
 	@echo "No .env. Copy .env.example, fill in the passwords, and run again:"
 	@echo "  cp .env.example .env"
 	@exit 1
+
+# There is one environment file and it lives at the root, because that is what
+# --env-file above names. Docker compose also reads a .env sitting beside the
+# compose file, and it wins when compose is invoked from that directory, so a
+# copy left there is a second configuration that shadows this one on some
+# invocations and not others. That is not a tidiness rule: it costs an
+# afternoon, because both files work and they disagree.
+.PHONY: no-stray-env
+no-stray-env:
+	@if [ -f deploy/compose/.env ]; then \
+		echo "deploy/compose/.env shadows the root .env whenever compose runs from that"; \
+		echo "directory, and the two will disagree. There is one env file, at the root."; \
+		echo "  rm deploy/compose/.env"; \
+		exit 1; \
+	fi
