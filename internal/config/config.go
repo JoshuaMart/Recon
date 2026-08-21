@@ -45,6 +45,14 @@ const (
 // the first run it tries to authenticate.
 const MinSigningKeyLength = 32
 
+// Runners a deployment can start runs with.
+const (
+	// RunnerNone renders the definition and starts nothing.
+	RunnerNone = "none"
+	// RunnerScaleway starts a serverless job definition.
+	RunnerScaleway = "scaleway"
+)
+
 // Environments the configuration accepts. Several options are refused outside
 // dev, so an unknown value must fail rather than default to the permissive
 // side.
@@ -66,6 +74,36 @@ type Config struct {
 	Maintenance  Maintenance  `koanf:"maintenance"`
 	Verification Verification `koanf:"verification"`
 	Render       Render       `koanf:"render"`
+	Runner       Runner       `koanf:"runner"`
+}
+
+// Runner is how a run definition is actually started.
+//
+// The control plane starts, it never updates. The call that modifies a
+// definition replaces its whole environment map rather than merging into it, so
+// a control plane that wrote its overrides that way would wipe the source API
+// keys the definition carries, and nothing would fail: the next run would
+// simply query fewer sources and find less. Only the start call is made here,
+// and it takes its overrides per run.
+type Runner struct {
+	// Provider is "none" or "scaleway". None renders the definition and starts
+	// nothing, which is the development shape: a person runs the image with
+	// what the console shows. It is the same shape as production minus the
+	// call, which is what keeps the local path from becoming a second way of
+	// starting a run.
+	Provider string `koanf:"provider"`
+	Region   string `koanf:"region"`
+	// JobID is the definition to start. It is deployed once, out of band, and
+	// this names it.
+	JobID string `koanf:"job_id"`
+	// SecretKey is the only credential, and it is scoped to starting this
+	// definition and to nothing else on the account. It sits in the process
+	// that already holds the inventory, so how narrow it is is the only thing
+	// bounding the damage of that process being compromised.
+	SecretKey string `koanf:"secret_key"`
+	// Endpoint is the API base, so a test does not call a cloud.
+	Endpoint string        `koanf:"endpoint"`
+	Timeout  time.Duration `koanf:"timeout"`
 }
 
 // Render is the browser side of verification.
@@ -234,6 +272,12 @@ func Defaults() Config {
 			ConnectTimeout: 5 * time.Second,
 		},
 		Maintenance: Maintenance{Interval: time.Hour},
+		Runner: Runner{
+			Provider: RunnerNone,
+			Region:   "fr-par",
+			Endpoint: "https://api.scaleway.com",
+			Timeout:  30 * time.Second,
+		},
 		Render: Render{
 			Timeout:           2 * time.Minute,
 			Interval:          time.Minute,
@@ -478,6 +522,32 @@ func (c *Config) Validate(role Role) error {
 		if c.Render.UnobservableAlert <= 0 || c.Render.UnobservableAlert > 1 {
 			fail("render.unobservable_alert must be a share in (0, 1], got %v", c.Render.UnobservableAlert)
 		}
+		switch c.Runner.Provider {
+		case RunnerNone:
+		case RunnerScaleway:
+			// Each of these is a way for a run to be started against nothing,
+			// and the failure would arrive as a scanner that never appears
+			// rather than as a missing setting.
+			if c.Runner.Region == "" {
+				fail("runner.region is required with the %s runner", RunnerScaleway)
+			}
+			if c.Runner.JobID == "" {
+				fail("runner.job_id is required with the %s runner: the definition is deployed "+
+					"out of band and this names it", RunnerScaleway)
+			}
+			if c.Runner.SecretKey == "" {
+				fail("runner.secret_key is required with the %s runner", RunnerScaleway)
+			}
+			if c.Runner.Endpoint == "" {
+				fail("runner.endpoint is required with the %s runner", RunnerScaleway)
+			}
+			if c.Runner.Timeout <= 0 {
+				fail("runner.timeout must be positive, got %s", c.Runner.Timeout)
+			}
+		default:
+			fail("runner.provider must be %s or %s, got %q", RunnerNone, RunnerScaleway, c.Runner.Provider)
+		}
+
 		// A run reaches this control plane from somewhere else entirely, so
 		// this cannot be derived from the listen address. Without it a run
 		// definition names nowhere, and the failure would surface as a scanner

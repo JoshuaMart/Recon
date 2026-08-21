@@ -194,10 +194,20 @@ services:
       # than as a missing setting.
       RECON_VERIFICATION__PUBLIC_URL: ${PUBLIC_URL:-http://controlplane:8080}
       RECON_RENDER__URL: ${RENDER_URL:-http://host.docker.internal:3001}
+      # How a run is started. Empty is the development shape: the definition is
+      # rendered and a person runs the image with it.
+      RECON_RUNNER__PROVIDER: ${RUNNER_PROVIDER:-none}
+      RECON_RUNNER__REGION: ${RUNNER_REGION:-fr-par}
+      RECON_RUNNER__JOB_ID: ${RUNNER_JOB_ID:-}
+      RECON_RUNNER__SECRET_KEY: ${RUNNER_SECRET_KEY:-}
     volumes:
       - ${GEOIP_DIR:-../../var/geoip}:/geoip:ro
     ports:
-      - "127.0.0.1:${CONTROLPLANE_PORT:-8080}:8080"
+      # Loopback by default. A deployment whose scanner runs off-host has to
+      # bind this wider, and that is a decision rather than a setting: the
+      # report and target-list credentials are bearer tokens, so on plain HTTP
+      # they travel in the clear for the life of the run they name.
+      - "${CONTROLPLANE_BIND:-127.0.0.1}:${CONTROLPLANE_PORT:-8080}:8080"
     depends_on:
       db-app-role:
         condition: service_completed_successfully
