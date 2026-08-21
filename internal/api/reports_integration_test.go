@@ -204,13 +204,73 @@ func TestATruncatedRunSaysSoRatherThanFailing(t *testing.T) {
 		t.Error("a truncated report wrote nothing")
 	}
 
+	// It delivered, so it is not failed: a scheduler reading "failed" would
+	// re-run work whose results it already holds. What it said about its own
+	// completeness is in the summary, where it stays legible.
 	var state string
+	var summary map[string]any
 	if err := h.pool.QueryRow(context.Background(),
-		`SELECT state FROM run WHERE id = $1`, runID).Scan(&state); err != nil {
+		`SELECT state, summary FROM run WHERE id = $1`, runID).Scan(&state, &summary); err != nil {
 		t.Fatalf("read run: %v", err)
 	}
-	if state == "completed" {
-		t.Error("a run that reported itself incomplete was closed as completed")
+	if state == "failed" {
+		t.Error("a run that delivered a truncated report was closed as failed")
+	}
+	if summary["completed"] != false {
+		t.Errorf("summary completed = %v, want false: a run that delivered nine hundred "+
+			"hosts before its deadline has to stay distinguishable from one that crashed "+
+			"on the first", summary["completed"])
+	}
+}
+
+// A major version this does not know has to be refused. The report type is
+// transcribed rather than shared so the scanner can evolve, and that only holds
+// if a document reusing field names under new meanings is a 400 rather than
+// wrong inventory written in silence.
+func TestAnUnknownReportSchemaIsRefused(t *testing.T) {
+	h := newHarness(t)
+	_, token := h.run(t, "discovery")
+
+	future := report("api.target.test", true)
+	future.SchemaVersion = "2.0"
+
+	if resp := h.post(t, token, future); resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status %d, want 400", resp.StatusCode)
+	}
+	if n := h.count(t, `SELECT count(*) FROM asset`); n != 0 {
+		t.Errorf("%d assets were written under the wrong schema", n)
+	}
+
+	// A minor bump adds fields, which the unknown-field counter handles.
+	minor := report("api.target.test", true)
+	minor.SchemaVersion = "1.7"
+	if resp := h.post(t, token, minor); resp.StatusCode != http.StatusOK {
+		t.Errorf("a minor bump: status %d, want 200", resp.StatusCode)
+	}
+}
+
+// The data is still valid: the run may have been re-dispatched, and
+// deduplication merges the two. Refusing it would throw away work that was
+// actually done.
+func TestALateReportIsAcceptedAndMarked(t *testing.T) {
+	h := newHarness(t)
+	runID, token := h.run(t, "discovery")
+	h.exec(t, `UPDATE run SET deadline = now() - interval '1 hour' WHERE id = $1`, runID)
+
+	if resp := h.post(t, token, report("api.target.test", true)); resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d, want 200", resp.StatusCode)
+	}
+	if n := h.count(t, `SELECT count(*) FROM asset`); n == 0 {
+		t.Error("a late report wrote nothing, and the work it describes was really done")
+	}
+
+	var summary map[string]any
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT summary FROM run WHERE id = $1`, runID).Scan(&summary); err != nil {
+		t.Fatalf("read run: %v", err)
+	}
+	if summary["Late"] != true {
+		t.Errorf("the report was not marked late: %v", summary)
 	}
 }
 

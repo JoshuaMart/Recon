@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/netip"
 	"time"
 
@@ -62,8 +63,12 @@ type Summary struct {
 	Deduplicated int
 	Rejected     int
 	Skipped      int
-	Derived      int
-	Unknown      map[string]int
+	// Late marks a report that arrived after its run's deadline. The data is
+	// still valid, so it is recorded rather than refused: the run may simply
+	// have been re-dispatched, and deduplication merges the two.
+	Late    bool
+	Derived int
+	Unknown map[string]int
 }
 
 // Ingestor writes reports into the inventory.
@@ -111,11 +116,14 @@ func (i *Ingestor) Report(ctx context.Context, q *sqlcgen.Queries, run Run, set 
 			}
 		}
 
-		assetID, err := i.writeAsset(ctx, q, run, set, key, host, nil)
+		assetID, created, err := i.writeAsset(ctx, q, run, set, key, host, nil)
 		if err != nil {
 			return summary, err
 		}
 		summary.Assets++
+		if created {
+			summary.Created++
+		}
 
 		if err := i.writeHostObservations(ctx, q, run, report, assetID, host, &summary); err != nil {
 			return summary, err
@@ -140,13 +148,13 @@ func hostKey(raw string) (normalize.Key, error) {
 func (i *Ingestor) writeAsset(
 	ctx context.Context, q *sqlcgen.Queries, run Run, set *scope.Set,
 	key normalize.Key, host Host, parent *uuid.UUID,
-) (uuid.UUID, error) {
+) (uuid.UUID, bool, error) {
 	target := scope.Target{Key: key, Addresses: addresses(host.Addresses)}
 	status := set.Classify(target)
 
 	path, err := lineage(run, host)
 	if err != nil {
-		return uuid.Nil, err
+		return uuid.Nil, false, err
 	}
 
 	params := sqlcgen.UpsertAssetAndProjectionParams{
@@ -161,7 +169,7 @@ func (i *Ingestor) writeAsset(
 		SeenAt:          stamp(i.now()),
 	}
 	if key.Port != 0 {
-		params.Port = int32Ptr(key.Port)
+		params.Port = portPtr(key.Port)
 	}
 	if key.Scheme != "" {
 		params.Scheme = text(key.Scheme)
@@ -181,9 +189,9 @@ func (i *Ingestor) writeAsset(
 
 	row, err := q.UpsertAssetAndProjection(ctx, params)
 	if err != nil {
-		return uuid.Nil, fmt.Errorf("upsert asset %s: %w", key.Value, err)
+		return uuid.Nil, false, fmt.Errorf("upsert asset %s: %w", key.Value, err)
 	}
-	return uuid.UUID(row.AssetID.Bytes), nil
+	return uuid.UUID(row.AssetID.Bytes), row.Created, nil
 }
 
 // enrichInto turns the address a run connected to into an operator and a place.
@@ -205,7 +213,7 @@ func (i *Ingestor) enrichInto(params *sqlcgen.UpsertAssetAndProjectionParams, ad
 		return
 	}
 	if found.ASN != 0 {
-		params.Asn = int32Ptr(found.ASN)
+		params.Asn = asnPtr(found.ASN)
 	}
 	params.AsnOrg = text(found.ASNOrg)
 	params.Country = text(found.Country)
@@ -285,12 +293,15 @@ func (i *Ingestor) writeServices(
 			continue
 		}
 
-		serviceID, err := i.writeAsset(ctx, q, run, set, key, host, &hostID)
+		serviceID, created, err := i.writeAsset(ctx, q, run, set, key, host, &hostID)
 		if err != nil {
 			return err
 		}
 		summary.Assets++
 		summary.Derived++
+		if created {
+			summary.Created++
+		}
 
 		tcp := map[string]any{"open_ports": []any{float64(port.Port)}}
 		if len(port.Addresses) > 0 {
@@ -485,11 +496,28 @@ func text(s string) *string {
 	return &s
 }
 
-// int32Ptr narrows a port, which the caller has already bounded to 1..65535.
-// The check is here anyway: a conversion that silently wraps is the kind of
-// thing that turns a port into a negative number nobody can search for.
-func int32Ptr(n int) *int32 {
-	if n < 0 || n > 65535 {
+// portPtr narrows a port, which the caller has already bounded. The check is
+// here anyway: a conversion that silently wraps turns a port into a negative
+// number nobody can search for.
+func portPtr(n int) *int32 {
+	if n < 1 || n > 65535 {
+		return nil
+	}
+	v := int32(n)
+	return &v
+}
+
+// asnPtr narrows an operator number, and it is deliberately not the function
+// above.
+//
+// Reusing the port helper here dropped every four-byte ASN in silence: AS396982
+// is Google Cloud, AS132203 is Tencent, and most numbers allocated in the last
+// decade are above 65535. The organization and the country were written while
+// the number was left null, so every filter on an operator missed exactly the
+// assets hosted on the newer ranges. Nothing caught it because the fixtures
+// used AS15169 and AS13335.
+func asnPtr(n int) *int32 {
+	if n <= 0 || n > math.MaxInt32 {
 		return nil
 	}
 	v := int32(n)

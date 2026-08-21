@@ -46,15 +46,3 @@ func TestAPathThatIsSetAndUnreadableIsAnError(t *testing.T) {
 		t.Error("a file that is not a MaxMind database was accepted")
 	}
 }
-
-// Every lookup on an internal target would otherwise be a miss paid for.
-func TestAPrivateAddressIsNotLookedUp(t *testing.T) {
-	t.Parallel()
-
-	e := enrich.Nothing()
-	for _, raw := range []string{"10.1.2.3", "127.0.0.1", "169.254.169.254", "192.168.1.1"} {
-		if got := e.Lookup(netip.MustParseAddr(raw)); !got.Empty() {
-			t.Errorf("%s = %+v, want nothing", raw, got)
-		}
-	}
-}

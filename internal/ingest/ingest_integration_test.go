@@ -503,3 +503,114 @@ func (fixedEnricher) Close() error     { return nil }
 func (fixedEnricher) Lookup(netip.Addr) enrich.Result {
 	return enrich.Result{ASN: 15133, ASNOrg: "Example Networks", Country: "FR", City: "Paris"}
 }
+
+// A four byte ASN is not a port. AS396982 is Google Cloud, AS132203 is Tencent,
+// and most numbers allocated in the last decade are above 65535. Reusing the
+// port helper here wrote the organization and the country while leaving the
+// number null, so every filter on an operator missed exactly the assets hosted
+// on the newer ranges, and the fixtures did not catch it because they all used
+// numbers below the bound.
+func TestAFourByteOperatorNumberSurvives(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	set := h.scope(t, include("target.test"))
+
+	h.ing = ingest.New(bigASNEnricher{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := h.ing.Report(ctx, h.queries, h.run(), set, oneHost("api.target.test")); err != nil {
+		t.Fatalf("report: %v", err)
+	}
+
+	var asn *int32
+	if err := h.pool.QueryRow(ctx,
+		`SELECT asn FROM asset_current WHERE key = 'api.target.test'`).Scan(&asn); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if asn == nil {
+		t.Fatal("a four byte ASN was dropped, and the column holds up to 2147483647")
+	}
+	if *asn != 396982 {
+		t.Errorf("asn = %d, want 396982", *asn)
+	}
+}
+
+type bigASNEnricher struct{}
+
+func (bigASNEnricher) Configured() bool { return true }
+func (bigASNEnricher) Close() error     { return nil }
+func (bigASNEnricher) Lookup(netip.Addr) enrich.Result {
+	return enrich.Result{ASN: 396982, ASNOrg: "Google Cloud", Country: "US"}
+}
+
+// A CIDR rule can only match a name through what it resolved to, so a walk
+// without an address re-evaluates every asset a CIDR exclusion decided as
+// though it had none: it falls through to the apex include, comes back in
+// scope, and gets its due dates re-armed. That is a scan outside the
+// authorization, produced by the pass that exists to prevent one.
+func TestACIDRExclusionSurvivesAReclassification(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	rules := []scope.Rule{
+		include("target.test"),
+		exclude(scope.MatchCIDR, "93.184.216.0/24"),
+	}
+	set, err := scope.Compile(rules)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	// The report's address is inside the excluded range.
+	if _, err := h.ing.Report(ctx, h.queries, h.run(), set, oneHost("api.target.test")); err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	if n := h.count(t, `SELECT count(*) FROM asset WHERE scope_status = 'out_of_scope'`); n == 0 {
+		t.Fatal("the CIDR exclusion did not apply at ingestion, so the walk below proves nothing")
+	}
+
+	// Any unrelated rule edit runs the whole pass.
+	edited, err := scope.Compile(append(rules, exclude(scope.MatchFQDN, "unrelated.target.test")))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	due := time.Now()
+	if _, err := h.ing.Reclassify(ctx, h.queries, h.program, edited, ingest.Schedule{Resolve: &due}); err != nil {
+		t.Fatalf("reclassify: %v", err)
+	}
+
+	back := h.count(t, `SELECT count(*) FROM asset WHERE scope_status = 'in_scope'`)
+	if back != 0 {
+		t.Errorf("%d assets came back in scope after an unrelated rule edit, and the CIDR "+
+			"exclusion is what decided them", back)
+	}
+	rearmed := h.count(t, `
+		SELECT count(*) FROM asset_current WHERE scope_status = 'out_of_scope' AND next_resolve_at IS NOT NULL`)
+	if rearmed != 0 {
+		t.Errorf("%d excluded assets got their due dates back, which is a scan outside "+
+			"the authorization", rearmed)
+	}
+}
+
+// The statement computes it and the caller used to throw it away, so an
+// operator reading the response or the run summary always saw zero new assets.
+func TestTheSummaryCountsWhatWasCreated(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	set := h.scope(t, include("target.test"))
+
+	first, err := h.ing.Report(ctx, h.queries, h.run(), set, oneHost("api.target.test"))
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	if first.Created != first.Assets {
+		t.Errorf("created = %d of %d assets on a first sighting, want all of them",
+			first.Created, first.Assets)
+	}
+
+	second, err := h.ing.Report(ctx, h.queries, h.run(), set, oneHost("api.target.test"))
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if second.Created != 0 {
+		t.Errorf("created = %d on a replay, want none", second.Created)
+	}
+}

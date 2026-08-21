@@ -28,6 +28,11 @@ import (
 // process that reads it.
 const maxReportBytes = 64 << 20
 
+// supportedSchemaMajor is the report contract this understands. A minor bump
+// adds fields, which the unknown-field counter already handles; a major one
+// removes or repurposes them, which nothing here could notice.
+const supportedSchemaMajor = "1"
+
 // Reports ingests what a run produced.
 type Reports struct {
 	pool     *pgxpool.Pool
@@ -63,6 +68,17 @@ func (h *Reports) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxReportBytes))
 	if err := decoder.Decode(&report); err != nil {
 		fail(w, http.StatusBadRequest, "malformed", "the body is not a report document")
+		return
+	}
+
+	// The report type is transcribed rather than shared so the scanner can
+	// evolve on its own cycle. That only holds if a major version this does
+	// not know is refused: a document reusing field names under new meanings
+	// would be ingested under the old ones and write wrong inventory in
+	// silence.
+	if major, _, _ := strings.Cut(report.SchemaVersion, "."); major != supportedSchemaMajor {
+		fail(w, http.StatusBadRequest, "schema_unsupported",
+			fmt.Sprintf("report schema %q is not %s.x", report.SchemaVersion, supportedSchemaMajor))
 		return
 	}
 
@@ -109,6 +125,11 @@ func (h *Reports) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A late report is accepted and marked as such. The data is still valid:
+	// the run may simply have been re-dispatched, and deduplication merges the
+	// two. Refusing it would throw away work that was actually done.
+	late := run.Deadline.Valid && h.now().After(run.Deadline.Time)
+
 	summary, err := h.ingestor.Report(ctx, q, ingest.Run{
 		ID:        runID,
 		OrgID:     uuid.UUID(run.OrgID.Bytes),
@@ -123,13 +144,28 @@ func (h *Reports) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	encoded, err := json.Marshal(summary)
+	summary.Late = late
+	encoded, err := json.Marshal(struct {
+		ingest.Summary
+		// What the run said about itself, kept beside what it wrote. Running
+		// out of time is data rather than an error, and a run that delivered
+		// nine hundred hosts before its deadline must stay distinguishable
+		// from one that crashed on the first.
+		Completed          bool     `json:"completed"`
+		TruncatedByTimeout bool     `json:"truncated_by_timeout"`
+		Degraded           []string `json:"degraded,omitempty"`
+	}{
+		Summary:            summary,
+		Completed:          report.Run.Completed,
+		TruncatedByTimeout: report.Run.TruncatedByTimeout,
+		Degraded:           report.Degraded,
+	})
 	if err != nil {
 		encoded = []byte("{}")
 	}
 	if err := q.CloseRun(ctx, sqlcgen.CloseRunParams{
 		RunID:   uuidTo(runID),
-		State:   closingState(report),
+		State:   "completed",
 		At:      stamp(h.now()),
 		Summary: encoded,
 	}); err != nil {
@@ -146,8 +182,9 @@ func (h *Reports) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	h.log.InfoContext(ctx, "report ingested",
 		"run", runID, "hosts", summary.Hosts, "assets", summary.Assets,
-		"observations", summary.Observations, "deduplicated", summary.Deduplicated,
-		"rejected", summary.Rejected)
+		"created", summary.Created, "observations", summary.Observations,
+		"deduplicated", summary.Deduplicated, "rejected", summary.Rejected,
+		"complete", report.Run.Completed, "late", late, "degraded", report.Degraded)
 
 	writeJSON(w, http.StatusOK, summary)
 }
@@ -220,12 +257,12 @@ func (h *Reports) perimeter(
 	return set, targets, nil
 }
 
-// closingState reads what the run said about itself. A truncated run is not a
-// failed one: the report was delivered and it is valid, it is simply not
-// exhaustive.
-func closingState(report ingest.Report) string {
-	if report.Run.Completed {
-		return "completed"
-	}
-	return "failed"
-}
+// A run that delivered a report is completed, whatever its scope reached.
+//
+// This used to close a truncated run as failed, contradicting the sentence that
+// stood above it. Running out of time is data rather than an error: the report
+// was delivered and it is valid, it is simply not exhaustive, and a scheduler
+// reading "failed" would re-run work whose results it already holds. `failed`
+// and `expired` belong to a run that delivered nothing, and the deadline
+// sweeper owns those. What the run said about its own completeness is recorded
+// in the summary, where it stays legible.

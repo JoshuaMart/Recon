@@ -58,3 +58,49 @@ func TestTheRealDatabasesAnswer(t *testing.T) {
 	}
 	t.Logf("1.1.1.1 -> AS%d %s, country %q", anycast.ASN, anycast.ASNOrg, anycast.Country)
 }
+
+// The guard is worth a test only against a reader that would otherwise answer.
+// Written against Nothing(), which returns empty for every input, this passed
+// identically with the guard deleted.
+func TestAPrivateAddressIsNotLookedUp(t *testing.T) {
+	e := openReal(t)
+	defer func() { _ = e.Close() }()
+
+	// The positive control first: without it, every assertion below passes on
+	// a reader that answers nothing at all.
+	if got := e.Lookup(netip.MustParseAddr("8.8.8.8")); got.Empty() {
+		t.Fatal("a public address yields nothing, so the refusals below prove nothing")
+	}
+
+	// 169.254.169.254 is the one that matters: on a cloud host it serves
+	// instance credentials, and it has no operator anywhere.
+	for _, raw := range []string{"10.1.2.3", "127.0.0.1", "169.254.169.254", "192.168.1.1", "::1"} {
+		if got := e.Lookup(netip.MustParseAddr(raw)); !got.Empty() {
+			t.Errorf("%s = %+v, want nothing: a private range has no operator and no "+
+				"place, and asking spends a lookup on every scan of an internal target", raw, got)
+		}
+	}
+}
+
+// openReal loads the databases or skips. A checkout has no reason to carry
+// seventy megabytes of binary, and a test that cannot run is not one that
+// failed.
+func openReal(t *testing.T) enrich.Enricher {
+	t.Helper()
+
+	const (
+		city = "../../var/geoip/GeoLite2-City.mmdb"
+		asn  = "../../var/geoip/GeoLite2-ASN.mmdb"
+	)
+	for _, path := range []string{city, asn} {
+		if _, err := os.Stat(path); err != nil {
+			t.Skipf("no database at %s", path)
+		}
+	}
+
+	e, err := enrich.Open(enrich.Paths{City: city, ASN: asn})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	return e
+}

@@ -108,6 +108,17 @@ what its observations may conclude. Ingestion reads those signals before it qual
 re-dispatched, and deduplication merges the two. Delivery is idempotent on the run id: the same report
 posted twice writes one series of observations.
 
+**A run that delivered a report is `completed`, whatever its scope reached.** Running out of time is data
+rather than an error, and a scheduler reading `failed` would re-run work whose results it already holds.
+`failed` and `expired` belong to a run that delivered **nothing**, and the deadline sweeper owns those.
+What a run said about its own completeness is recorded beside what it wrote, so nine hundred hosts
+delivered before a deadline stay distinguishable from a crash on the first.
+
+**A report whose schema major version is unknown is refused.** The report type is transcribed rather than
+shared so the scanner can evolve on its own cycle, and that only holds if a document reusing field names
+under new meanings is a refusal. A minor bump adds fields, which the unknown-field counter already
+handles.
+
 FastRecon delivers the whole document as raw JSON, retrying on 5xx, 429 and transport errors with
 exponential backoff and jitter. Its exit codes distinguish "report delivered, scope unfinished" from "no
 report produced", and only the latter is worth retrying, so the job definition leaves platform retries

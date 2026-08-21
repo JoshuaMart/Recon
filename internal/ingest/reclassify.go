@@ -101,11 +101,19 @@ func (i *Ingestor) Reclassify(
 	return out, nil
 }
 
-// resolved is where a CIDR rule would read an address from. The walk does not
-// carry one today: an address lives on the projection rather than on the
-// identity, and reading it would cost a join on a pass that already visits
-// every asset of a programme.
-func resolved(sqlcgen.ListProgramAssetsRow) []netip.Addr { return nil }
+// resolved is what a CIDR rule reads.
+//
+// The address lives on the projection rather than on the identity, so the walk
+// joins it in. Skipping the join to save one on a pass that already visits
+// every asset of a programme cost far more than it saved: without an address, a
+// CIDR exclusion stops matching and the asset it excluded comes back in scope
+// with its due dates re-armed.
+func resolved(row sqlcgen.ListProgramAssetsRow) []netip.Addr {
+	if !row.Ip.IsValid() {
+		return nil
+	}
+	return []netip.Addr{row.Ip}
+}
 
 // DefaultSchedule is when a freshly scheduled asset becomes due.
 //

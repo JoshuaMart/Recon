@@ -203,8 +203,9 @@ func (q *Queries) InsertGenericPivot(ctx context.Context, arg InsertGenericPivot
 }
 
 const listProgramAssets = `-- name: ListProgramAssets :many
-SELECT a.id, a.kind, a.key, a.host, a.scope_status
+SELECT a.id, a.kind, a.key, a.host, a.scope_status, c.ip
   FROM asset a
+  LEFT JOIN asset_current c ON c.asset_id = a.id
  WHERE a.program_id = $1::uuid
  ORDER BY a.id
 `
@@ -219,9 +220,16 @@ type ListProgramAssetsRow struct {
 	Key         string
 	Host        *string
 	ScopeStatus string
+	Ip          netip.Addr
 }
 
 // ListProgramAssets walks a program for a reclassification.
+//
+// The address comes with it. A CIDR rule can only match a name through what it
+// resolved to, so a walk without one re-evaluates every asset a CIDR exclusion
+// decided as though it had no address: it falls through to the apex include,
+// becomes in scope again, and gets its due dates back. That is a scan outside
+// the authorization, produced by the pass that exists to prevent one.
 func (q *Queries) ListProgramAssets(ctx context.Context, arg ListProgramAssetsParams) ([]ListProgramAssetsRow, error) {
 	rows, err := q.db.Query(ctx, listProgramAssets, arg.ProgramID)
 	if err != nil {
@@ -237,6 +245,7 @@ func (q *Queries) ListProgramAssets(ctx context.Context, arg ListProgramAssetsPa
 			&i.Key,
 			&i.Host,
 			&i.ScopeStatus,
+			&i.Ip,
 		); err != nil {
 			return nil, err
 		}
