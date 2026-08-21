@@ -489,31 +489,109 @@ the write had the three facts in reach.
 
 ## Phase 6: Search and facets
 
-- [ ] [Pivot promotion into `asset_current`](/architecture/search/#102-what-the-projection-carries), the precondition for everything else
-- [ ] [Structured AST to parameterized SQL](/architecture/search/#101-three-principles), with a field registry
-- [ ] [Facets over the filtered result](/architecture/search/#104-facets-are-the-real-cost)
-- [ ] [`pivot_count` maintained on write](/architecture/search/#105-pivots): increment, value loss **and** archiving
-- [ ] [Genericity filter](/architecture/search/#the-genericity-filter) applied to display only
-- [ ] [`favicon_image`](/architecture/search/#the-favicon-image-is-not-in-attributes) and its size bound
-- [ ] [Volatility](/architecture/search/#106-volatility-as-sliding-daily-buckets) as sliding buckets
-- [ ] Stable pagination and [export](/architecture/search/#108-export)
-- [ ] [`external_host_dead`](/architecture/notifications/#what-external_host_dead-can-actually-see), both halves
-- [ ] [The third role and the second pool](/architecture/deployment/#96-postgresql-roles), and [Row-Level Security](/architecture/security/#row-level-security-two-roles-rather-than-one-variable) enabled
+- [x] [Pivot promotion into `asset_current`](/architecture/search/#102-what-the-projection-carries), the precondition for everything else
+- [x] [Structured AST to parameterized SQL](/architecture/search/#101-three-principles), with a field registry
+- [x] [Facets over the filtered result](/architecture/search/#104-facets-are-the-real-cost)
+- [x] [`pivot_count` maintained on write](/architecture/search/#105-pivots): increment, value loss **and** archiving
+- [x] [Genericity filter](/architecture/search/#the-genericity-filter) applied to display only
+- [x] [`favicon_image`](/architecture/search/#the-favicon-image-is-not-in-attributes) and its size bound
+- [x] [Volatility](/architecture/search/#106-volatility-as-sliding-daily-buckets) as sliding buckets
+- [x] Stable pagination and [export](/architecture/search/#108-export)
+- [x] [`external_host_dead`](/architecture/notifications/#what-external_host_dead-can-actually-see), both halves
+- [x] [The static tenant guard](/architecture/security/#111-irreversible-decisions), which is what inventories the cross-tenant queries the third role has to cover
+- [x] [The third role and the second pool](/architecture/deployment/#96-postgresql-roles), and [Row-Level Security](/architecture/security/#row-level-security-two-roles-rather-than-one-variable) enabled
 
 ### Milestone 6
 
-- [ ] The RLS suite **refuses to run** if `current_user` is a superuser, carries `BYPASSRLS`, or owns the tables
-- [ ] An `asm_app` session set to one organization reads **no** row of another, without the query carrying `org_id`
-- [ ] A connection acquired **without** the session variable returns zero rows, never the whole inventory
-- [ ] The cross-tenant queries cross tenants under `asm_sys` and return only the set organization under `asm_app`
-- [ ] A four clause query on a **synthetic** set of 1 M assets, with a realistic distribution, answers in under 300 ms
-- [ ] Facets reflect the filtered result, not the global inventory
-- [ ] A pivot with a counter of 1 is not displayed, and a universal cookie name never appears as a pivot
-- [ ] An asset losing a pivot value decrements its counter; an archived asset gives back **all** of its own and loses the keys
-- [ ] A suffix containing a wildcard character still matches by suffix rather than by equality
-- [ ] The export applies no display filter and imposes no silent cap
-- [ ] The ingestion cost stays under budget, pivots included, measured on a batch that moves some
-- [ ] **No query touches `observation`**, proved by revoking the privilege
+- [x] The RLS suite **refuses to run** if `current_user` is a superuser, carries `BYPASSRLS`, or owns the tables
+- [x] An `asm_app` session set to one organization reads **no** row of another, without the query carrying `org_id`
+- [x] A connection acquired **without** the session variable returns zero rows, never the whole inventory
+- [x] The cross-tenant queries cross tenants under `asm_sys` and return only the set organization under `asm_app`
+- [x] A four clause query on a **synthetic** set of 1 M assets, with a realistic distribution, answers in under 300 ms
+- [x] Facets reflect the filtered result, not the global inventory
+- [x] A pivot with a counter of 1 is not displayed, and a universal cookie name never appears as a pivot
+- [x] An asset losing a pivot value decrements its counter; an archived asset gives back **all** of its own and loses the keys
+- [x] A suffix containing a wildcard character still matches by suffix rather than by equality
+- [x] The export applies no display filter and imposes no silent cap
+- [x] The ingestion cost stays under budget, pivots included, measured on a batch that moves some
+- [x] **No query touches `observation`**, proved by revoking the privilege
+
+:::note[Measured]
+**Two things were added that the phase did not list, and both were preconditions rather than scope creep.**
+
+The **static tenant guard** was described in [11.1](/architecture/security/#111-irreversible-decisions) and
+implemented by no phase. Its output is the inventory of cross-tenant queries, which is the exact
+specification of what `asm_sys` has to cover, so the second pool could not be routed without it. It found
+nothing wrong on the day it landed and it has already earned itself since: adding the external host sweep
+made the list grow, and the build said so before the pool routing could be forgotten.
+
+The vocabulary grew a fourth value, `keyed`. `UPDATE asset_current ... WHERE asset_id = $1` names no
+organization and is not crossing tenants either, and calling it `scoped` would have put it in the column
+that says "this one carries its own filter", making the audit list useless. Most statements in the
+repository take that shape.
+
+**`COPY FROM` is refused outright on a table carrying a policy.** Two writes were built on the copy path
+for the round trip budget, freezing a run's target list and writing a report's events, and both stopped
+working the moment isolation was enabled. They travel as parallel arrays now, same single round trip, and
+the organization became a scalar of the statement rather than a column repeated per row, so a batch mixing
+two tenants is no longer expressible.
+
+**A partition reached directly is not covered by its parent's policy.** `SELECT count(*) FROM
+observation_2026_08` as `asm_app` returned every tenant's rows while the same count through `observation`
+returned one tenant's. Nothing in this repository names a partition, which is exactly the sort of statement
+row-level security is the last line for. The door that creates partitions is now the door that covers them.
+
+**An unset session variable is an empty string, not a null**, and the difference decides between zero rows
+and an error. A policy reading `current_setting(...)::uuid` returns zero rows on a connection's *first*
+transaction and raises on its second, so a suite acquiring a fresh connection per case passes with the
+fault in place. The assertion reuses one connection across two transactions.
+
+**`last_changed_at` was set on a first observation**, which contradicts what
+[10.6](/architecture/search/#106-volatility-as-sliding-daily-buckets) says it means, and nothing read the
+column so nothing noticed. Volatility inherited the same test: an arrival is the asset's age and the row
+already carries it, and counting it here would count it once per layer, so a freshly discovered asset would
+score three or four and `volatility > 2` would return everything just found.
+
+**The first volatility assertion did not discriminate.** The guard sits on two columns, the buckets and the
+day they belong to, and a sum read against a day nobody wrote is zero whatever the buckets hold: removing
+half the guard left the test green. It asserts the array as well as the number.
+
+**`status_chain` was a column no producer could fill.** The scanner reports the redirect **URLs** and the
+final code, never the code of each hop, so the layer the doc assigned it to does not hold the information.
+The browser reports one hop per entry with its status, so the render writes it, and the coverage that costs
+is written down rather than discovered.
+
+**The suffix on `key` cannot answer "everything under this domain".** A service is keyed
+`app.target.com:443/tcp`, so `.target.com` is a suffix of the name and not of the key: the query returns the
+fqdn rows and silently drops every service, which is most of an inventory. `host` carries the reversed index
+too now.
+
+**A decrement cannot travel through an upsert.** PostgreSQL evaluates a table's CHECK constraints on the
+proposed row *before* it resolves the conflict, so a proposed count of `-1` fails `count >= 0` even though
+the row it would become is an update to zero. One error message away from somebody removing the constraint,
+and the constraint is what catches a decrement running twice.
+
+**Nothing that can carry a pivot can currently reach `archived`.** The transition is decided when a
+candidate **host** exhausts its budget without ever coming alive, and such a host has no service, no render
+and therefore no pivot. The decrement is built anyway, because retrofitting a counter's decrement means
+first working out how far it has drifted, and it is tested against the statement the system uses rather
+than against a case the model cannot produce.
+
+**Technologies is the one place "one producer per value" bends**, and it bends because the two arguments
+used elsewhere point in opposite directions: coverage says the probe must contribute, depth says the render
+must. They write different keys and the column is their union, so neither erases the other. The first test
+of it did not discriminate, because both producers happened to report `nginx`.
+
+**The round trip budget reads 3.00 and it did before this phase too.** Nothing here added a statement to
+the write path; what changed is that the counter can now see one it never could. pgx traces a `COPY`
+through a different hook, so the two writes that moved onto the copy path in phase 5 became invisible to
+the measurement and the figure fell by a third without the work changing. The gap is written into the
+counter rather than left to be rediscovered.
+
+**The four clause query over a million synthetic assets answers in 164 ms**, and its facets in 414 ms. That
+is the number the whole chapter rests on: it is what says a double write to Elasticsearch on day one would
+have been a trap rather than foresight.
+:::
 
 ## Phase 7: Console
 
