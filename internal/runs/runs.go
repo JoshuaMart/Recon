@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -97,19 +96,46 @@ type Definition struct {
 	Scope       string
 	Deadline    time.Time
 	TargetCount int
-	// Env is the environment map the job definition is started with. It is a
-	// full replacement of the run's own overrides and never a merge into the
-	// definition: the definition carries the source API keys, and a control
-	// plane that wrote into it would wipe them without anything failing.
+	// Args is the whole invocation, and it is deliberately not split with Env.
+	//
+	// A start call replaces the definition's arguments wholesale and merges
+	// into its environment, which was measured rather than assumed. So a flag
+	// on the definition beats a variable sent here: a definition carrying
+	// "-d hackerone.com" would make every run scan that whatever the
+	// environment said, and nothing would look wrong. Sending the invocation as
+	// arguments removes that class of surprise entirely, and it makes the run
+	// record say what the run was actually asked to do.
+	Args []string
+	// Env is what the definition does not already carry. It merges, so the
+	// source API keys the definition holds survive: the control plane names
+	// secrets and never carries them.
 	Env map[string]string
+	// ExternalID is what the platform called this execution, filled in once it
+	// has been started. It is the only handle on the logs of a run that went
+	// wrong.
+	ExternalID string
+}
+
+// Platform starts a run definition.
+//
+// The control plane starts, it never updates. The call that modifies a
+// definition replaces its whole environment map, so a control plane that wrote
+// there would wipe the source API keys the definition carries, and nothing
+// would fail: the next run would simply query fewer sources and find less.
+type Platform interface {
+	// Start returns the platform's own identifier for the execution.
+	Start(ctx context.Context, def *Definition) (string, error)
+	// Name is what a log line calls this platform.
+	Name() string
 }
 
 // Scheduler provisions runs.
 type Scheduler struct {
-	signer *auth.Signer
-	cfg    config.Verification
-	now    func() time.Time
-	log    *slog.Logger
+	signer   *auth.Signer
+	cfg      config.Verification
+	platform Platform
+	now      func() time.Time
+	log      *slog.Logger
 }
 
 // Option adjusts a scheduler.
@@ -123,6 +149,13 @@ func WithClock(now func() time.Time) Option {
 			s.now = now
 		}
 	}
+}
+
+// WithPlatform is what actually starts a definition. Without one the scheduler
+// defines runs and starts nothing, which is a deployment that only probes what
+// somebody launches by hand.
+func WithPlatform(platform Platform) Option {
+	return func(s *Scheduler) { s.platform = platform }
 }
 
 // New builds a scheduler.
@@ -207,8 +240,14 @@ func (s *Scheduler) Verification(
 		return nil, fmt.Errorf("freeze target list: %w", err)
 	}
 
-	def.Env["FASTRECON_TARGETS_URL"] = s.targetsURL(def.RunID, def.Deadline)
-	def.Env["FASTRECON_STAGES"] = stagesFor(rung)
+	// The list travels behind a header rather than in the URL, which is what
+	// the flag exists for: a credential in a query string ends up in every
+	// access log, proxy log and error message that ever prints the URL.
+	def.Args = append(def.Args,
+		"--stages", stagesFor(rung),
+		"--targets-url", s.targetsURL(def.RunID),
+		"--targets-header", "Authorization: Bearer "+s.mint(auth.PurposeTargets, def.RunID, def.Deadline),
+	)
 	s.log.InfoContext(ctx, "verification run defined",
 		"run", def.RunID, "program", program, "rung", rung, "targets", len(keys))
 	return def, nil
@@ -233,12 +272,25 @@ func (s *Scheduler) Discovery(
 		return nil, ErrNoPerimeter
 	}
 
+	excluded, err := q.ExclusionsForProgram(ctx, sqlcgen.ExclusionsForProgramParams{
+		ProgramID: pgUUID(program),
+		At:        stamp(at),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read exclusions: %w", err)
+	}
+
 	def, err := s.create(ctx, q, org, program, KindDiscovery, "enum", 0)
 	if err != nil {
 		return nil, err
 	}
-	def.Env["FASTRECON_DOMAIN"] = strings.Join(apexes, ",")
-	def.Env["FASTRECON_STAGES"] = stagesFor("enum")
+	def.Args = append(def.Args, "--stages", stagesFor("enum"), "-d", strings.Join(apexes, ","))
+	// The exclusion patterns travel with the perimeter. A rule may have changed
+	// between a run being defined and a run starting, and they are the second
+	// safety net in front of the network rather than a duplicate of the scope.
+	for _, pattern := range excluded {
+		def.Args = append(def.Args, "--exclude", pattern)
+	}
 
 	// Written at creation rather than at completion. A run that dies on the
 	// way must not be restarted by the cadence: the deadline sweeper already
@@ -315,14 +367,20 @@ func (s *Scheduler) create(
 	// The report token lives as long as the deadline plus a margin: a run that
 	// spends its whole budget must still be able to deliver what it produced.
 	report := s.signer.Mint(auth.PurposeReport, def.RunID, def.Deadline.Add(s.cfg.Grace))
-	def.Env = map[string]string{
-		"FASTRECON_PORTS":          s.cfg.Ports,
-		"FASTRECON_SCAN_RATE":      strconv.Itoa(int(program1.RateLimitRps)),
-		"FASTRECON_WEBHOOK_URL":    strings.TrimSuffix(s.cfg.PublicURL, "/") + "/reports",
-		"FASTRECON_WEBHOOK_HEADER": "Authorization: Bearer " + report,
-		"FASTRECON_TIMEOUT":        s.cfg.Timeout.String(),
+	def.Args = []string{
+		"--ports", s.cfg.Ports,
+		"--scan-rate", strconv.Itoa(int(program1.RateLimitRps)),
+		"--webhook-url", strings.TrimSuffix(s.cfg.PublicURL, "/") + "/reports",
+		"--webhook-header", "Authorization: Bearer " + report,
+		"--timeout", s.cfg.Timeout.String(),
 	}
+	def.Env = map[string]string{}
 	return def, nil
+}
+
+// mint is the targets credential, kept beside the URL that needs it.
+func (s *Scheduler) mint(purpose auth.Purpose, run uuid.UUID, expires time.Time) string {
+	return s.signer.Mint(purpose, run, expires)
 }
 
 // InFlight reads the run a second request would run into, or nil.
@@ -379,15 +437,13 @@ func (s *Scheduler) Sweep(ctx context.Context, q *sqlcgen.Queries) (int, error) 
 	return len(expired), nil
 }
 
-// targetsURL signs a link that is readable for the life of the run.
+// targetsURL is where a run fetches its frozen list.
 //
-// The signature covers the run, the purpose and the expiry, so a token minted
-// to fetch a target list cannot be replayed to post a report, and there is
-// nothing to revoke: the run's own state is the revocation.
-func (s *Scheduler) targetsURL(run uuid.UUID, deadline time.Time) string {
-	token := s.signer.Mint(auth.PurposeTargets, run, deadline)
-	return fmt.Sprintf("%s/runs/%s/targets?token=%s",
-		strings.TrimSuffix(s.cfg.PublicURL, "/"), run, url.QueryEscape(token))
+// It carries no credential. The signature travels in a header, because a token
+// in a query string is a token in every access log, proxy log and error message
+// that ever prints the URL, and those outlive the run by a long way.
+func (s *Scheduler) targetsURL(run uuid.UUID) string {
+	return fmt.Sprintf("%s/runs/%s/targets", strings.TrimSuffix(s.cfg.PublicURL, "/"), run)
 }
 
 // stagesFor maps a rung onto the ladder the scanner runs.
@@ -437,6 +493,45 @@ func pgUUID(id uuid.UUID) pgtype.UUID { return pgtype.UUID{Bytes: id, Valid: tru
 
 func stamp(t time.Time) pgtype.Timestamptz {
 	return pgtype.Timestamptz{Time: t.UTC(), Valid: true}
+}
+
+// Launch starts a definition and records what the platform called it.
+//
+// It runs **after** the transaction that created the run has committed, and
+// that order is the whole of the failure story. Starting inside the transaction
+// would leave an execution running with a valid credential against a run row
+// that was rolled back. Starting after means a platform that refuses, on a
+// quota or an outage, leaves the row pending: the deadline sweeper expires it,
+// the signed tokens and the frozen list expire with it, and the due dates were
+// never moved, so the next tick starts a fresh run over the same assets.
+// Nothing has to be repaired.
+func (s *Scheduler) Launch(ctx context.Context, q *sqlcgen.Queries, def *Definition) error {
+	if s.platform == nil {
+		return nil
+	}
+
+	external, err := s.platform.Start(ctx, def)
+	if err != nil {
+		return fmt.Errorf("start %s run %s: %w", def.Kind, def.RunID, err)
+	}
+	def.ExternalID = external
+	if external == "" {
+		return nil
+	}
+
+	if err := q.RecordRunStart(ctx, sqlcgen.RecordRunStartParams{
+		RunID:      pgUUID(def.RunID),
+		ExternalID: external,
+	}); err != nil {
+		// The execution is running and this is only its name. Losing it costs
+		// the logs of that run, which is worth an error and not a rollback.
+		return fmt.Errorf("record the start of %s: %w", def.RunID, err)
+	}
+
+	s.log.InfoContext(ctx, "run started",
+		"run", def.RunID, "kind", def.Kind, "scope", def.Scope,
+		"platform", s.platform.Name(), "external", external)
+	return nil
 }
 
 // Sweeper expires runs whose deadline passed.

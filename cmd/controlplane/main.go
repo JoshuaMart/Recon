@@ -30,6 +30,7 @@ import (
 	"github.com/JoshuaMart/recon/internal/maintenance"
 	"github.com/JoshuaMart/recon/internal/obs"
 	"github.com/JoshuaMart/recon/internal/render"
+	"github.com/JoshuaMart/recon/internal/runner"
 	"github.com/JoshuaMart/recon/internal/runs"
 	"github.com/JoshuaMart/recon/internal/store"
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
@@ -85,7 +86,11 @@ func run() error {
 	defer func() { _ = enricher.Close() }()
 	log.InfoContext(ctx, "enrichment", "configured", enricher.Configured())
 
-	scheduler := runs.New(signer, cfg.Verification, log)
+	platform, err := startPlatform(cfg, log)
+	if err != nil {
+		return err
+	}
+	scheduler := runs.New(signer, cfg.Verification, log, runs.WithPlatform(platform))
 	ingestor := ingest.New(enricher, scheduler.Cadence(), log)
 
 	// Started unconditionally, and before anything can write: a partition job
@@ -95,6 +100,8 @@ func run() error {
 	// its targets forever, and the assets it froze are invisible to every
 	// later tick.
 	go runs.NewSweeper(scheduler, sqlcgen.New(pool), cfg.Verification.SweepInterval, log).Run(ctx)
+	// The pass that provisions enumeration, distinct from the one on due dates.
+	go runs.NewCadence(pool, scheduler, cfg.Verification.SweepInterval, log).Run(ctx)
 
 	// The browser loop, and the one thing here that is optional. A deployment
 	// with no rendering service is a deployment that only probes: the assets
@@ -138,6 +145,25 @@ func run() error {
 		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.HTTP.ShutdownTimeout)
 		defer cancel()
 		return srv.Shutdown(shutdownCtx)
+	}
+}
+
+// startPlatform is what actually starts a run definition.
+//
+// A deployment with none defines runs and starts nothing, which is the
+// development shape and a legitimate one: the console shows the definition and
+// a person runs the image.
+func startPlatform(cfg *config.Config, log *slog.Logger) (runs.Platform, error) {
+	switch cfg.Runner.Provider {
+	case config.RunnerScaleway:
+		log.Info("runs are started on scaleway", "region", cfg.Runner.Region, "job", cfg.Runner.JobID)
+		return runner.NewScaleway(cfg.Runner.Endpoint, cfg.Runner.Region, cfg.Runner.JobID,
+			cfg.Runner.SecretKey, cfg.Runner.Timeout, log), nil
+	case config.RunnerNone:
+		log.Warn("no platform configured, run definitions are rendered and started by hand")
+		return runner.NewNone(log), nil
+	default:
+		return nil, fmt.Errorf("unknown runner %q", cfg.Runner.Provider)
 	}
 }
 

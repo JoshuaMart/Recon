@@ -99,14 +99,26 @@ func TestATargetListIsServedOnlyToItsOwnRun(t *testing.T) {
 		t.Fatalf("starting a run answered %s: %v", resp.Status, body)
 	}
 
-	env, _ := body["env"].(map[string]any)
-	targets, _ := env["FASTRECON_TARGETS_URL"].(string)
-	if targets == "" {
-		t.Fatalf("no target list in %v", env)
+	args := stringsOf(body["args"])
+	targets := arg(args, "--targets-url")
+	credential := arg(args, "--targets-header")
+	if targets == "" || credential == "" {
+		t.Fatalf("no target list in %v", args)
 	}
 	path := strings.TrimPrefix(targets, "https://recon.example")
 
-	got, err := http.Get(h.server.URL + path)
+	// The credential is a header rather than a query parameter, so the URL is
+	// safe to log and useless on its own.
+	bare, err := http.Get(h.server.URL + path)
+	if err != nil {
+		t.Fatalf("fetch targets: %v", err)
+	}
+	defer func() { _ = bare.Body.Close() }()
+	if bare.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("the URL alone answered %s", bare.Status)
+	}
+
+	got, err := h.fetch(t, path, credential)
 	if err != nil {
 		t.Fatalf("fetch targets: %v", err)
 	}
@@ -149,7 +161,7 @@ func TestATargetListIsServedOnlyToItsOwnRun(t *testing.T) {
 	           VALUES ($1, $2, $3, 'verification', 'full', 'pending', now() + interval '1 hour')`,
 		other, h.org, elsewhereProgram)
 	swapped := strings.Replace(path, runID, other.String(), 1)
-	elsewhere, err := http.Get(h.server.URL + swapped)
+	elsewhere, err := h.fetch(t, swapped, credential)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -162,7 +174,7 @@ func TestATargetListIsServedOnlyToItsOwnRun(t *testing.T) {
 	// effective revocation: a signed token cannot be recalled, so it stays
 	// valid and stops being useful.
 	h.exec(t, `UPDATE run SET state = 'completed' WHERE id = $1`, runID)
-	closed, err := http.Get(h.server.URL + path)
+	closed, err := h.fetch(t, path, credential)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -293,4 +305,37 @@ func TestARevokedCredentialIsRefused(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("a revoked credential answered %s", resp.Status)
 	}
+}
+
+// fetch asks for a target list with the credential the definition carried.
+func (h *harness) fetch(t *testing.T, path, credential string) (*http.Response, error) {
+	t.Helper()
+
+	req, err := http.NewRequest(http.MethodGet, h.server.URL+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	name, value, _ := strings.Cut(credential, ": ")
+	req.Header.Set(name, value)
+	return http.DefaultClient.Do(req)
+}
+
+// arg reads a flag's value out of an invocation.
+func arg(args []string, flag string) string {
+	for i, value := range args {
+		if value == flag && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+func stringsOf(raw any) []string {
+	list, _ := raw.([]any)
+	out := make([]string, 0, len(list))
+	for _, value := range list {
+		text, _ := value.(string)
+		out = append(out, text)
+	}
+	return out
 }

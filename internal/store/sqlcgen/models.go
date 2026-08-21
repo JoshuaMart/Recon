@@ -188,6 +188,7 @@ type Run struct {
 	TargetCount *int32
 	Summary     []byte
 	Error       *string
+	ExternalID  *string
 }
 
 type RunTarget struct {

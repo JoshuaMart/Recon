@@ -55,6 +55,49 @@ func (q *Queries) ApexesForProgram(ctx context.Context, arg ApexesForProgramPara
 	return items, nil
 }
 
+const exclusionsForProgram = `-- name: ExclusionsForProgram :many
+SELECT DISTINCT pattern
+  FROM scope_rule
+ WHERE program_id = $1::uuid
+   AND kind = 'exclude'
+   AND matcher IN ('apex', 'fqdn')
+   AND valid_from <= $2::timestamptz
+   AND (valid_to IS NULL OR valid_to > $2::timestamptz)
+ ORDER BY pattern
+`
+
+type ExclusionsForProgramParams struct {
+	ProgramID pgtype.UUID
+	At        pgtype.Timestamptz
+}
+
+// ExclusionsForProgram is the second safety net in front of the network.
+//
+// The patterns travel with the perimeter rather than being trusted to the
+// scope re-evaluation at ingestion, because a rule may have changed between a
+// run being defined and a run starting, and the re-evaluation happens after the
+// packet. One probe too many is not much, and it is not a property to accept
+// knowingly when the pattern fits in the invocation.
+func (q *Queries) ExclusionsForProgram(ctx context.Context, arg ExclusionsForProgramParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, exclusionsForProgram, arg.ProgramID, arg.At)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var pattern string
+		if err := rows.Scan(&pattern); err != nil {
+			return nil, err
+		}
+		items = append(items, pattern)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const expireRuns = `-- name: ExpireRuns :many
 UPDATE run SET
     state       = 'expired',
@@ -277,6 +320,25 @@ func (q *Queries) ProgramsDueForDiscovery(ctx context.Context, arg ProgramsDueFo
 		return nil, err
 	}
 	return items, nil
+}
+
+const recordRunStart = `-- name: RecordRunStart :exec
+UPDATE run SET external_id = $1::text WHERE id = $2::uuid
+`
+
+type RecordRunStartParams struct {
+	ExternalID string
+	RunID      pgtype.UUID
+}
+
+// RecordRunStart names the execution the platform created.
+//
+// Written after the start rather than with the run, because the run is
+// committed first: a platform that refuses on a quota must leave a row the
+// deadline sweeper owns, not an absence.
+func (q *Queries) RecordRunStart(ctx context.Context, arg RecordRunStartParams) error {
+	_, err := q.db.Exec(ctx, recordRunStart, arg.ExternalID, arg.RunID)
+	return err
 }
 
 const runForTargets = `-- name: RunForTargets :one

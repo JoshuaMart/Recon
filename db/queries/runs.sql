@@ -143,3 +143,30 @@ SELECT DISTINCT pattern
    AND valid_from <= @at::timestamptz
    AND (valid_to IS NULL OR valid_to > @at::timestamptz)
  ORDER BY pattern;
+
+-- ExclusionsForProgram is the second safety net in front of the network.
+--
+-- The patterns travel with the perimeter rather than being trusted to the
+-- scope re-evaluation at ingestion, because a rule may have changed between a
+-- run being defined and a run starting, and the re-evaluation happens after the
+-- packet. One probe too many is not much, and it is not a property to accept
+-- knowingly when the pattern fits in the invocation.
+--
+-- name: ExclusionsForProgram :many
+SELECT DISTINCT pattern
+  FROM scope_rule
+ WHERE program_id = @program_id::uuid
+   AND kind = 'exclude'
+   AND matcher IN ('apex', 'fqdn')
+   AND valid_from <= @at::timestamptz
+   AND (valid_to IS NULL OR valid_to > @at::timestamptz)
+ ORDER BY pattern;
+
+-- RecordRunStart names the execution the platform created.
+--
+-- Written after the start rather than with the run, because the run is
+-- committed first: a platform that refuses on a quota must leave a row the
+-- deadline sweeper owns, not an absence.
+--
+-- name: RecordRunStart :exec
+UPDATE run SET external_id = @external_id::text WHERE id = @run_id::uuid;

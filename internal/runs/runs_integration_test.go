@@ -242,8 +242,8 @@ func TestSelectionReadsTheRungItWasAskedFor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve run: %v", err)
 	}
-	if resolve.Env["FASTRECON_STAGES"] != "resolve" {
-		t.Fatalf("the stages are %q", resolve.Env["FASTRECON_STAGES"])
+	if arg(resolve.Args, "--stages") != "resolve" {
+		t.Fatalf("the stages are %q", arg(resolve.Args, "--stages"))
 	}
 }
 
@@ -260,30 +260,49 @@ func TestARunDefinitionCarriesNoInventoryCredential(t *testing.T) {
 		t.Fatalf("run: %v", err)
 	}
 
-	if !strings.HasPrefix(def.Env["FASTRECON_TARGETS_URL"], "https://recon.example/runs/"+def.RunID.String()) {
-		t.Fatalf("the target list is at %q", def.Env["FASTRECON_TARGETS_URL"])
+	list := arg(def.Args, "--targets-url")
+	if list != "https://recon.example/runs/"+def.RunID.String()+"/targets" {
+		t.Fatalf("the target list is at %q", list)
 	}
-	if !strings.Contains(def.Env["FASTRECON_WEBHOOK_HEADER"], "Bearer ") {
-		t.Fatalf("the report credential reads %q", def.Env["FASTRECON_WEBHOOK_HEADER"])
+	// And it carries no credential. A token in a query string is a token in
+	// every access log, proxy log and error message that ever prints that URL,
+	// and those outlive the run by a long way.
+	if strings.Contains(list, "token") || strings.Contains(list, "?") {
+		t.Fatalf("the target list URL carries its credential: %q", list)
 	}
-	if def.Env["FASTRECON_PORTS"] == "" {
+	if !strings.HasPrefix(arg(def.Args, "--targets-header"), "Authorization: Bearer ") {
+		t.Fatalf("the list credential reads %q", arg(def.Args, "--targets-header"))
+	}
+	if !strings.HasPrefix(arg(def.Args, "--webhook-header"), "Authorization: Bearer ") {
+		t.Fatalf("the report credential reads %q", arg(def.Args, "--webhook-header"))
+	}
+	if arg(def.Args, "--ports") == "" {
 		t.Fatal("the port list is data and it travels in the definition, so discovery and verification scan the same ports")
 	}
-	for key, value := range def.Env {
+	for _, value := range def.Args {
 		for _, forbidden := range []string{"postgres://", "postgresql://", "password"} {
 			if strings.Contains(strings.ToLower(value), forbidden) {
-				t.Fatalf("%s carries %q", key, forbidden)
+				t.Fatalf("an argument carries %q", forbidden)
 			}
 		}
 	}
 	// The two credentials are for different things, and one must not open the
 	// other.
-	targets := def.Env["FASTRECON_TARGETS_URL"]
-	token := targets[strings.Index(targets, "token=")+len("token="):]
+	token := strings.TrimPrefix(arg(def.Args, "--targets-header"), "Authorization: Bearer ")
 	signer, _ := auth.NewSigner("a-signing-key-long-enough-to-be-one")
 	if _, err := signer.Verify(auth.PurposeReport, token, h.clock.now); err == nil {
 		t.Fatal("a token minted to fetch a target list was accepted to post a report")
 	}
+}
+
+// arg reads a flag's value out of an invocation.
+func arg(args []string, flag string) string {
+	for i, value := range args {
+		if value == flag && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
 }
 
 // The authorization window is checked when a run is provisioned rather than
@@ -323,12 +342,12 @@ func TestDiscoveryIsRecordedWhenItIsProvisioned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("discovery: %v", err)
 	}
-	if def.Env["FASTRECON_DOMAIN"] != "acme.test" {
-		t.Fatalf("the perimeter is %q", def.Env["FASTRECON_DOMAIN"])
+	if arg(def.Args, "-d") != "acme.test" {
+		t.Fatalf("the perimeter is %q", arg(def.Args, "-d"))
 	}
 	// A discovery run gets no targets URL and a domain instead. That is the
 	// whole difference between the two mandates.
-	if _, present := def.Env["FASTRECON_TARGETS_URL"]; present {
+	if arg(def.Args, "--targets-url") != "" {
 		t.Fatal("a discovery run was handed a target list, which is the one thing that makes an absence mean something")
 	}
 

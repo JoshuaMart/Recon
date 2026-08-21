@@ -45,7 +45,13 @@ func (h *Targets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The run comes from the signature, and the path is checked against it.
 	// Reading the run from the path first would let anyone probe an
 	// organization's run states by the shape of the answer.
-	signed, err := h.signer.Verify(auth.PurposeTargets, r.URL.Query().Get("token"), h.now())
+	//
+	// The credential is a header rather than a query parameter, which is what
+	// the scanner's --targets-header flag exists for: a token in a URL is a
+	// token in every access log, proxy log and error message that ever prints
+	// that URL, and those outlive the run by a long way.
+	token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	signed, err := h.signer.Verify(auth.PurposeTargets, strings.TrimSpace(token), h.now())
 	if err != nil {
 		h.log.WarnContext(ctx, "target list refused", "reason", err)
 		fail(w, http.StatusUnauthorized, "unauthorized", "the credential is missing, wrong or expired")

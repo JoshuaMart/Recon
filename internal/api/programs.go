@@ -124,17 +124,37 @@ func (h *Programs) StartRun(w http.ResponseWriter, r *http.Request, principal au
 		return
 	}
 
+	// After the commit, deliberately. Starting inside the transaction would
+	// leave an execution running with a valid credential against a run row that
+	// was rolled back; starting after means a platform refusing on a quota
+	// leaves a row the deadline sweeper owns, and nothing has to be repaired.
+	if err := h.scheduler.Launch(ctx, sqlcgen.New(h.pool), definition); err != nil {
+		// The run exists and the sweeper owns it, so this is reported rather
+		// than turned into a failure the caller might retry into a second run.
+		h.log.ErrorContext(ctx, "run not started", "run", definition.RunID, "error", err)
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"started":      false,
+			"run_id":       definition.RunID,
+			"reason":       "the platform did not start it, and the deadline sweeper owns the run",
+			"deadline":     definition.Deadline,
+			"target_count": definition.TargetCount,
+		})
+		return
+	}
+
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"started":      true,
+		"external_id":  definition.ExternalID,
 		"run_id":       definition.RunID,
 		"kind":         definition.Kind,
 		"scope":        definition.Scope,
 		"deadline":     definition.Deadline,
 		"target_count": definition.TargetCount,
-		// The environment map the job definition is started with. In
-		// development nothing starts it, so the console shows it and a person
-		// runs the image: the same shape as production minus the call.
-		"env": definition.Env,
+		// What the run was actually asked to do. In development nothing starts
+		// it, so the console shows this and a person runs the image: the same
+		// shape as production minus the call.
+		"args": definition.Args,
+		"env":  definition.Env,
 	})
 }
 
