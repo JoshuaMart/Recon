@@ -251,6 +251,29 @@ the first probe of a freshly discovered asset, and the render line is created la
 has proved the target worth rendering. The herd has already been spread once, and spreading it twice
 adds no smoothing.
 
+### The render pass
+
+The queue is a **predicate, not a list**: `next_fingerprint_at <= now`, ordered by priority then by due
+date, capped at a batch size. It is re-evaluated on every tick and holds no state between two of them.
+That is what makes the whole path idempotent, and it is the reason the section below can claim nothing is
+lost without pointing at a recovery mechanism.
+
+The service takes **one URL per call**, so a pass is a bounded number of calls made concurrently, never a
+list handed over.
+
+**The budget is the governor, not the concurrency.** With a program at ten requests a second and a render
+charged thirty, that program can afford one render every three seconds; a render takes a handful of
+seconds, so four or five in flight is where the budget starts binding. The concurrency is set above that
+figure rather than at it, so that the thing throttling a program is its published rate limit and not a
+number nobody calibrated.
+
+That arithmetic is also what bounds a flood. Ten thousand services becoming due at once, which is what a
+first scan of a large perimeter produces, is about eight hours of budget for that program alone. The
+service is not what a single program saturates.
+
+A pass ends in one of three ways, and none of them writes anything: the selection comes back empty, the
+program's budget refuses to wait, or the service refuses often enough to say it is busy.
+
 ### Two priorities
 
 | Queue | Contents | Handling |
