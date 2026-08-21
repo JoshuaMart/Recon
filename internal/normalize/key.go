@@ -206,6 +206,21 @@ func URL(raw string) (Key, error) {
 	return Key{Kind: KindURL, Value: value, Host: host, Port: port, Scheme: scheme}, nil
 }
 
+// Scheme narrows a reported scheme to one a browser speaks.
+//
+// A report is evidence rather than a fact, so this is validated and lowered
+// here rather than stored as it arrived. The case matters more than it looks:
+// the scheme decides whether a port belongs in an authority, and "HTTPS" read
+// as anything but https drops the port and points a render at a different
+// service on the same host.
+func Scheme(raw string) (string, error) {
+	lowered := strings.ToLower(strings.TrimSpace(raw))
+	if _, ok := defaultPorts[lowered]; !ok {
+		return "", invalid("scheme %q is not a web scheme", raw)
+	}
+	return lowered, nil
+}
+
 // Path normalizes the path of a URL.
 //
 // Case is preserved, because paths are case sensitive where hosts are not.

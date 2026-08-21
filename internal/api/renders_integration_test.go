@@ -155,3 +155,50 @@ func TestAReplanBringsRendersForwardAndNeverDelaysOne(t *testing.T) {
 		t.Fatalf("%d assets out of the scheduler were given a date", n)
 	}
 }
+
+// The answer is read from the statement's own conditions rather than from one
+// of them. It refuses an asset that has left the scheduler and one outside the
+// perimeter alike, and answering on the lifecycle alone told a caller to wait
+// for a render nothing would ever select.
+func TestAManualRequestOnAnOutOfScopeAssetClaimsNothing(t *testing.T) {
+	h := newHarness(t)
+	id := h.renderable(t, "app.target.test:443/tcp", time.Now().Add(time.Hour), lifecycle.PriorityBaseline)
+	h.exec(t, `UPDATE asset_current SET scope_status = 'out_of_scope', next_fingerprint_at = NULL
+	           WHERE asset_id = $1`, id)
+
+	jobs := h.token(t, h.org, auth.ActionManageJobs)
+	resp, body := h.call(t, http.MethodPost, "/assets/"+id.String()+"/render", jobs, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the request answered %s", resp.Status)
+	}
+	if body["queued"] != false {
+		t.Fatalf("an asset outside the perimeter was reported as queued: %v", body)
+	}
+	if n := h.count(t,
+		`SELECT count(*) FROM asset_current WHERE asset_id = $1 AND next_fingerprint_at IS NOT NULL`,
+		id); n != 0 {
+		t.Fatal("an asset outside the perimeter was given a render date")
+	}
+}
+
+// A browser will not open some ports at all, so promoting one puts an asset at
+// the head of a queue that can never serve it.
+func TestAManualRequestOnAPortABrowserRefusesClaimsNothing(t *testing.T) {
+	h := newHarness(t)
+	id := h.renderable(t, "app.target.test:6666/tcp", time.Now().Add(20*24*time.Hour), lifecycle.PriorityBaseline)
+	h.exec(t, `UPDATE asset_current SET port = 6666 WHERE asset_id = $1`, id)
+
+	jobs := h.token(t, h.org, auth.ActionManageJobs)
+	resp, body := h.call(t, http.MethodPost, "/assets/"+id.String()+"/render", jobs, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the request answered %s", resp.Status)
+	}
+	if body["queued"] != false {
+		t.Fatalf("a port no browser opens was reported as queued: %v", body)
+	}
+
+	due, priority := h.render(t, id)
+	if !due.After(time.Now().Add(19*24*time.Hour)) || priority != lifecycle.PriorityBaseline {
+		t.Fatalf("the asset was promoted anyway: due %s at priority %d", due, priority)
+	}
+}

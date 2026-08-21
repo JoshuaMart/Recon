@@ -308,7 +308,7 @@ func (i *Ingestor) writeAsset(
 	if err != nil {
 		return nil, fmt.Errorf("upsert asset %s: %w", key.Value, err)
 	}
-	return newState(row, key.Kind)
+	return newState(row, key.Kind, key.Port)
 }
 
 // enrichInto turns the address a run connected to into an operator and a place.
@@ -447,9 +447,14 @@ func (i *Ingestor) writeServices(
 
 		// The scheme is what answered on the port, and it is what a render is
 		// pointed at later. Deriving it from the port number would be a guess
-		// about every application that speaks TLS somewhere unusual.
+		// about every application that speaks TLS somewhere unusual, and taking
+		// it from the report as written would let "HTTPS" through: the scheme
+		// decides whether a port belongs in an authority, so a case nobody
+		// lowered points a browser at a different service on the same host.
 		if port.HTTP != nil {
-			key.Scheme = port.HTTP.Scheme
+			if scheme, err := normalize.Scheme(port.HTTP.Scheme); err == nil {
+				key.Scheme = scheme
+			}
 		}
 		service, err := i.writeAsset(ctx, q, run, set, key, reported, &host.id)
 		if err != nil {
@@ -469,8 +474,10 @@ func (i *Ingestor) writeServices(
 		//
 		// What it does read is the instrument. Chrome answers ERR_UNSAFE_PORT
 		// on its own restricted list, so the failure is certain before the
-		// call, and a certain failure is not a measurement.
-		if fingerprint.Renderable(port.Port) {
+		// call, and a certain failure is not a measurement. The protocol is
+		// part of that: a browser speaks no UDP, and the render queue carries
+		// no protocol to notice with later.
+		if key.Kind == normalize.KindService && port.Protocol != "udp" && fingerprint.Renderable(port.Port) {
 			if err := i.earnBaseline(ctx, q, service); err != nil {
 				return err
 			}

@@ -143,6 +143,10 @@ func (i *Ingestor) renderState(ctx context.Context, q *sqlcgen.Queries, asset Re
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", asset.Key, err)
 	}
+	var port int
+	if row.Port != nil {
+		port = int(*row.Port)
+	}
 	return newState(sqlcgen.UpsertAssetAndProjectionRow{
 		AssetID:                      row.AssetID,
 		PreviousLifecycle:            &row.Lifecycle,
@@ -153,7 +157,7 @@ func (i *Ingestor) renderState(ctx context.Context, q *sqlcgen.Queries, asset Re
 		PreviousFingerprintReachable: row.FingerprintReachable,
 		PreviousFirstSeen:            row.FirstSeen,
 		PreviousLayers:               row.Layers,
-	}, normalize.Kind(asset.Kind))
+	}, normalize.Kind(asset.Kind), port)
 }
 
 // applyRender writes the observation, its counters and the schedule.

@@ -388,3 +388,132 @@ func (r *recorder) alerted() bool {
 	}
 	return false
 }
+
+// Starvation belongs to a programme, not to a pass.
+//
+// Workers on the same programme all compute the same wait, all sleep, all wake
+// together and exactly one wins the retry. If the losers stop the pass, a
+// deployment holding one programme renders two assets a tick whatever its batch
+// size, forever, and every other programme's work is dropped with it.
+func TestOneStarvedProgrammeDoesNotStopThePass(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	// A rate that affords roughly one render and then makes everyone wait.
+	h.exec(t, `UPDATE program SET rate_limit_rps = 10 WHERE id = $1`, h.program)
+
+	due := time.Now().Add(-time.Hour)
+	for port := 8000; port < 8008; port++ {
+		h.service(t, key(port), port, lifecycle.PriorityBaseline, due)
+	}
+
+	// A second programme, comfortably funded, whose work must not be dropped
+	// because the first one ran out.
+	rich := uuid.New()
+	h.exec(t, `INSERT INTO program (id, org_id, name, authorized_from, rate_limit_rps)
+	           VALUES ($1, $2, 'rich', now() - interval '1 day', 100000)`, rich, h.org)
+	richID := uuid.New()
+	h.exec(t, `INSERT INTO asset
+		(id, org_id, program_id, kind, key, host, discovery_source, scope_status, first_seen, last_seen)
+		VALUES ($1,$2,$3,'service','rich.acme.test:443/tcp','rich.acme.test','fixture','in_scope', now(), now())`,
+		richID, h.org, rich)
+	h.exec(t, `INSERT INTO asset_current
+		(asset_id, org_id, program_id, kind, key, scope_status, host, port, scheme,
+		 lifecycle, next_fingerprint_at, fingerprint_priority, first_seen, last_seen)
+		VALUES ($1,$2,$3,'service','rich.acme.test:443/tcp','in_scope','rich.acme.test',443,'https',
+		        'active',$4,$5, now(), now())`,
+		// Sorted last on purpose. The question is whether the funded programme
+		// is reached at all once the other one has run dry, and putting it
+		// first would answer a different one.
+		richID, h.org, rich, due.Add(time.Minute), lifecycle.PriorityBaseline)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			URL string `json:"url"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		writeRender(w, body.URL)
+	}))
+	defer server.Close()
+
+	pass := render.New(h.pool,
+		fingerprint.New(server.URL, 5*time.Second, permissive()),
+		ingest.New(nil, lifecycle.DefaultCadence(), quiet()),
+		render.NewBudget(30, nil),
+		render.Options{
+			Batch: 20, Concurrency: 8,
+			// No real waiting, so the race is the subject rather than the clock.
+			MaxWait: time.Millisecond,
+			Sleep:   func(context.Context, time.Duration) bool { return true },
+		}, quiet())
+
+	if _, err := pass.Once(ctx); err != nil {
+		t.Fatalf("pass: %v", err)
+	}
+
+	var rendered int
+	if err := h.pool.QueryRow(ctx,
+		`SELECT count(*) FROM observation WHERE asset_id = $1`, richID).Scan(&rendered); err != nil {
+		t.Fatalf("read the funded programme: %v", err)
+	}
+	if rendered == 0 {
+		t.Fatal("a funded programme rendered nothing because another one ran out of budget")
+	}
+}
+
+// An asset a browser can never be pointed at must leave the queue, or it sits
+// at the head of every batch forever: an error a minute, and enough of them
+// stop the pass reaching anything renderable at all.
+func TestAnUnrenderableAssetDoesNotLivelock(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	// A port Chrome refuses to open, promoted past the baseline filter the way
+	// a detected change or a manual request would.
+	id := h.service(t, "app.acme.test:6666/tcp", 6666, lifecycle.PriorityChange, time.Now().Add(-time.Hour))
+
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		var body struct {
+			URL string `json:"url"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		writeRender(w, body.URL)
+	}))
+	defer server.Close()
+
+	pass := render.New(h.pool,
+		fingerprint.New(server.URL, 5*time.Second, permissive()),
+		ingest.New(nil, lifecycle.DefaultCadence(), quiet()),
+		render.NewBudget(30, nil), render.Options{Batch: 10, Concurrency: 1}, quiet())
+
+	first, err := pass.Once(ctx)
+	if err != nil {
+		t.Fatalf("pass: %v", err)
+	}
+	if first.Selected != 1 || first.Skipped != 1 {
+		t.Fatalf("the pass reads %+v", first)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("%d calls to a browser that refuses this port", calls.Load())
+	}
+
+	// The next tick must not select it again.
+	second, err := pass.Once(ctx)
+	if err != nil {
+		t.Fatalf("pass: %v", err)
+	}
+	if second.Selected != 0 {
+		t.Fatalf("an asset nothing can render is still due, %d times over", second.Selected)
+	}
+
+	var due time.Time
+	if err := h.pool.QueryRow(ctx,
+		`SELECT next_fingerprint_at FROM asset_current WHERE asset_id = $1`, id).Scan(&due); err != nil {
+		t.Fatalf("read the schedule: %v", err)
+	}
+	if !due.After(time.Now().Add(24 * time.Hour)) {
+		t.Fatalf("the next attempt is at %s, which is still a loop", due)
+	}
+}

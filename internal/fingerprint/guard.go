@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -61,6 +62,82 @@ func Internal(addr netip.Addr) bool {
 	return false
 }
 
+// literal reads a host as an address, in every spelling a browser accepts.
+//
+// The canonical form is the one nobody writes by accident. Chrome still parses
+// the legacy inet_aton spellings, so http://2130706433/ and http://0177.0.0.1/
+// are loopback, and a check that only knows the dotted-quad lets both past to a
+// resolver that will fail on them and to a guard that reads a failed resolution
+// as "not my problem".
+func literal(host string) (netip.Addr, bool) {
+	if addr, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil {
+		return addr, true
+	}
+	return inetAton(host)
+}
+
+// inetAton parses the legacy forms: one to four parts, each decimal, octal with
+// a leading zero, or hexadecimal with a leading 0x. The last part absorbs
+// whatever the earlier ones did not.
+func inetAton(host string) (netip.Addr, bool) {
+	parts := strings.Split(host, ".")
+	if len(parts) == 0 || len(parts) > 4 {
+		return netip.Addr{}, false
+	}
+
+	values := make([]uint64, 0, len(parts))
+	for _, part := range parts {
+		value, ok := legacyNumber(part)
+		if !ok {
+			return netip.Addr{}, false
+		}
+		values = append(values, value)
+	}
+
+	// Every part but the last is one byte; the last takes the remaining ones.
+	var total uint64
+	for i, value := range values {
+		last := i == len(values)-1
+		width := uint(8)
+		if last {
+			width = uint(8 * (4 - i))
+		}
+		if width < 64 && value >= 1<<width {
+			return netip.Addr{}, false
+		}
+		if last {
+			total |= value
+		} else {
+			total |= value << (8 * (3 - uint(i)))
+		}
+	}
+	if total > 1<<32-1 {
+		return netip.Addr{}, false
+	}
+
+	return netip.AddrFrom4([4]byte{
+		byte(total >> 24), byte(total >> 16), byte(total >> 8), byte(total),
+	}), true
+}
+
+func legacyNumber(part string) (uint64, bool) {
+	if part == "" {
+		return 0, false
+	}
+	base, digits := 10, part
+	switch {
+	case len(part) > 2 && (part[:2] == "0x" || part[:2] == "0X"):
+		base, digits = 16, part[2:]
+	case len(part) > 1 && part[0] == '0':
+		base, digits = 8, part[1:]
+	}
+	value, err := strconv.ParseUint(digits, base, 64)
+	if err != nil {
+		return 0, false
+	}
+	return value, true
+}
+
 // Resolver is how a name becomes addresses, so a test does not need DNS.
 type Resolver func(ctx context.Context, host string) ([]netip.Addr, error)
 
@@ -101,7 +178,7 @@ func (g *Guard) Check(ctx context.Context, raw string) error {
 		return fmt.Errorf("%w: %q names no host", ErrInternal, raw)
 	}
 
-	if addr, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil {
+	if addr, ok := literal(host); ok {
 		if Internal(addr) {
 			return fmt.Errorf("%w: %s", ErrInternal, addr)
 		}

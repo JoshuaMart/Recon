@@ -13,7 +13,7 @@ import (
 
 const assetForRender = `-- name: AssetForRender :one
 SELECT c.asset_id, c.org_id, c.program_id, c.kind, c.key, c.lifecycle,
-       c.backoff_tier, c.http_streak, c.fingerprint_streak,
+       c.scope_status, c.port, c.backoff_tier, c.http_streak, c.fingerprint_streak,
        c.http_reachable, c.fingerprint_reachable, c.first_seen,
        (SELECT jsonb_object_agg(l.layer, jsonb_build_object(
                    'state', l.state,
@@ -38,6 +38,8 @@ type AssetForRenderRow struct {
 	Kind                 string
 	Key                  string
 	Lifecycle            string
+	ScopeStatus          string
+	Port                 *int32
 	BackoffTier          int32
 	HttpStreak           int32
 	FingerprintStreak    int32
@@ -63,6 +65,8 @@ func (q *Queries) AssetForRender(ctx context.Context, arg AssetForRenderParams) 
 		&i.Kind,
 		&i.Key,
 		&i.Lifecycle,
+		&i.ScopeStatus,
+		&i.Port,
 		&i.BackoffTier,
 		&i.HttpStreak,
 		&i.FingerprintStreak,
@@ -256,7 +260,8 @@ func (q *Queries) RescheduleRender(ctx context.Context, arg RescheduleRenderPara
 const selectDueRenders = `-- name: SelectDueRenders :many
 
 SELECT c.asset_id, c.org_id, c.program_id, c.kind, c.key, c.host, c.port, c.scheme,
-       c.final_url, c.http_reachable, c.fingerprint_reachable, p.rate_limit_rps
+       c.final_url, c.http_reachable, c.fingerprint_reachable,
+       c.is_cdn, c.cdn_provider, p.rate_limit_rps
   FROM asset_current c
   JOIN program p ON p.id = c.program_id
  WHERE c.next_fingerprint_at <= $1::timestamptz
@@ -286,6 +291,8 @@ type SelectDueRendersRow struct {
 	FinalUrl             *string
 	HttpReachable        *bool
 	FingerprintReachable *bool
+	IsCdn                *bool
+	CdnProvider          *string
 	RateLimitRps         int32
 }
 
@@ -328,6 +335,8 @@ func (q *Queries) SelectDueRenders(ctx context.Context, arg SelectDueRendersPara
 			&i.FinalUrl,
 			&i.HttpReachable,
 			&i.FingerprintReachable,
+			&i.IsCdn,
+			&i.CdnProvider,
 			&i.RateLimitRps,
 		); err != nil {
 			return nil, err

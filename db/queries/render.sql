@@ -20,7 +20,8 @@
 --
 -- name: SelectDueRenders :many
 SELECT c.asset_id, c.org_id, c.program_id, c.kind, c.key, c.host, c.port, c.scheme,
-       c.final_url, c.http_reachable, c.fingerprint_reachable, p.rate_limit_rps
+       c.final_url, c.http_reachable, c.fingerprint_reachable,
+       c.is_cdn, c.cdn_provider, p.rate_limit_rps
   FROM asset_current c
   JOIN program p ON p.id = c.program_id
  WHERE c.next_fingerprint_at <= @at::timestamptz
@@ -108,7 +109,7 @@ UPDATE asset_current c SET
 --
 -- name: AssetForRender :one
 SELECT c.asset_id, c.org_id, c.program_id, c.kind, c.key, c.lifecycle,
-       c.backoff_tier, c.http_streak, c.fingerprint_streak,
+       c.scope_status, c.port, c.backoff_tier, c.http_streak, c.fingerprint_streak,
        c.http_reachable, c.fingerprint_reachable, c.first_seen,
        (SELECT jsonb_object_agg(l.layer, jsonb_build_object(
                    'state', l.state,

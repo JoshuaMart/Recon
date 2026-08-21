@@ -18,6 +18,7 @@ import (
 
 	"github.com/JoshuaMart/recon/internal/fingerprint"
 	"github.com/JoshuaMart/recon/internal/ingest"
+	"github.com/JoshuaMart/recon/internal/lifecycle"
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
@@ -52,6 +53,11 @@ type Pass struct {
 	// the pass stops: the due dates were never moved, so everything it did not
 	// reach is still due on the next tick.
 	maxWait time.Duration
+	// blind is how long a target nothing could render waits. It is the cadence
+	// of the regime where neither observer gets through, which is the same
+	// question one level down: nothing was learned, and something has to keep
+	// asking without asking often.
+	blind time.Duration
 	// lastCensus throttles the unobservable count. It groups over the whole
 	// projection, so running it on every tick would put a full scan of the
 	// inventory on a loop that runs every minute for a number that moves when
@@ -69,6 +75,7 @@ type Options struct {
 	Concurrency       int
 	UnobservableAlert float64
 	MaxWait           time.Duration
+	Blind             time.Duration
 	Now               func() time.Time
 	Sleep             func(context.Context, time.Duration) bool
 }
@@ -87,6 +94,9 @@ func New(pool *pgxpool.Pool, client *fingerprint.Client, ingestor *ingest.Ingest
 	if opts.MaxWait <= 0 {
 		opts.MaxWait = 10 * time.Second
 	}
+	if opts.Blind <= 0 {
+		opts.Blind = lifecycle.DefaultCadence().RenderBlind
+	}
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
@@ -98,6 +108,7 @@ func New(pool *pgxpool.Pool, client *fingerprint.Client, ingestor *ingest.Ingest
 		batch: opts.Batch, concurrency: opts.Concurrency,
 		unobservableAlert: opts.UnobservableAlert,
 		maxWait:           opts.MaxWait,
+		blind:             opts.Blind,
 		now:               opts.Now, sleep: opts.Sleep, log: log,
 	}
 }
@@ -150,6 +161,13 @@ func (p *Pass) Once(ctx context.Context) (Summary, error) {
 		mu       sync.Mutex
 		refusals int
 		stop     bool
+		// Starvation belongs to a programme rather than to a pass. Workers on
+		// the same one all compute the same wait, all wake together, and
+		// exactly one wins the retry: if the losers stopped the pass, a
+		// deployment holding one programme would render two assets a tick
+		// whatever its batch size, and every other programme's work would be
+		// dropped with it.
+		starvedPrograms = map[uuid.UUID]struct{}{}
 	)
 	work := make(chan sqlcgen.SelectDueRendersRow)
 	var wg sync.WaitGroup
@@ -159,10 +177,19 @@ func (p *Pass) Once(ctx context.Context) (Summary, error) {
 		go func() {
 			defer wg.Done()
 			for row := range work {
+				program := uuid.UUID(row.ProgramID.Bytes)
+
 				mu.Lock()
 				halted := stop
+				_, dry := starvedPrograms[program]
 				mu.Unlock()
 				if halted || ctx.Err() != nil {
+					continue
+				}
+				if dry {
+					mu.Lock()
+					summary.Skipped++
+					mu.Unlock()
 					continue
 				}
 
@@ -183,9 +210,12 @@ func (p *Pass) Once(ctx context.Context) (Summary, error) {
 						stop = true
 					}
 				case starved:
+					// This programme is done for the pass and no other one is
+					// touched. Nothing was written, so everything it did not
+					// reach is still due on the next tick.
 					summary.Starved = true
 					summary.Skipped++
-					stop = true
+					starvedPrograms[program] = struct{}{}
 				case skipped:
 					summary.Skipped++
 				default:
@@ -233,8 +263,10 @@ func (p *Pass) render(ctx context.Context, row sqlcgen.SelectDueRendersRow) atte
 	target, ok := renderURL(row)
 	if !ok {
 		// Nothing to point a browser at. It is not an error and not a
-		// measurement: the asset simply is not a web surface.
+		// measurement: the asset simply is not a web surface. It still has to
+		// leave the queue, or it sits at the head of every batch forever.
 		p.log.WarnContext(ctx, "no render target", "asset", row.Key)
+		p.backOff(ctx, row)
 		return attempt{kind: skipped}
 	}
 
@@ -265,12 +297,16 @@ func (p *Pass) render(ctx context.Context, row sqlcgen.SelectDueRendersRow) atte
 			p.budget.Refund(program)
 			p.log.ErrorContext(ctx, "render refused a target inside an internal range",
 				"asset", row.Key, "url", target, "error", err)
+			p.backOff(ctx, row)
 			return attempt{kind: skipped}
 		default:
 			// The service could not address the target at all. Also a probe
-			// error, and also nothing written.
+			// error, so no observation and no counter, but the attempt still
+			// has to widen or the asset is retried every minute until somebody
+			// notices the log.
 			p.budget.Refund(program)
 			p.log.WarnContext(ctx, "render failed", "asset", row.Key, "error", err)
+			p.backOff(ctx, row)
 			return attempt{kind: failed}
 		}
 	}
@@ -283,6 +319,26 @@ func (p *Pass) render(ctx context.Context, row sqlcgen.SelectDueRendersRow) atte
 	return attempt{kind: rendered, page: page}
 }
 
+// backOff moves a render out without writing anything about the target.
+//
+// It is the difference between a probe error and a measurement, kept in both
+// directions. Nothing is observed, no counter moves and no timestamp is
+// touched, because nothing was learned; but the due date has to move, because
+// the due date is the queue and an asset that can never be rendered would
+// otherwise hold the head of it forever. Saturation is the one case that is
+// left alone, and deliberately: it is a state of the service, it clears in
+// seconds, and the pass stops knocking after three refusals anyway.
+func (p *Pass) backOff(ctx context.Context, row sqlcgen.SelectDueRendersRow) {
+	next := p.now().Add(p.blind)
+	if err := sqlcgen.New(p.pool).RescheduleRender(ctx, sqlcgen.RescheduleRenderParams{
+		AssetID:  row.AssetID,
+		At:       stamp(next),
+		Priority: lifecycle.PriorityBaseline,
+	}); err != nil {
+		p.log.ErrorContext(ctx, "render back-off failed", "asset", row.Key, "error", err)
+	}
+}
+
 func (p *Pass) write(ctx context.Context, row sqlcgen.SelectDueRendersRow, target string, result *fingerprint.Result) error {
 	tx, err := p.pool.Begin(ctx)
 	if err != nil {
@@ -290,14 +346,24 @@ func (p *Pass) write(ctx context.Context, row sqlcgen.SelectDueRendersRow, targe
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	written, err := p.ingestor.Render(ctx, sqlcgen.New(tx), ingest.RenderTarget{
+	asset := ingest.RenderTarget{
 		AssetID:   uuid.UUID(row.AssetID.Bytes),
 		OrgID:     uuid.UUID(row.OrgID.Bytes),
 		ProgramID: uuid.UUID(row.ProgramID.Bytes),
 		Kind:      row.Kind,
 		Key:       row.Key,
 		URL:       target,
-	}, result)
+	}
+	// Carried rather than left zero. A field that reads as if it holds the
+	// asset's edge and never does is a lie the next reader has to discover.
+	if row.IsCdn != nil {
+		asset.Fronted = *row.IsCdn
+	}
+	if row.CdnProvider != nil {
+		asset.Provider = *row.CdnProvider
+	}
+
+	written, err := p.ingestor.Render(ctx, sqlcgen.New(tx), asset, result)
 	if err != nil {
 		return err
 	}
@@ -332,6 +398,11 @@ func (p *Pass) alertUnobservable(ctx context.Context, queries *sqlcgen.Queries) 
 
 	rows, err := queries.CountUnobservable(ctx)
 	if err != nil {
+		// The window goes back, or a census that keeps failing silences the
+		// alert for as long as it keeps failing.
+		p.censusMu.Lock()
+		p.lastCensus = time.Time{}
+		p.censusMu.Unlock()
 		p.log.ErrorContext(ctx, "unobservable census failed", "error", err)
 		return
 	}

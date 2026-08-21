@@ -152,3 +152,37 @@ func permissive() *fingerprint.Guard {
 		return []netip.Addr{netip.MustParseAddr("93.184.216.34")}, nil
 	})
 }
+
+// Chrome still parses the legacy inet_aton spellings, so a guard that only
+// knows the dotted quad lets them past to a resolver that fails on them and
+// then reads the failure as "not my problem".
+func TestTheLegacyAddressSpellingsAreStillAddresses(t *testing.T) {
+	t.Parallel()
+
+	guard := fingerprint.NewGuard(func(context.Context, string) ([]netip.Addr, error) {
+		return nil, http.ErrNoLocation
+	})
+	ctx := context.Background()
+
+	loopback := []string{
+		"http://2130706433/", // decimal
+		"http://0177.0.0.1/", // octal
+		"http://0x7f.0.0.1/", // hexadecimal
+		"http://127.1/",      // two parts, the last absorbing three bytes
+		"http://2852039166/", // 169.254.169.254 in decimal
+	}
+	for _, raw := range loopback {
+		if err := guard.Check(ctx, raw); err == nil {
+			t.Errorf("%s was accepted, and a browser reads it as an internal address", raw)
+		}
+	}
+
+	// An ordinary name that happens not to resolve is still not a refusal.
+	if err := guard.Check(ctx, "https://acme.test/"); err != nil {
+		t.Errorf("an ordinary name was refused: %v", err)
+	}
+	// And a public address in a legacy spelling is still public.
+	if err := guard.Check(ctx, "http://3221226219/"); err != nil {
+		t.Errorf("192.0.2.235 written in decimal was refused: %v", err)
+	}
+}

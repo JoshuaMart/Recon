@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/JoshuaMart/recon/internal/auth"
+	"github.com/JoshuaMart/recon/internal/fingerprint"
 	"github.com/JoshuaMart/recon/internal/lifecycle"
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
@@ -56,6 +57,20 @@ func (h *Renders) Request(w http.ResponseWriter, r *http.Request, principal auth
 		return
 	}
 
+	// The same filter the baseline reads. A browser will not open some ports at
+	// all, so promoting one puts an asset at the head of a queue that can never
+	// serve it, and answering 200 tells the caller to wait for a render nobody
+	// will make.
+	if row.Port != nil && !fingerprint.Renderable(int(*row.Port)) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"asset_id": assetID,
+			"key":      row.Key,
+			"queued":   false,
+			"reason":   "a browser refuses this port, so no render is made for it",
+		})
+		return
+	}
+
 	at := h.now()
 	if err := queries.PromoteRender(ctx, sqlcgen.PromoteRenderParams{
 		AssetID:  uuidTo(assetID),
@@ -77,10 +92,15 @@ func (h *Renders) Request(w http.ResponseWriter, r *http.Request, principal auth
 		return
 	}
 
+	// Read from the statement's own conditions rather than from one of them.
+	// It refuses an asset that has left the scheduler and one outside the
+	// perimeter alike, and answering on the lifecycle alone told a caller to
+	// wait for a render nothing would ever select.
+	queued := after.Lifecycle != lifecycle.Archived && after.ScopeStatus == "in_scope"
 	writeJSON(w, http.StatusOK, map[string]any{
 		"asset_id": assetID,
 		"key":      after.Key,
-		"queued":   after.Lifecycle != lifecycle.Archived,
+		"queued":   queued,
 	})
 }
 

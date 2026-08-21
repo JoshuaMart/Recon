@@ -295,6 +295,23 @@ failing to compile, and the pattern matching the test output hid the build error
 green. A revert that does not compile asserts nothing at all, and the fix is to read the whole output
 rather than the lines a filter expects.
 
+**A second review found eight defects, all real, and two of them made the render loop useless in
+different ways.** Starvation was ending a pass rather than a programme: workers on the same one all
+compute the same wait, all wake together, and exactly one wins the retry, so a deployment holding one
+programme rendered two assets a tick whatever its batch size and every other programme's work was
+dropped with it. And only a *successful* render moved a due date, so an asset a browser can never be
+pointed at was re-selected every minute forever, at the head of the queue, until enough of them stopped
+the pass reaching anything renderable at all.
+
+The other six: a udp service earned a browser baseline, and the render queue carries no protocol to
+notice with later; the scheme was stored as the report wrote it, so `HTTPS` on port 8443 dropped the
+port from the authority and pointed a render at a different service on the same host; the promote path
+had no opinion about ports a browser refuses where the baseline path did; `queued` was read from the
+lifecycle alone while the statement also requires the perimeter; a replan spread under a second divided
+by zero; and the guard knew only the canonical address spelling, so `http://2130706433/` and
+`http://0177.0.0.1/` walked past it to a resolver that fails on them and a check that reads a failed
+resolution as somebody else's problem.
+
 **The unobservable census is throttled**, at five minutes rather than at the pass. It groups over the
 whole projection and the number it produces only moves when observations do, so taking it on every tick
 would buy nothing for a full scan a minute.

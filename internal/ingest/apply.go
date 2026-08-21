@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/JoshuaMart/recon/internal/fingerprint"
 	"github.com/JoshuaMart/recon/internal/lifecycle"
 	"github.com/JoshuaMart/recon/internal/normalize"
 	"github.com/JoshuaMart/recon/internal/signals"
@@ -30,10 +31,14 @@ type state struct {
 	// reach is what each observer has managed, and regime is what the
 	// projection has settled on. They are two different questions: the first
 	// moves on every observation, the second only after three concordant ones.
-	reach     lifecycle.Reach
-	regime    lifecycle.Regime
-	firstSeen time.Time
-	layers    map[normalize.Layer]lifecycle.Counters
+	reach  lifecycle.Reach
+	regime lifecycle.Regime
+	// renderable says a browser will open this asset's port at all. It travels
+	// with the state because the promote path decides in the same transaction
+	// as the write, and the port is already in hand there.
+	renderable bool
+	firstSeen  time.Time
+	layers     map[normalize.Layer]lifecycle.Counters
 }
 
 // storedLayer is how a layer's counters travel back from the upsert.
@@ -46,12 +51,13 @@ type storedLayer struct {
 	LastCheckedAt  *time.Time `json:"last_checked_at"`
 }
 
-func newState(row sqlcgen.UpsertAssetAndProjectionRow, kind normalize.Kind) (*state, error) {
+func newState(row sqlcgen.UpsertAssetAndProjectionRow, kind normalize.Kind, port int) (*state, error) {
 	st := &state{
-		id:      uuid.UUID(row.AssetID.Bytes),
-		kind:    kind,
-		created: row.Created,
-		layers:  map[normalize.Layer]lifecycle.Counters{},
+		id:         uuid.UUID(row.AssetID.Bytes),
+		kind:       kind,
+		created:    row.Created,
+		renderable: port > 0 && fingerprint.Renderable(port),
+		layers:     map[normalize.Layer]lifecycle.Counters{},
 	}
 	if row.PreviousLifecycle != nil {
 		st.lifecycle = *row.PreviousLifecycle
@@ -318,7 +324,12 @@ func (i *Ingestor) apply(
 	// its own trigger with its own filter and its own queue. Promoting it here
 	// would put every service of a fresh perimeter into the queue that exists
 	// to stay short.
-	if obs.layer == normalize.LayerHTTP && st.regime.Detector() && row.PreviousData != nil {
+	// The same filter the baseline reads. A change on a service Chrome refuses
+	// to open would otherwise take the head of the queue and stay there: the
+	// pass cannot render it and the promote path had no opinion about that,
+	// where the baseline path did.
+	if obs.layer == normalize.LayerHTTP && st.regime.Detector() &&
+		row.PreviousData != nil && st.renderable {
 		if err := q.PromoteRender(ctx, sqlcgen.PromoteRenderParams{
 			AssetID:  uuidTo(st.id),
 			At:       stamp(at),

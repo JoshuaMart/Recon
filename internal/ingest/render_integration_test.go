@@ -412,3 +412,62 @@ func TestTheSoleDetectorRendersAtItsOwnRate(t *testing.T) {
 		t.Fatalf("the next render is at %s, want %s: the renderer is the only detector left", due.UTC(), want)
 	}
 }
+
+// A report is evidence rather than a fact, and the scheme is the field where
+// that matters most quietly: it decides whether a port belongs in an authority,
+// so a case nobody lowered points a browser at a different service on the same
+// host and writes the answer against this one.
+func TestASchemeIsNormalizedBeforeItIsStored(t *testing.T) {
+	h := newHarness(t)
+	set := h.scope(t, include("acme.test"))
+	c := &clock{now: time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)}
+
+	report := liveHost("box.acme.test",
+		ingest.Port{Port: 8443, Protocol: "tcp", State: "open", HTTP: &ingest.HTTP{
+			URL: "https://box.acme.test:8443", Scheme: "HTTPS", StatusCode: 200, Title: "App",
+		}},
+		// A protocol no browser speaks, and the render queue carries no
+		// protocol to notice with later.
+		ingest.Port{Port: 1900, Protocol: "udp", State: "open"},
+	)
+	h.walk(t, c, h.dated(c), set, time.Hour, report)
+
+	var scheme string
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT scheme FROM asset_current WHERE program_id = $1 AND key = $2`,
+		h.program, "box.acme.test:8443/tcp").Scan(&scheme); err != nil {
+		t.Fatalf("read the scheme: %v", err)
+	}
+	if scheme != "https" {
+		t.Fatalf("the scheme is %q, and the port is dropped from every authority built from it", scheme)
+	}
+
+	if due := h.renderDueOf(t, "box.acme.test:1900/udp"); due != nil {
+		t.Fatalf("a udp service is queued for a browser at %s", due)
+	}
+}
+
+// The promote path reads the same filter as the baseline. A change on a service
+// Chrome refuses to open would otherwise take the head of the queue and stay
+// there, because the pass cannot render it and nothing moves it out.
+func TestAChangeOnAPortABrowserRefusesBuysNothing(t *testing.T) {
+	h := newHarness(t)
+	set := h.scope(t, include("acme.test"))
+	c := &clock{now: time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)}
+	ing := h.dated(c)
+
+	blocked := func(title string) ingest.Report {
+		return liveHost("box.acme.test", ingest.Port{
+			Port: 6666, Protocol: "tcp", State: "open", HTTP: &ingest.HTTP{
+				URL: "http://box.acme.test:6666", Scheme: "http", StatusCode: 200, Title: title,
+			},
+		})
+	}
+
+	h.walk(t, c, ing, set, time.Hour, blocked("App"))
+	h.walk(t, c, ing, set, time.Hour, blocked("App v2"))
+
+	if due := h.renderDueOf(t, "box.acme.test:6666/tcp"); due != nil {
+		t.Fatalf("a change on a port no browser opens queued a render at %s", due)
+	}
+}

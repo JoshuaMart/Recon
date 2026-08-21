@@ -458,10 +458,6 @@ func (c *Config) Validate(role Role) error {
 			fail("verification.ports is required: the port list travels in the run " +
 				"definition so that discovery and verification scan the same ports")
 		}
-		// A run reaches this control plane from somewhere else entirely, so
-		// this cannot be derived from the listen address. Without it a run
-		// definition names nowhere, and the failure would surface as a scanner
-		// that cannot fetch its targets rather than as a missing setting.
 		for name, value := range map[string]time.Duration{
 			"timeout": c.Render.Timeout, "interval": c.Render.Interval,
 			"replan_spread": c.Render.ReplanSpread,
@@ -470,12 +466,22 @@ func (c *Config) Validate(role Role) error {
 				fail("render.%s must be positive, got %s", name, value)
 			}
 		}
+		// Seconds, because that is the unit the statement spreads over. Under
+		// one second it truncates to zero and the modulo divides by it, which
+		// turns every replan into a 500.
+		if c.Render.ReplanSpread < time.Second {
+			fail("render.replan_spread must be at least a second, got %s", c.Render.ReplanSpread)
+		}
 		if c.Render.Batch <= 0 || c.Render.Concurrency <= 0 || c.Render.Cost <= 0 {
 			fail("render.batch, render.concurrency and render.cost must all be positive")
 		}
 		if c.Render.UnobservableAlert <= 0 || c.Render.UnobservableAlert > 1 {
 			fail("render.unobservable_alert must be a share in (0, 1], got %v", c.Render.UnobservableAlert)
 		}
+		// A run reaches this control plane from somewhere else entirely, so
+		// this cannot be derived from the listen address. Without it a run
+		// definition names nowhere, and the failure would surface as a scanner
+		// that cannot fetch its targets rather than as a missing setting.
 		if c.Verification.PublicURL == "" {
 			fail("verification.public_url is required: it is where a run fetches its " +
 				"target list and posts its report")
