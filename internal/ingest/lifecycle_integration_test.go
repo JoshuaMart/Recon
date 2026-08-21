@@ -678,3 +678,150 @@ func (h *harness) renderDueOf(t *testing.T, key string) *time.Time {
 	}
 	return due
 }
+
+// The backoff tier has to survive a round trip through the database, and the
+// curve has to start at its first rung. Both are wiring, and wiring is exactly
+// what a unit test on the arithmetic cannot see: the tier is read back from the
+// projection and written by a different statement.
+func TestTheBackoffCurveWalksAndResets(t *testing.T) {
+	h := newHarness(t)
+	set := h.scope(t, include("acme.test"))
+	c := &clock{now: time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)}
+	ing := h.dated(c)
+
+	gone := deadHost("wobble.acme.test", ingest.ReasonNXDomain)
+
+	// The first failure waits the first rung. Starting at the second would be
+	// invisible here and expensive on the candidate curve, where the first
+	// rung is one minute and is the whole of the freshness advantage.
+	at := c.now
+	h.walk(t, c, ing, set, time.Hour, gone)
+	h.expectDue(t, "wobble.acme.test", at.Add(15*time.Minute), 1)
+
+	at = c.now
+	h.walk(t, c, ing, set, time.Hour, gone)
+	h.expectDue(t, "wobble.acme.test", at.Add(time.Hour), 2)
+
+	at = c.now
+	h.walk(t, c, ing, set, time.Hour, gone)
+	h.expectDue(t, "wobble.acme.test", at.Add(6*time.Hour), 3)
+
+	// An asset that comes back does not carry the widening it earned while it
+	// was down. It goes straight back to the nominal cadence.
+	at = c.now
+	h.walk(t, c, ing, set, time.Hour, liveHost("wobble.acme.test"))
+	h.expectDue(t, "wobble.acme.test", at.Add(24*time.Hour), 0)
+
+	// And every pass counted, which is what separates "given up after forty
+	// tries" from "never managed to test".
+	if n := h.count(t,
+		`SELECT total_attempts FROM asset_current WHERE program_id = $1 AND key = 'wobble.acme.test'`,
+		h.program); n != 4 {
+		t.Fatalf("%d attempts recorded over four passes", n)
+	}
+}
+
+func (h *harness) expectDue(t *testing.T, key string, want time.Time, tier int) {
+	t.Helper()
+
+	var due time.Time
+	var got int
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT next_resolve_at, backoff_tier FROM asset_current WHERE program_id = $1 AND key = $2`,
+		h.program, key).Scan(&due, &got); err != nil {
+		t.Fatalf("read schedule of %s: %v", key, err)
+	}
+	if !due.Equal(want) {
+		t.Fatalf("due at %s, want %s", due.UTC(), want.UTC())
+	}
+	if got != tier {
+		t.Fatalf("backoff tier %d, want %d", got, tier)
+	}
+}
+
+// Whether a target is measurable is a relation between an observer and a
+// target, not a property of either, and it is orthogonal to whether the target
+// is alive. A 403 carrying a mitigation signature is a target that answered and
+// is there, and a probe that learned nothing.
+func TestAChallengeMovesTheObserverAndNotTheTarget(t *testing.T) {
+	h := newHarness(t)
+	set := h.scope(t, include("acme.test"))
+	c := &clock{now: time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)}
+	ing := h.dated(c)
+
+	const service = "app.acme.test:443/tcp"
+	answering := liveHost("app.acme.test", ingest.Port{
+		Port: 443, Protocol: "tcp", State: "open", HTTP: &ingest.HTTP{
+			URL: "https://app.acme.test", Scheme: "https", StatusCode: 200, Title: "App",
+		},
+	})
+
+	h.walk(t, c, ing, set, time.Hour, answering)
+	h.expectReach(t, service, 1, nil)
+
+	// Three concordant results in both directions, so a transient failure
+	// absorbs instead of flipping the regime.
+	h.walk(t, c, ing, set, time.Hour, answering, answering)
+	yes := true
+	h.expectReach(t, service, 3, &yes)
+
+	challenged := liveHost("app.acme.test", ingest.Port{
+		Port: 443, Protocol: "tcp", State: "open", HTTP: &ingest.HTTP{
+			URL: "https://app.acme.test", Scheme: "https", StatusCode: 403,
+			Server: "cloudflare", Title: "Just a moment...",
+		},
+	})
+
+	// It crosses zero rather than decrementing, so one failure after three
+	// successes reads as one failure.
+	h.walk(t, c, ing, set, time.Hour, challenged)
+	h.expectReach(t, service, -1, &yes)
+
+	h.walk(t, c, ing, set, time.Hour, challenged, challenged)
+	no := false
+	h.expectReach(t, service, -3, &no)
+
+	// And through all of it the target is alive. A challenge must never drift
+	// an asset toward a death: without the distinction every protected route
+	// in an inventory ends up somewhere it does not belong.
+	if state := h.lifecycleOf(t, service); state != lifecycle.Active {
+		t.Fatalf("a service answering a challenge is %q", state)
+	}
+	if state, informative, _ := h.layerOf(t, service, "http"); state != lifecycle.LayerHealthy || informative != 0 {
+		t.Fatalf("the http layer is %q after %d informative failures", state, informative)
+	}
+
+	var detected bool
+	var vendor string
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT waf_detected, waf_vendor FROM asset_current WHERE program_id = $1 AND key = $2`,
+		h.program, service).Scan(&detected, &vendor); err != nil {
+		t.Fatalf("read the mitigation columns: %v", err)
+	}
+	if !detected || vendor != "cloudflare" {
+		t.Fatalf("the mitigation reads detected=%v vendor=%q", detected, vendor)
+	}
+}
+
+func (h *harness) expectReach(t *testing.T, key string, streak int, reachable *bool) {
+	t.Helper()
+
+	var got int
+	var flag *bool
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT http_streak, http_reachable FROM asset_current WHERE program_id = $1 AND key = $2`,
+		h.program, key).Scan(&got, &flag); err != nil {
+		t.Fatalf("read reachability of %s: %v", key, err)
+	}
+	if got != streak {
+		t.Fatalf("http_streak %d, want %d", got, streak)
+	}
+	switch {
+	case reachable == nil && flag != nil:
+		t.Fatalf("http_reachable is %v before three concordant results", *flag)
+	case reachable != nil && flag == nil:
+		t.Fatalf("http_reachable is unset, want %v", *reachable)
+	case reachable != nil && *flag != *reachable:
+		t.Fatalf("http_reachable is %v, want %v", *flag, *reachable)
+	}
+}

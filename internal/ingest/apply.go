@@ -286,23 +286,28 @@ func (i *Ingestor) reschedule(ctx context.Context, q *sqlcgen.Queries, run Run, 
 	}
 
 	at := i.now()
-	tier := lifecycle.NextTier(st.lifecycle, st.tier)
 	// An asset that was never alive ends archived rather than inactive. It is
 	// not dead: it never existed.
 	archive := st.lifecycle == lifecycle.Candidate && lifecycle.Exhausted(st.firstSeen, at)
 
 	params := sqlcgen.RescheduleAssetParams{
-		AssetID:     uuidTo(st.id),
-		Archive:     archive,
-		BackoffTier: counter(tier),
+		AssetID: uuidTo(st.id),
+		Archive: archive,
+		// The tier stored is the one the *next* failure reads. The delay below
+		// is the rung this failure earned, which is the tier as it stands.
+		// Incrementing first skips the first rung of the curve, and on the
+		// candidate curve that rung is one minute and is the whole of the
+		// freshness advantage: it is the difference between catching a service
+		// as it appears and catching it once somebody has hardened it.
+		BackoffTier: counter(lifecycle.NextTier(st.lifecycle, st.tier)),
 		MoveResolve: true,
 		MoveFull:    run.movesFull(),
 	}
 	if !archive {
-		resolve := at.Add(i.cadence.Spread(i.cadence.Delay(st.lifecycle, lifecycle.RungResolve, tier), i.random()))
+		resolve := at.Add(i.cadence.Spread(i.cadence.Delay(st.lifecycle, lifecycle.RungResolve, st.tier), i.random()))
 		params.NextResolveAt = stamp(resolve)
 		if params.MoveFull {
-			full := at.Add(i.cadence.Spread(i.cadence.Delay(st.lifecycle, lifecycle.RungFull, tier), i.random()))
+			full := at.Add(i.cadence.Spread(i.cadence.Delay(st.lifecycle, lifecycle.RungFull, st.tier), i.random()))
 			params.NextFullAt = stamp(full)
 		}
 	}

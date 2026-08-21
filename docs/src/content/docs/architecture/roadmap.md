@@ -177,9 +177,18 @@ place: `degraded` sits **inside** `run` and this read it from the top level of t
 and every test that built a report in Go passed, because the position of a field only exists once a real
 document is decoded. There is now one test that decodes one, and removing the fix fails it.
 
-**Four fixes were checked by removing them**: the lease exclusion, the silence of a truncated run, the
-downgrade of a degraded one, and the filtered-port guard. Each leaves the rest of the suite green and
-fails only its own assertion, which is the whole of what rule 8 asks.
+**Six fixes were checked by removing them**: the lease exclusion, the silence of a truncated run, the
+downgrade of a degraded one, the filtered-port guard, the persistence of the backoff tier, and the three
+result threshold on reachability. Each leaves the rest of the suite green and fails only its own
+assertion, which is the whole of what rule 8 asks.
+
+**Two boxes were ticked before anything asserted them, and writing the assertions found a bug.** The
+backoff tier and the reachability counters were implemented, unit tested where the arithmetic lives, and
+never checked through the database. The tier round trip had an off by one: it was incremented before the
+delay was read, so **every curve started at its second rung**. On the flapping curve that is an hour
+instead of fifteen minutes; on the candidate curve it is five minutes instead of one, and that first
+minute is the whole of the freshness advantage. A unit test on the curve could not see it, because the
+curve was right and the caller was not.
 :::
 
 ## Phase 3: Fingerprinting
