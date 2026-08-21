@@ -1,0 +1,19 @@
+version: "2"
+sql:
+  - engine: postgresql
+    # The goose directory itself, never a parallel schema.sql. Two truths about
+    # the model at the moment it is frozen would be the worst debt available.
+    schema: db/migrations
+    queries: db/queries
+    gen:
+      go:
+        package: sqlcgen
+        out: internal/store/sqlcgen
+        sql_package: pgx/v5
+        emit_pointers_for_null_types: true
+        emit_empty_slices: true
+        query_parameter_limit: 0
+        overrides:
+          - db_type: "inet"
+            go_type: "net/netip.Addr"
+            nullable: true
