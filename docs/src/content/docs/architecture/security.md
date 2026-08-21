@@ -137,6 +137,13 @@ would make the fallback a code path no deployment ever runs, and the day it is n
 say whether it works. With both in place, taking the attribute away is enough to exercise the fallback for
 real, which is what the suite does.
 
+**Applying a policy is per table, and the loop over the catalog is a separate thing.** Five statements per
+table, every one of them `ACCESS EXCLUSIVE`, all held until the transaction commits. So the job that
+creates next month's partition covers *that partition* and touches nothing else: re-applying to everything
+would block the whole application on `asset_current` on the first tick of each month, and since the
+partition set only grows, the same tick eventually holds several hundred of those locks and starts failing
+on `max_locks_per_transaction`.
+
 **Which tables carry a policy is read from the catalog, never from a list inside a migration.** The rule is
 the one already written for the column: a table carrying `org_id` is a tenant table and gets RLS, and the
 exemptions are the same three, the organization itself, the person, and the seeded reference data. A list

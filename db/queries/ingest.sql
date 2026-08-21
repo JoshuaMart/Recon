@@ -581,16 +581,30 @@ SELECT c.asset_id, c.program_id, c.key
 -- internal half's, and they have a real lifecycle behind them. Archived assets
 -- are skipped for the reason pivots are: an archived asset is not a lead.
 --
+-- The cap bounds one page and never the tick. A fixed limit with a fixed order
+-- would walk the same lowest identifiers on every run, so a deployment with
+-- more references than the cap would leave its tail permanently unswept: an
+-- expired domain referenced only by a high identifier would never be resolved
+-- and never told, and nothing anywhere would say so.
+--
+-- The verdict already recorded comes back with the row, because a lookup that
+-- failed must leave the previous answer alone. Rewriting the list without it
+-- would drop the entry and the next successful tick would read it as newly
+-- dead, so one bad minute from a resolver re-sends every critical alert it
+-- covers.
+--
 -- @tenant: cross-org
 -- @why: the sweep serves every tenant in one tick, and the set of third party
 --       hosts to resolve is deduplicated across all of them: the same public CDN
 --       appears in every inventory and is worth one lookup, not one per tenant.
 -- name: ThirdPartyHosts :many
-SELECT c.asset_id, c.org_id, c.program_id, c.key, e.host
+SELECT c.asset_id, c.org_id, c.program_id, c.key, e.host,
+       COALESCE(c.attributes -> 'dead_external_hosts', '[]'::jsonb) AS recorded
   FROM asset_current c,
        LATERAL jsonb_array_elements_text(c.attributes -> 'external_hosts') AS e(host)
  WHERE jsonb_typeof(c.attributes -> 'external_hosts') = 'array'
    AND c.lifecycle <> 'archived'
+   AND c.asset_id > @after::uuid
    AND NOT EXISTS (
         SELECT 1 FROM asset_current own
          WHERE own.org_id = c.org_id AND own.host = e.host)

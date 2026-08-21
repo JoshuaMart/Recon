@@ -388,7 +388,7 @@ func TestTheExportAppliesNoDisplayFilterAndImposesNoCap(t *testing.T) {
 
 		var out bytes.Buffer
 		written, err := search.Export(ctx, tx, h.org, filter(t, `{"op":"and"}`),
-			search.FormatJSONL, 0, &out)
+			search.FormatJSONL, 0, into(&out))
 		if err != nil {
 			t.Fatalf("export: %v", err)
 		}
@@ -424,7 +424,7 @@ func TestTheExportAppliesNoDisplayFilterAndImposesNoCap(t *testing.T) {
 		// A limit can be asked for; it is never imposed.
 		out.Reset()
 		written, err = search.Export(ctx, tx, h.org, filter(t, `{"op":"and"}`),
-			search.FormatJSONL, 2, &out)
+			search.FormatJSONL, 2, into(&out))
 		if err != nil {
 			t.Fatalf("bounded export: %v", err)
 		}
@@ -435,7 +435,7 @@ func TestTheExportAppliesNoDisplayFilterAndImposesNoCap(t *testing.T) {
 		// CSV flattens, and the loss is the one that was named.
 		out.Reset()
 		if _, err := search.Export(ctx, tx, h.org, filter(t, `{"op":"and"}`),
-			search.FormatCSV, 0, &out); err != nil {
+			search.FormatCSV, 0, into(&out)); err != nil {
 			t.Fatalf("csv export: %v", err)
 		}
 		header, _, _ := strings.Cut(out.String(), "\n")
@@ -492,6 +492,54 @@ func TestThePaginationIsStableAcrossAWalk(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestAnExportThatFailsBeforeItBeginsIsNotAnEmptyFile.
+//
+// The export streams, so past the first page a failure cannot become a status
+// any more. Before it, it still can, and that is the difference between a
+// caller reading "the database refused" and a caller reading "my inventory is
+// empty" off a zero byte file.
+func TestAnExportThatFailsBeforeItBeginsIsNotAnEmptyFile(t *testing.T) {
+	h := newHarness(t)
+	h.inventory(t)
+
+	h.scoped(t, h.org, func(tx pgx.Tx) {
+		ctx := context.Background()
+
+		// A statement that cannot run: the transaction is left aborted, so the
+		// first page of the walk fails.
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM no_such_table`); err == nil {
+			t.Fatal("the poisoning statement succeeded")
+		}
+
+		var out bytes.Buffer
+		opened := false
+		written, err := search.Export(ctx, tx, h.org, filter(t, `{"op":"and"}`),
+			search.FormatJSONL, 0, func() io.Writer {
+				opened = true
+				return &out
+			})
+		if err == nil {
+			t.Fatal("an export over a broken transaction reported success")
+		}
+		if written != 0 {
+			t.Errorf("%d rows written by a failed export", written)
+		}
+		if opened {
+			t.Error("the export committed to a response before its first page came back, so the " +
+				"caller reads a database failure as an empty inventory")
+		}
+		if out.Len() != 0 {
+			t.Errorf("a failed export wrote %d bytes", out.Len())
+		}
+	})
+}
+
+// into hands the export a writer, which is what a handler does once it has
+// decided the response is going to happen.
+func into(w io.Writer) func() io.Writer {
+	return func() io.Writer { return w }
 }
 
 func keysOf(page search.Page) []string {
@@ -596,7 +644,7 @@ func TestNoQueryTouchesTheJournal(t *testing.T) {
 	}
 	var out bytes.Buffer
 	if _, err := search.Export(ctx, tx, h.org, filter(t, `{"op":"and"}`),
-		search.FormatJSONL, 0, &out); err != nil {
+		search.FormatJSONL, 0, into(&out)); err != nil {
 		t.Errorf("the export reads the journal: %v", err)
 	}
 }

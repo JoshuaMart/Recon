@@ -5,6 +5,7 @@ package external_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -223,22 +224,127 @@ func TestAHostInTheSameInventoryIsTheOtherHalvesBusiness(t *testing.T) {
 	}
 }
 
-// TestAResolverHavingABadMinuteIsNotAnExpiry.
+// TestAResolverHavingABadMinuteIsNotAnExpiry, in both directions.
 //
 // A timeout, a refusal or a broken resolver are not an authoritative "no such
-// domain", and reading them as one would raise a critical alert on every asset
-// of every tenant the first time the local resolver stumbled.
+// domain", so one must not create a finding. And it is not an authoritative
+// "still registered" either, so one must not erase a finding already recorded:
+// dropping the entry and re-adding it on the next successful tick reads as a
+// new finding, and the same critical alert goes out again for a host that has
+// been dead all week.
 func TestAResolverHavingABadMinuteIsNotAnExpiry(t *testing.T) {
 	h := newHarness(t)
+	ctx := context.Background()
 
-	h.asset(t, "app.acme.test:443/tcp", "active", `{"external_hosts":["cdn.unreachable.test"]}`)
+	h.asset(t, "app.acme.test:443/tcp", "active",
+		`{"external_hosts":["cdn.unreachable.test","cdn.expired.test"]}`)
 
-	resolver := &answers{fails: map[string]bool{"unreachable.test": true}}
-	if err := sweep(t, h, resolver).Once(context.Background()); err != nil {
+	// It creates nothing.
+	broken := &answers{fails: map[string]bool{"unreachable.test": true, "expired.test": true}}
+	if err := sweep(t, h, broken).Once(ctx); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
 	if found := h.events(t); len(found) != 0 {
-		t.Errorf("a resolver failure produced %v", found)
+		t.Fatalf("a resolver failure produced %v", found)
+	}
+
+	// A tick that works records the one that is really gone.
+	working := &answers{gone: map[string]bool{"expired.test": true}}
+	if err := sweep(t, h, working).Once(ctx); err != nil {
+		t.Fatalf("second sweep: %v", err)
+	}
+	if found := h.events(t); len(found) != 1 {
+		t.Fatalf("the working tick produced %v, want one finding", found)
+	}
+
+	// And a tick where the resolver stumbles on that same apex leaves the
+	// finding exactly where it was.
+	stumbling := &answers{fails: map[string]bool{"expired.test": true, "unreachable.test": true}}
+	if err := sweep(t, h, stumbling).Once(ctx); err != nil {
+		t.Fatalf("third sweep: %v", err)
+	}
+	var recorded int
+	if err := h.pool.QueryRow(ctx,
+		`SELECT count(*) FROM asset_current
+		  WHERE attributes -> 'dead_external_hosts' @> '["cdn.expired.test"]'::jsonb`).Scan(&recorded); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if recorded != 1 {
+		t.Error("a failed lookup erased a finding the previous tick had recorded")
+	}
+
+	// Which is what stops the next working tick re-sending it.
+	if err := sweep(t, h, working).Once(ctx); err != nil {
+		t.Fatalf("fourth sweep: %v", err)
+	}
+	if found := h.events(t); len(found) != 1 {
+		t.Errorf("%d findings after a resolver stumbled and recovered, want the first one alone",
+			len(found))
+	}
+}
+
+// TestTheWalkGoesPastOnePage.
+//
+// A fixed cap with a fixed order sweeps the same lowest identifiers on every
+// tick, so anything past it is permanently invisible: an expired domain
+// referenced only by a high identifier is never resolved and never told, and
+// nothing anywhere says so.
+func TestTheWalkGoesPastOnePage(t *testing.T) {
+	h := newHarness(t)
+
+	for i := range 12 {
+		h.asset(t, fmt.Sprintf("h%02d.acme.test:443/tcp", i), "active",
+			`{"external_hosts":["cdn.expired.test"]}`)
+	}
+
+	// A page smaller than the set, which is the whole point.
+	tick := external.New(h.pool, &answers{gone: map[string]bool{"expired.test": true}},
+		time.Hour, 5, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err := tick.Once(context.Background()); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	if found := h.events(t); len(found) != 12 {
+		t.Errorf("%d findings for 12 referencing assets, want all of them: the walk stopped at a page",
+			len(found))
+	}
+}
+
+// A verdict that says what it already said is not written.
+//
+// In steady state that is every asset carrying an external host, so writing
+// them all would be thousands of transactions and thousands of dead row
+// versions every tick, to store what was already there.
+func TestASettledVerdictIsNotRewritten(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	id := h.asset(t, "app.acme.test:443/tcp", "active",
+		`{"external_hosts":["cdn.expired.test","fonts.alive.test"]}`)
+	resolver := &answers{gone: map[string]bool{"expired.test": true}}
+	if err := sweep(t, h, resolver).Once(ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	var before int
+	if err := h.pool.QueryRow(ctx,
+		`SELECT xmin::text::bigint FROM asset_current WHERE asset_id = $1`, id).Scan(&before); err != nil {
+		t.Fatalf("read the row version: %v", err)
+	}
+
+	for range 3 {
+		if err := sweep(t, h, resolver).Once(ctx); err != nil {
+			t.Fatalf("sweep: %v", err)
+		}
+	}
+
+	var after int
+	if err := h.pool.QueryRow(ctx,
+		`SELECT xmin::text::bigint FROM asset_current WHERE asset_id = $1`, id).Scan(&after); err != nil {
+		t.Fatalf("read the row version: %v", err)
+	}
+	if after != before {
+		t.Errorf("three ticks that concluded nothing new rewrote the row (%d then %d)", before, after)
 	}
 }
 

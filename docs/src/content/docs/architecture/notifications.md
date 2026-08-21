@@ -117,6 +117,19 @@ is allowed to do:
 - It skips any host that is **in the same organization's inventory**, because that one is the internal half's
   and has a real lifecycle behind it.
 - It skips **archived** assets, for the reason pivots do: an archived asset is not a lead.
+- It walks the whole set in pages rather than capping the tick. A fixed cap over a fixed order sweeps the
+  same rows every time, so everything past it is permanently invisible and nothing says so, which is the
+  silent truncation the export and the timeline both refuse.
+
+**A lookup that failed is not an answer in either direction.** It is not "the domain expired", which is
+obvious, and it is not "the domain is fine" either, which is the half that gets missed: rewriting the list
+without an entry it could not check drops the finding, and the next tick that does resolve reads the same
+host as newly dead and re-sends a critical alert about something that has been dead all week. Whatever the
+last tick concluded stands until a tick concludes otherwise.
+
+**A verdict that says what it already said is not written.** In steady state that is every asset carrying
+an external host, and rewriting them all would be one transaction and one dead row version each, every
+tick, to store what was already there.
 
 **The verdict is written onto the referencing asset, in `attributes`, and never into a table of its own.**
 That is what keeps the sentence above true: the third party has no row, no identity and no due date, it is a

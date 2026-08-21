@@ -281,6 +281,15 @@ that *discover* the tenant, so they cannot be filtered by one. That is argued in
 members of that column reachable from a request. There are two because there are two kinds of credential: a
 console token names itself, and a run token names a run.
 
+**The two pools have two connection budgets.** One setting read twice means a deployment tuned so the
+control plane never exceeds a given number of backends quietly opens twice that, which on a managed
+instance with a hard `max_connections` is how the *next* service fails to connect. The system pool is
+bounded much lower, because it serves a handful of loops on a timer rather than every request.
+
+**Readiness probes both.** The system pool is what turns a credential into an organization, so a broken one
+answers every authenticated request with a 500 while a process checking only the other keeps reporting
+itself ready and stays in the rotation.
+
 **Every acquisition of the application pool goes through one helper that opens a transaction and sets the
 organization**, and there is no way to get a bare connection out of it. A `SET LOCAL` is transaction scoped
 by design, so a query outside a transaction cannot carry one, and an API that hands out both shapes is an

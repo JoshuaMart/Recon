@@ -460,6 +460,59 @@ func TestAPartitionCreatedLaterIsCoveredToo(t *testing.T) {
 	}
 }
 
+// TestCreatingAPartitionTouchesNoOtherTable is the cost of the previous test
+// being paid once rather than every month.
+//
+// Covering the new partition by re-applying the policies to everything would be
+// five ACCESS EXCLUSIVE locks per table, held until the maintenance transaction
+// commits, so the first tick of each month would block the whole application on
+// asset_current and on asset. And the partition set only grows: after a couple
+// of years that tick holds several hundred of those locks and starts failing on
+// max_locks_per_transaction.
+//
+// Proved by taking a policy away from a table the tick has no business
+// touching. If it comes back, the tick is touching everything.
+func TestCreatingAPartitionTouchesNoOtherTable(t *testing.T) {
+	tn := setupTenants(t)
+	ctx := context.Background()
+
+	exec(t, tn.ownerConn, `DROP POLICY tenant_isolation ON asset_current`)
+
+	if _, err := tn.ownerConn.Exec(ctx,
+		`SELECT ensure_monthly_partitions('observation'::regclass, 9)`); err != nil {
+		t.Fatalf("create partitions: %v", err)
+	}
+
+	var restored int
+	if err := tn.ownerConn.QueryRow(ctx, `
+		SELECT count(*) FROM pg_policy p
+		  JOIN pg_class c ON c.oid = p.polrelid
+		 WHERE c.relname = 'asset_current' AND p.polname = 'tenant_isolation'`).Scan(&restored); err != nil {
+		t.Fatalf("read the catalog: %v", err)
+	}
+	if restored != 0 {
+		t.Error("creating a partition re-applied the policy to asset_current, so the monthly tick " +
+			"takes an exclusive lock on every tenant table at once")
+	}
+
+	// And the partition it did create is covered, or the assertion above is
+	// satisfied by a tick that covers nothing at all.
+	var name string
+	var policies int
+	err := tn.ownerConn.QueryRow(ctx, `
+		SELECT c.relname, (SELECT count(*) FROM pg_policy p WHERE p.polrelid = c.oid)
+		  FROM pg_class c
+		  JOIN pg_inherits i ON i.inhrelid = c.oid
+		 WHERE i.inhparent = 'observation'::regclass
+		 ORDER BY c.relname DESC LIMIT 1`).Scan(&name, &policies)
+	if err != nil {
+		t.Fatalf("find the newest partition: %v", err)
+	}
+	if policies != 2 {
+		t.Errorf("%s carries %d policies, want both", name, policies)
+	}
+}
+
 // TestAPartitionReachedDirectlyIsScopedToo is the assertion that found the
 // hole.
 //

@@ -37,8 +37,16 @@ const exportPage = 500
 // The same AST, the same organization clause and the same table as the list.
 // There is no export query, which would be a second set of rules to keep in
 // sync with the first.
+//
+// begin is called once, after the first page has come back and before anything
+// is written, and it hands back the writer. That indirection is the whole point:
+// a caller that had already committed to a status could not turn a failure on
+// the very first statement into one, and the client would read a zero byte file
+// as an empty inventory. An absence must not read as data, and a failure must
+// not read as an absence.
 func Export(
-	ctx context.Context, q Querier, org uuid.UUID, filter Node, format string, limit int, w io.Writer,
+	ctx context.Context, q Querier, org uuid.UUID, filter Node, format string, limit int,
+	begin func() io.Writer,
 ) (int, error) {
 	switch format {
 	case FormatJSONL, FormatCSV:
@@ -46,16 +54,9 @@ func Export(
 		return 0, refuse("no export format named %q", format)
 	}
 
-	rows := w
+	var out io.Writer
 	var sheet *csv.Writer
-	if format == FormatCSV {
-		sheet = csv.NewWriter(w)
-		if err := sheet.Write(csvHeader); err != nil {
-			return 0, fmt.Errorf("write the header: %w", err)
-		}
-		rows = io.Discard
-	}
-	encoder := json.NewEncoder(rows)
+	var encoder *json.Encoder
 
 	written := 0
 	cursor := Cursor{}
@@ -80,8 +81,23 @@ func Export(
 		if err != nil {
 			return written, err
 		}
-		for _, row := range answer.Rows {
+
+		// Nothing has been sent yet on the first pass, so a failure above is
+		// still a status the caller can answer with.
+		if out == nil {
+			out = begin()
 			if format == FormatCSV {
+				sheet = csv.NewWriter(out)
+				if err := sheet.Write(csvHeader); err != nil {
+					return written, fmt.Errorf("write the header: %w", err)
+				}
+			} else {
+				encoder = json.NewEncoder(out)
+			}
+		}
+
+		for _, row := range answer.Rows {
+			if sheet != nil {
 				if err := sheet.Write(csvRow(row)); err != nil {
 					return written, fmt.Errorf("write a row: %w", err)
 				}

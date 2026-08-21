@@ -191,6 +191,14 @@ table carrying the expression, the type and the permitted operators. An unknown 
 query. Values are parameters, without exception. That is what "compiles to parameterized SQL" means, and it
 is also what makes adding a field both trivial and deliberate.
 
+**An empty group is only meaningful at the root.** There it is the request an interface sends before
+anybody has clicked a facet, and the whole tenant is the right answer. Nested it is a refusal, because an
+empty `and` is true by identity and an empty `or` is false, so the same shape means the whole inventory
+under one parent and nothing at all under the other. The case that settles it is the negation: `not` of an
+empty group is "not everything", which is no rows, and a compiler letting an empty group contribute
+nothing answers the entire inventory instead. Refusing names the group; picking one silently answers a
+different question.
+
 **The tenant is not a clause.** `org_id` does not exist in the registry, so the AST cannot express it, neither
 to filter on it nor to omit it. The compiler emits it itself, outside the tree, on every compilation. An
 organization filter the caller can express is one the caller can forget.
@@ -595,6 +603,11 @@ contain. It does not know the counter-of-1 guardrail either, for the same reason
 
 **No silent cap.** A limit can be asked for; it is never imposed. A truncated export that says nothing is the worst of
 the three possible behaviours, ahead of the slow export and ahead of the refusal.
+
+**The status is decided after the first page, not before it.** An export that streams cannot turn a later
+failure into a status, which is understood; sending the status up front means it cannot turn the *first*
+one into a status either, and then a database refusing the query arrives as `200` with an empty file. An
+absence must not read as data, and a failure must not read as an absence.
 
 ## 10.9 The asset view
 

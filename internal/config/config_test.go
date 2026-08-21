@@ -186,6 +186,37 @@ func TestTheControlPlaneRefusesToStartWithOnlyOneCredential(t *testing.T) {
 	}
 }
 
+// The two pools have two budgets, because one setting read twice is a
+// deployment tuned for N backends quietly opening 2N, which on a managed
+// instance with a hard max_connections is how the next service fails to
+// connect.
+func TestTheTwoPoolsAreBoundedSeparately(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.Load(config.RoleControlPlane, config.Options{
+		Environ: environ(
+			"RECON_DATABASE__URL=postgres://app@localhost/recon",
+			"RECON_DATABASE__SYSTEM_URL=postgres://sys@localhost/recon",
+			"RECON_SECURITY__SIGNING_KEY=a-signing-key-long-enough-to-be-one",
+			"RECON_VERIFICATION__PUBLIC_URL=https://recon.example",
+			"RECON_DATABASE__MAX_CONNS=40",
+		),
+	})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Database.MaxConns != 40 {
+		t.Errorf("database.max_conns = %d, want 40", cfg.Database.MaxConns)
+	}
+	if cfg.Database.SystemMaxConns == cfg.Database.MaxConns {
+		t.Errorf("the system pool inherited the request pool's bound of %d, so the deployment opens "+
+			"twice what it was tuned for", cfg.Database.SystemMaxConns)
+	}
+	if cfg.Database.SystemMaxConns <= 0 {
+		t.Errorf("database.system_max_conns defaults to %d", cfg.Database.SystemMaxConns)
+	}
+}
+
 // And the same credential twice is the separation being a naming convention
 // rather than a fact of deployment: the role that crosses tenants would be the
 // role that must not.

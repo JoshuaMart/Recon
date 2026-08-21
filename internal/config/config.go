@@ -280,7 +280,15 @@ type Database struct {
 	// there finds the owner credentials next to the application ones.
 	MigrationURL string `koanf:"migration_url"`
 
-	MaxConns       int32         `koanf:"max_conns"`
+	MaxConns int32 `koanf:"max_conns"`
+	// SystemMaxConns bounds the second pool separately, and it has to: both
+	// pools reading one setting means a deployment tuned so the control plane
+	// never exceeds N backends quietly opens 2N, which on a managed instance
+	// with a hard max_connections is how the *next* service fails to connect.
+	//
+	// It is much smaller because the work is: a handful of loops on a timer,
+	// against a pool that serves every request.
+	SystemMaxConns int32         `koanf:"system_max_conns"`
 	ConnectTimeout time.Duration `koanf:"connect_timeout"`
 }
 
@@ -323,6 +331,7 @@ func Defaults() Config {
 		},
 		Database: Database{
 			MaxConns:       10,
+			SystemMaxConns: 4,
 			ConnectTimeout: 5 * time.Second,
 		},
 		Maintenance: Maintenance{Interval: time.Hour},
@@ -537,6 +546,9 @@ func (c *Config) Validate(role Role) error {
 			fail("database.system_url is required: the loops that serve every tenant in one tick " +
 				"connect as the system role, and under row-level security the application role " +
 				"answers them with zero rows rather than with an error")
+		}
+		if c.Database.SystemMaxConns <= 0 {
+			fail("database.system_max_conns must be positive, got %d", c.Database.SystemMaxConns)
 		}
 		if c.Database.SystemURL == c.Database.URL {
 			fail("database.system_url and database.url are the same credential, so the role that " +

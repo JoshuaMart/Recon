@@ -833,20 +833,23 @@ func (q *Queries) StoreFavicon(ctx context.Context, arg StoreFaviconParams) erro
 }
 
 const thirdPartyHosts = `-- name: ThirdPartyHosts :many
-SELECT c.asset_id, c.org_id, c.program_id, c.key, e.host
+SELECT c.asset_id, c.org_id, c.program_id, c.key, e.host,
+       COALESCE(c.attributes -> 'dead_external_hosts', '[]'::jsonb) AS recorded
   FROM asset_current c,
        LATERAL jsonb_array_elements_text(c.attributes -> 'external_hosts') AS e(host)
  WHERE jsonb_typeof(c.attributes -> 'external_hosts') = 'array'
    AND c.lifecycle <> 'archived'
+   AND c.asset_id > $1::uuid
    AND NOT EXISTS (
         SELECT 1 FROM asset_current own
          WHERE own.org_id = c.org_id AND own.host = e.host)
  ORDER BY c.asset_id, e.host
- LIMIT $1::int
+ LIMIT $2::int
 `
 
 type ThirdPartyHostsParams struct {
-	Cap int32
+	After pgtype.UUID
+	Cap   int32
 }
 
 type ThirdPartyHostsRow struct {
@@ -855,6 +858,7 @@ type ThirdPartyHostsRow struct {
 	ProgramID pgtype.UUID
 	Key       string
 	Host      interface{}
+	Recorded  interface{}
 }
 
 // ThirdPartyHosts is what the external half walks.
@@ -869,13 +873,25 @@ type ThirdPartyHostsRow struct {
 // internal half's, and they have a real lifecycle behind them. Archived assets
 // are skipped for the reason pivots are: an archived asset is not a lead.
 //
+// The cap bounds one page and never the tick. A fixed limit with a fixed order
+// would walk the same lowest identifiers on every run, so a deployment with
+// more references than the cap would leave its tail permanently unswept: an
+// expired domain referenced only by a high identifier would never be resolved
+// and never told, and nothing anywhere would say so.
+//
+// The verdict already recorded comes back with the row, because a lookup that
+// failed must leave the previous answer alone. Rewriting the list without it
+// would drop the entry and the next successful tick would read it as newly
+// dead, so one bad minute from a resolver re-sends every critical alert it
+// covers.
+//
 // @tenant: cross-org
 // @why: the sweep serves every tenant in one tick, and the set of third party
 //
 //	hosts to resolve is deduplicated across all of them: the same public CDN
 //	appears in every inventory and is worth one lookup, not one per tenant.
 func (q *Queries) ThirdPartyHosts(ctx context.Context, arg ThirdPartyHostsParams) ([]ThirdPartyHostsRow, error) {
-	rows, err := q.db.Query(ctx, thirdPartyHosts, arg.Cap)
+	rows, err := q.db.Query(ctx, thirdPartyHosts, arg.After, arg.Cap)
 	if err != nil {
 		return nil, err
 	}
@@ -889,6 +905,7 @@ func (q *Queries) ThirdPartyHosts(ctx context.Context, arg ThirdPartyHostsParams
 			&i.ProgramID,
 			&i.Key,
 			&i.Host,
+			&i.Recorded,
 		); err != nil {
 			return nil, err
 		}

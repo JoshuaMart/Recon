@@ -94,6 +94,41 @@ func TestAnUnknownFieldOrOperatorIsARefusalRatherThanAQuery(t *testing.T) {
 	}
 }
 
+// TestANestedEmptyGroupIsARefusalRatherThanAGuess.
+//
+// An empty AND is TRUE by identity and an empty OR is FALSE, so the same shape
+// means the whole inventory in one parent and nothing at all in the other. The
+// case that decides it is the negation: "not(and())" is "not everything", which
+// is zero rows, and a compiler that lets an empty group contribute nothing
+// answers the entire inventory instead. A console that cleared the last facet
+// out of a negated group would read that as "there is nothing to exclude" and
+// get everything back.
+func TestANestedEmptyGroupIsARefusalRatherThanAGuess(t *testing.T) {
+	t.Parallel()
+
+	for name, tree := range map[string]string{
+		"a negated empty group": `{"op":"not","clauses":[{"op":"and","clauses":[]}]}`,
+		"an empty group beside a clause": `{"op":"or","clauses":[
+			{"op":"eq","field":"port","value":443},{"op":"and","clauses":[]}]}`,
+		"an empty group inside an and": `{"op":"and","clauses":[
+			{"op":"eq","field":"port","value":443},{"op":"or","clauses":[]}]}`,
+	} {
+		if _, err := Parse([]byte(tree)); err == nil {
+			t.Errorf("%s was accepted, and there is no reading of it that is not a guess", name)
+		}
+	}
+
+	// And the one place it is meaningful stays meaningful: an interface that
+	// has not filtered on anything yet.
+	compiled, err := Compile(uuid.New(), parse(t, `{"op":"and","clauses":[]}`))
+	if err != nil {
+		t.Fatalf("an empty request at the root was refused: %v", err)
+	}
+	if compiled.SQL != Alias+".org_id = $1" {
+		t.Errorf("an empty request compiles to %q, want the organization alone", compiled.SQL)
+	}
+}
+
 // TestASuffixWithAWildcardStaysASuffix is the trap the doc names, and it is
 // invisible without a wildcard in the value.
 //

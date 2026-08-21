@@ -132,36 +132,65 @@ type reference struct {
 	program uuid.UUID
 	key     string
 	host    string
+	// recorded is what the last tick concluded about this asset's hosts. A
+	// lookup that fails has to leave those alone, so it travels with the row
+	// rather than being read again at write time.
+	recorded []string
 }
 
 // Once resolves every distinct apex once and writes what it found.
+//
+// It walks the whole set rather than one capped page. A fixed cap with a fixed
+// order would sweep the same lowest identifiers on every tick, so anything past
+// it would be permanently invisible: an expired domain referenced only by a
+// high identifier would never be resolved and never told.
 func (s *Sweep) Once(ctx context.Context) error {
 	queries := sqlcgen.New(s.pool)
 
-	rows, err := queries.ThirdPartyHosts(ctx, sqlcgen.ThirdPartyHostsParams{Cap: int32(s.batch)}) //nolint:gosec // bounded by configuration
-	if err != nil {
-		return err
-	}
-	if len(rows) == 0 {
-		return nil
-	}
-
-	references := make([]reference, 0, len(rows))
+	var references []reference
 	apexes := map[string]bool{}
-	for _, row := range rows {
-		host, _ := row.Host.(string)
-		apex := Apex(host)
-		if apex == "" {
-			continue
+	after := uuid.Nil
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
-		references = append(references, reference{
-			asset:   uuid.UUID(row.AssetID.Bytes),
-			org:     uuid.UUID(row.OrgID.Bytes),
-			program: uuid.UUID(row.ProgramID.Bytes),
-			key:     row.Key,
-			host:    host,
+		rows, err := queries.ThirdPartyHosts(ctx, sqlcgen.ThirdPartyHostsParams{
+			After: pgUUID(after),
+			Cap:   int32(s.batch), //nolint:gosec // bounded by configuration
 		})
-		apexes[apex] = false
+		if err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			break
+		}
+		for _, row := range rows {
+			after = uuid.UUID(row.AssetID.Bytes)
+			host, _ := row.Host.(string)
+			apex := Apex(host)
+			if apex == "" {
+				continue
+			}
+			references = append(references, reference{
+				asset:    after,
+				org:      uuid.UUID(row.OrgID.Bytes),
+				program:  uuid.UUID(row.ProgramID.Bytes),
+				key:      row.Key,
+				host:     host,
+				recorded: decode(row.Recorded),
+			})
+			apexes[apex] = false
+		}
+		// A page ends on an asset boundary, so a short page is the end of the
+		// walk. The cursor is the asset rather than the pair, which is what
+		// keeps every host of one asset in the same page and therefore in the
+		// same verdict.
+		if len(rows) < s.batch {
+			break
+		}
+	}
+	if len(references) == 0 {
+		return nil
 	}
 
 	// One lookup per distinct apex, which is dozens for a whole deployment
@@ -170,15 +199,18 @@ func (s *Sweep) Once(ctx context.Context) error {
 	// dangling subdomain at somebody else's, which is not re-registrable and not
 	// the same finding.
 	gone := map[string]bool{}
+	unknown := map[string]bool{}
 	for apex := range apexes {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		registered, err := s.resolver.Registered(ctx, apex)
 		if err != nil {
-			// Not a verdict. A resolver having a bad minute is not a domain
-			// expiring, and the next tick asks again.
+			// Not a verdict, and therefore not an answer either. A resolver
+			// having a bad minute is not a domain expiring, and it is not a
+			// domain coming back: whatever the last tick concluded stands.
 			s.log.WarnContext(ctx, "could not resolve a third party apex", "apex", apex, "error", err)
+			unknown[apex] = true
 			continue
 		}
 		gone[apex] = !registered
@@ -191,37 +223,70 @@ func (s *Sweep) Once(ctx context.Context) error {
 	owner := map[uuid.UUID]reference{}
 	for _, ref := range references {
 		owner[ref.asset] = ref
-		if gone[Apex(ref.host)] {
+		apex := Apex(ref.host)
+		switch {
+		case gone[apex]:
 			dead[ref.asset] = append(dead[ref.asset], ref.host)
-		}
-	}
-	for asset := range owner {
-		if _, listed := dead[asset]; !listed {
-			// An empty list is written too, and that is not a no-op: it is how
-			// a domain somebody re-registered stops being reported.
-			dead[asset] = nil
+		case unknown[apex] && ref.was(ref.host):
+			// Carried forward untouched. Dropping it here and re-adding it on
+			// the next successful tick would read as a new finding, so one
+			// timeout would re-send every critical alert this list covers.
+			dead[ref.asset] = append(dead[ref.asset], ref.host)
 		}
 	}
 
 	found := 0
-	for asset, hosts := range dead {
-		emitted, err := s.record(ctx, queries, owner[asset], hosts)
+	written := 0
+	for asset, ref := range owner {
+		hosts := dead[asset]
+		// A list that says what it already said is not written. In steady
+		// state that is every asset carrying an external host, so writing them
+		// all would be thousands of transactions and thousands of dead row
+		// versions every tick, to store what was already there.
+		if same(hosts, ref.recorded) {
+			continue
+		}
+		emitted, err := s.record(ctx, ref, hosts)
 		if err != nil {
 			return err
 		}
+		written++
 		found += emitted
 	}
-	if found > 0 {
-		s.log.InfoContext(ctx, "third party hosts found unregistered",
-			"references", len(references), "apexes", len(apexes), "events", found)
+	if written > 0 {
+		s.log.InfoContext(ctx, "third party hosts re-assessed",
+			"references", len(references), "apexes", len(apexes),
+			"unresolved", len(unknown), "assets", written, "events", found)
 	}
 	return nil
 }
 
+// was reports whether this asset already carried the host as dead.
+func (r reference) was(host string) bool {
+	for _, recorded := range r.recorded {
+		if recorded == host {
+			return true
+		}
+	}
+	return false
+}
+
+// same compares two lists that are both built in the walk order of one asset's
+// external hosts, so they are comparable element by element.
+func same(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // record writes the verdict and tells only what changed.
-func (s *Sweep) record(
-	ctx context.Context, queries *sqlcgen.Queries, ref reference, hosts []string,
-) (int, error) {
+func (s *Sweep) record(ctx context.Context, ref reference, hosts []string) (int, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return 0, err

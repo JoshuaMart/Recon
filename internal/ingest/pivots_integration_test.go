@@ -187,6 +187,59 @@ func TestTheProjectionLiftsThePivotsOutOfThePayload(t *testing.T) {
 	}
 }
 
+// TestAnInventoryWrittenBeforeThisPhaseKeepsItsTechnologies is the upgrade
+// this change would otherwise have eaten.
+//
+// The column stopped being written by the http layer and started being derived
+// from two keys of `attributes`, and neither key exists on a row written before
+// the migration. A render strips its own key and rewrites it, and it has no
+// business touching the probe's: on a legacy row there is no probe key to
+// leave alone, so the union is computed from the render alone and everything
+// the probe had ever reported disappears from the column. It comes back on the
+// next full HTTP pass, which can be a week away, and nothing fails in the
+// meantime.
+//
+// The migration backfills the key from the column, which is exact: before this
+// phase the column was written by the http layer and by nothing else.
+func TestAnInventoryWrittenBeforeThisPhaseKeepsItsTechnologies(t *testing.T) {
+	h := newHarness(t)
+	set := h.scope(t, include("acme.test"))
+	c := &clock{now: today()}
+	ing := h.dated(c)
+
+	h.withCertificate(t, c, ing, set)
+
+	// A row as the previous phase left it: the column populated, and no key in
+	// attributes to derive it from. This is what the backfill runs against.
+	exec(t, h.pool, `UPDATE asset_current
+	                    SET technologies = ARRAY['nginx', 'openssl'],
+	                        attributes = attributes - 'tech_http' - 'tech_render'
+	                  WHERE program_id = $1 AND key = $2`, h.program, service)
+	if _, err := h.pool.Exec(context.Background(), `SELECT backfill_promoted_technologies()`); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	// A render, which is the observation that reaches a service without the
+	// probe's half of the union beside it.
+	c.now = c.now.Add(time.Hour)
+	page := rendered()
+	page.Technologies = []fingerprint.Technology{{Name: "react", Version: "18.2"}}
+	if _, err := ing.Render(context.Background(), h.queries, h.target(t), page); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	var technologies []string
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT technologies FROM asset_current WHERE program_id = $1 AND key = $2`,
+		h.program, service).Scan(&technologies); err != nil {
+		t.Fatalf("read technologies: %v", err)
+	}
+	if strings.Join(technologies, ",") != "nginx,openssl,react" {
+		t.Errorf("technologies = %v after a render on a row written before this phase, want the "+
+			"probe's two beside the render's one", technologies)
+	}
+}
+
 // TestALayerThatStopsReportingAValueStopsCountingIt is the COALESCE trap
 // wearing another name.
 //

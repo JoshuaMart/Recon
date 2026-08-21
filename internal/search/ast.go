@@ -112,6 +112,14 @@ func (n Node) validate(depth int) error {
 		if len(n.Clauses) > maxClauses {
 			return refuse("a group carries %d clauses, and the bound is %d", len(n.Clauses), maxClauses)
 		}
+		// A group with nothing in it is only meaningful at the root, where it
+		// is the request an interface sends before anybody has clicked a
+		// facet. Nested, an empty AND is TRUE by identity and an empty OR is
+		// FALSE, so the same shape means the whole inventory in one parent and
+		// nothing at all in the other, and whoever sent it meant neither.
+		if depth > 0 && len(n.Clauses) == 0 {
+			return refuse("a %q group with nothing in it", n.Op)
+		}
 		if n.Op == OpNot && len(n.Clauses) == 0 {
 			return refuse("a negation with nothing to negate is not a query")
 		}

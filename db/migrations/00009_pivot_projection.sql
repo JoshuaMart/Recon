@@ -159,6 +159,51 @@ $$;
 COMMENT ON FUNCTION volatility(int[], date) IS
     'Changes over the last seven days. The eighth bucket is margin and is deliberately not summed.';
 
+-- The column, carried into the key it is now derived from.
+--
+-- Before this migration `technologies` was written by the http layer and by
+-- nothing else, so attributing all of it to the probe is exact rather than a
+-- guess. Without this, a render landing on a row written earlier computes the
+-- union from its own key alone, because the probe's does not exist yet, and
+-- everything the probe had reported vanishes from the column until the next
+-- full pass. Nothing fails, the facet just goes quiet.
+--
+-- A function rather than a bare UPDATE so that the assertion can call it
+-- against a row it wrote itself, which is the only way to test a backfill that
+-- has already run.
+--
+-- +goose StatementBegin
+CREATE FUNCTION backfill_promoted_technologies()
+RETURNS bigint
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    touched bigint;
+BEGIN
+    UPDATE asset_current
+       SET attributes = attributes || jsonb_build_object('tech_http', to_jsonb(technologies))
+     WHERE COALESCE(array_length(technologies, 1), 0) > 0
+       AND NOT (attributes ? 'tech_http');
+    GET DIAGNOSTICS touched = ROW_COUNT;
+    RETURN touched;
+END
+$$;
+-- +goose StatementEnd
+
+COMMENT ON FUNCTION backfill_promoted_technologies() IS
+    'Carries a pre-existing technologies column into the attributes key it is now derived from.';
+
+-- +goose StatementBegin
+DO $$
+DECLARE
+    touched bigint;
+BEGIN
+    SELECT backfill_promoted_technologies() INTO touched;
+    RAISE NOTICE 'technologies carried into attributes on % rows', touched;
+END
+$$;
+-- +goose StatementEnd
+
 -- One change, recorded in today's bucket.
 --
 -- The shift and the increment are one operation, and separating them is how the
@@ -222,6 +267,7 @@ COMMENT ON FUNCTION generic_pivot(text, text) IS
 
 -- +goose Down
 
+DROP FUNCTION IF EXISTS backfill_promoted_technologies();
 DROP FUNCTION IF EXISTS generic_pivot(text, text);
 DROP FUNCTION IF EXISTS record_change(int[], date, date);
 DROP FUNCTION IF EXISTS technology_names(jsonb);

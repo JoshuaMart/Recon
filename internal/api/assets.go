@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 
@@ -127,19 +128,32 @@ func (h *Assets) Export(w http.ResponseWriter, r *http.Request, principal auth.P
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	contentType := "application/x-ndjson"
-	if format == search.FormatCSV {
-		contentType = "text/csv; charset=utf-8"
+	// The status is committed to only once the first page has come back, which
+	// is what lets a failure on the very first statement stay a failure. Sent
+	// up front, it would answer 200 with a zero byte body, and the caller has
+	// no way to tell that from an inventory with nothing in it.
+	started := false
+	begin := func() io.Writer {
+		started = true
+		contentType := "application/x-ndjson"
+		if format == search.FormatCSV {
+			contentType = "text/csv; charset=utf-8"
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusOK)
+		return w
 	}
-	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusOK)
 
-	written, err := search.Export(ctx, tx, principal.OrgID, filter, format, body.Limit, w)
+	written, err := search.Export(ctx, tx, principal.OrgID, filter, format, body.Limit, begin)
 	if err != nil {
-		// The body has already begun, so this cannot become a status. It is
-		// logged and the connection carries a truncated file, which is the one
-		// case where an export ends short: it is a failure rather than a cap.
+		if !started {
+			h.answerError(ctx, w, "export failed before it began", err)
+			return
+		}
+		// Past that point the body has begun and this cannot become a status.
+		// It is logged and the connection carries a truncated file, which is
+		// the one case where an export ends short: a failure rather than a cap.
 		h.log.ErrorContext(ctx, "export failed part way",
 			"org", principal.OrgID, "written", written, "error", err)
 		return

@@ -47,14 +47,65 @@ COMMENT ON FUNCTION tenant_org() IS
 -- again, and a test walks the same catalog and fails on any table it missed.
 --
 -- +goose StatementBegin
+CREATE FUNCTION apply_tenant_policy(target text) RETURNS void
+    LANGUAGE plpgsql
+    SET search_path = public, pg_catalog
+AS $$
+DECLARE
+    predicate text;
+BEGIN
+    predicate := CASE target
+        -- The tenant carries its identity in id, so the policy that keeps an
+        -- organization from reading another's name reads that column.
+        WHEN 'org' THEN 'id = tenant_org()'
+        -- A person belongs to several organizations, which is the whole point
+        -- of the join table, so the only honest predicate goes through it. The
+        -- consequence is worth naming: a role subject to this cannot insert a
+        -- person, because the membership that would authorize the row does not
+        -- exist yet. Creating people is bootstrap's job and bootstrap runs as
+        -- the owner.
+        WHEN 'app_user' THEN
+            'EXISTS (SELECT 1 FROM membership m WHERE m.user_id = app_user.id '
+            'AND m.org_id = tenant_org())'
+        ELSE 'org_id = tenant_org()'
+    END;
+
+    EXECUTE format('DROP POLICY IF EXISTS tenant_isolation ON %I', target);
+    EXECUTE format(
+        'CREATE POLICY tenant_isolation ON %I FOR ALL TO asm_app USING (%s) WITH CHECK (%s)',
+        target, predicate, predicate);
+
+    -- The fallback for a cluster that will not grant BYPASSRLS, installed
+    -- whether or not this one does. Installing only the path that happens to be
+    -- available would make the other a code path no deployment ever runs, and
+    -- the day it is needed is the day nobody can say whether it works. With
+    -- both in place, taking the attribute away exercises this one for real,
+    -- which is what the suite does.
+    --
+    -- WITH CHECK repeats USING, which is also what PostgreSQL infers when it is
+    -- omitted. Written out because the write half is the one a reader forgets
+    -- exists.
+    EXECUTE format('DROP POLICY IF EXISTS system_crosses ON %I', target);
+    EXECUTE format(
+        'CREATE POLICY system_crosses ON %I FOR ALL TO asm_sys USING (true) WITH CHECK (true)',
+        target);
+
+    EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', target);
+END
+$$;
+-- +goose StatementEnd
+
+COMMENT ON FUNCTION apply_tenant_policy(text) IS
+    'Applies both policies to one table. Five statements, every one of them ACCESS EXCLUSIVE.';
+
+-- +goose StatementBegin
 CREATE FUNCTION apply_tenant_policies() RETURNS int
     LANGUAGE plpgsql
     SET search_path = public, pg_catalog
 AS $$
 DECLARE
-    entry     record;
-    predicate text;
-    covered   int := 0;
+    entry   record;
+    covered int := 0;
 BEGIN
     -- DROP POLICY IF EXISTS raises a notice per policy it did not find, which
     -- on a first application is two per table and buries the one line worth
@@ -80,39 +131,7 @@ BEGIN
                               AND a.attnum > 0 AND NOT a.attisdropped))
          ORDER BY c.relname
     LOOP
-        predicate := CASE entry.relname
-            -- The tenant carries its identity in id, so the policy that keeps
-            -- an organization from reading another's name reads that column.
-            WHEN 'org' THEN 'id = tenant_org()'
-            -- A person belongs to several organizations, which is the whole
-            -- point of the join table, so the only honest predicate goes
-            -- through it. The consequence is worth naming: a role subject to
-            -- this cannot insert a person, because the membership that would
-            -- authorize the row does not exist yet. Creating people is
-            -- bootstrap's job and bootstrap runs as the owner.
-            WHEN 'app_user' THEN
-                'EXISTS (SELECT 1 FROM membership m WHERE m.user_id = app_user.id '
-                'AND m.org_id = tenant_org())'
-            ELSE 'org_id = tenant_org()'
-        END;
-
-        EXECUTE format('DROP POLICY IF EXISTS tenant_isolation ON %I', entry.relname);
-        EXECUTE format(
-            'CREATE POLICY tenant_isolation ON %I FOR ALL TO asm_app USING (%s) WITH CHECK (%s)',
-            entry.relname, predicate, predicate);
-
-        -- The fallback for a cluster that will not grant BYPASSRLS, installed
-        -- whether or not this one does. Installing only the path that happens
-        -- to be available would make the other a code path no deployment ever
-        -- runs, and the day it is needed is the day nobody can say whether it
-        -- works. With both in place, taking the attribute away exercises this
-        -- one for real, which is what the suite does.
-        EXECUTE format('DROP POLICY IF EXISTS system_crosses ON %I', entry.relname);
-        EXECUTE format(
-            'CREATE POLICY system_crosses ON %I FOR ALL TO asm_sys USING (true) WITH CHECK (true)',
-            entry.relname);
-
-        EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', entry.relname);
+        PERFORM apply_tenant_policy(entry.relname);
         covered := covered + 1;
     END LOOP;
 
@@ -129,6 +148,7 @@ COMMENT ON FUNCTION apply_tenant_policies() IS
 -- grants EXECUTE to PUBLIC on a new function, so "not granted" is not a state
 -- one starts in.
 REVOKE EXECUTE ON FUNCTION apply_tenant_policies() FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION apply_tenant_policy(text) FROM PUBLIC;
 
 -- A partition created next month has to carry the policy too, and the only
 -- thing that will be running then is the housekeeping loop. So the door that
@@ -169,15 +189,19 @@ BEGIN
             EXECUTE format(
                 'CREATE TABLE %I.%I PARTITION OF %I.%I FOR VALUES FROM (%L) TO (%L)',
                 schema, part, schema, parent, month, month + interval '1 month');
+            -- The partition it just made, and no other table.
+            --
+            -- Re-applying to everything would be five ACCESS EXCLUSIVE locks
+            -- per table held until this transaction commits, so the first tick
+            -- of each month would block the whole application on asset_current
+            -- and on asset. And the partition set only grows: after a couple of
+            -- years the same tick holds several hundred of those locks and
+            -- starts failing on max_locks_per_transaction, monthly, at
+            -- whatever hour the loop happens to run.
+            PERFORM apply_tenant_policy(part);
             created := created + 1;
         END IF;
     END LOOP;
-
-    -- Only when something was created, so the ordinary tick that finds every
-    -- partition already there stays the no-op it has always been.
-    IF created > 0 THEN
-        PERFORM apply_tenant_policies();
-    END IF;
 
     RETURN created;
 END
@@ -245,4 +269,5 @@ $$;
 -- +goose StatementEnd
 
 DROP FUNCTION IF EXISTS apply_tenant_policies();
+DROP FUNCTION IF EXISTS apply_tenant_policy(text);
 DROP FUNCTION IF EXISTS tenant_org();

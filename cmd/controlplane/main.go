@@ -79,7 +79,10 @@ func run() error {
 	defer appPool.Close()
 	scoped := store.NewScoped(appPool)
 
-	system, err := store.Open(ctx, cfg.Database.SystemURL, cfg.Database.MaxConns, cfg.Database.ConnectTimeout)
+	// Its own bound, and a smaller one. Both pools reading one setting means a
+	// deployment tuned for N backends quietly opens 2N.
+	system, err := store.Open(ctx, cfg.Database.SystemURL, cfg.Database.SystemMaxConns,
+		cfg.Database.ConnectTimeout)
 	if err != nil {
 		return err
 	}
@@ -291,13 +294,22 @@ func routes(
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 
-		if err := scoped.Ping(ctx); err != nil {
-			log.ErrorContext(ctx, "readiness check failed", "error", err)
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-				"status": "unavailable",
-				"reason": "database",
-			})
-			return
+		// Both pools, because a request needs both. The system one is what
+		// turns a credential into an organization, so a broken one 500s every
+		// authenticated call while a process pinging only the other keeps
+		// reporting itself ready and stays in the rotation.
+		for name, ping := range map[string]func(context.Context) error{
+			"database":        scoped.Ping,
+			"system_database": system.Ping,
+		} {
+			if err := ping(ctx); err != nil {
+				log.ErrorContext(ctx, "readiness check failed", "pool", name, "error", err)
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+					"status": "unavailable",
+					"reason": name,
+				})
+				return
+			}
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 	})

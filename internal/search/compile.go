@@ -43,7 +43,7 @@ func Compile(org uuid.UUID, node Node) (Compiled, error) {
 	b := &builder{}
 	tenant := Alias + ".org_id = " + b.bind(org)
 
-	clause, err := b.node(node)
+	clause, err := b.node(node, 0)
 	if err != nil {
 		return Compiled{}, err
 	}
@@ -53,24 +53,32 @@ func Compile(org uuid.UUID, node Node) (Compiled, error) {
 	return Compiled{SQL: tenant + " AND (" + clause + ")", Args: b.args}, nil
 }
 
-func (b *builder) node(n Node) (string, error) {
+func (b *builder) node(n Node, depth int) (string, error) {
 	switch n.Op {
 	// The zero value, which is what a caller that filters on nothing passes.
 	// Reaching the leaf path with it would refuse the most common request in
 	// the system, and refuse it with a message about an empty operator.
 	case "":
+		if depth > 0 {
+			return "", refuse("a clause with no operator")
+		}
 		return "", nil
 
 	case OpAnd, OpOr:
-		return b.group(n, strings.ToUpper(n.Op))
+		return b.group(n, strings.ToUpper(n.Op), depth)
 
 	case OpNot:
-		inner, err := b.group(n, "AND")
+		inner, err := b.group(n, "AND", depth)
 		if err != nil {
 			return "", err
 		}
 		if inner == "" {
-			return "", nil
+			// Unreachable while a nested empty group is a refusal, and kept so
+			// that relaxing that rule cannot quietly turn a negation into its
+			// opposite: an empty group means "no constraint", which is true,
+			// and dropping the NOT around it would answer the whole inventory
+			// where the honest answer is nothing at all.
+			return "", refuse("a negation with nothing to negate")
 		}
 		return "NOT (" + inner + ")", nil
 
@@ -79,22 +87,30 @@ func (b *builder) node(n Node) (string, error) {
 	}
 }
 
-func (b *builder) group(n Node, joiner string) (string, error) {
+func (b *builder) group(n Node, joiner string, depth int) (string, error) {
 	parts := make([]string, 0, len(n.Clauses))
 	for _, clause := range n.Clauses {
-		compiled, err := b.node(clause)
+		compiled, err := b.node(clause, depth+1)
 		if err != nil {
 			return "", err
 		}
-		if compiled == "" {
-			continue
-		}
 		parts = append(parts, compiled)
 	}
+
 	if len(parts) == 0 {
-		// An empty group is not an error. It is what an interface sends before
-		// anybody has clicked a facet, and answering it with the whole tenant
-		// is the right answer.
+		// At the root an empty group is not an error: it is what an interface
+		// sends before anybody has clicked a facet, and the whole tenant is the
+		// right answer.
+		//
+		// Anywhere else it is a refusal, because there is no reading of it that
+		// is not a guess. An empty AND is TRUE by identity and an empty OR is
+		// FALSE, so "or(port=443, and())" means the whole inventory while
+		// "and(port=443, or())" means nothing at all, and a console that
+		// cleared the last facet out of a group meant neither. Refusing names
+		// the group; picking one silently answers a different question.
+		if depth > 0 {
+			return "", refuse("a %q group with nothing in it", n.Op)
+		}
 		return "", nil
 	}
 	return strings.Join(parts, " "+joiner+" "), nil

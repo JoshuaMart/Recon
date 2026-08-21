@@ -591,6 +591,37 @@ counter rather than left to be rediscovered.
 **The four clause query over a million synthetic assets answers in 164 ms**, and its facets in 414 ms. That
 is the number the whole chapter rests on: it is what says a double write to Elasticsearch on day one would
 have been a trap rather than foresight.
+
+**A review afterwards found nine defects, and the three that mattered were each a correct-looking answer
+rather than a failure.**
+
+`technologies` stopped being written by a layer and started being derived from two keys of `attributes`,
+and neither key exists on a row written before the migration. A render landing on such a row computed the
+union from its own key alone, so everything the probe had ever reported disappeared from the column until
+the next full HTTP pass, which can be a week away. The migration carries the column into the key, which is
+exact: before this phase nothing but the http layer wrote it.
+
+**A failed DNS lookup erased a finding rather than leaving it alone.** The sweep rewrites the list of dead
+external hosts wholesale, and an apex it could not resolve simply fell out of it, so the next tick that did
+resolve read the same host as newly dead and re-sent a critical alert about a domain that had been gone all
+week. One test asserted that a failure creates nothing; none asserted that it destroys nothing.
+
+**The job that creates next month's partition re-applied the policies to every table**, five `ACCESS
+EXCLUSIVE` locks each, held until it committed. The first tick of each month would have blocked the whole
+application on `asset_current`, and since the partition set only grows, the same tick would eventually hold
+several hundred locks and fail on `max_locks_per_transaction`.
+
+Six more, each small and each real. The sweep capped the tick rather than the page, so a deployment with
+more references than the cap left its tail permanently unswept and said nothing. It rewrote every asset it
+looked at, including the ones whose verdict had not moved. The export sent `200` before its first query
+ran, so a database refusing it arrived as an empty file. A nested empty group compiled to "no constraint",
+which under a negation answers the whole inventory where the honest answer is nothing. The second pool
+read the first one's connection bound, so a deployment tuned for one budget opened two. And readiness
+probed only the application pool, while the system pool is what every authenticated request needs first.
+
+One of the nine has no assertion behind it and it is worth saying which: the readiness probe. Testing it
+means standing up the whole route set against two pools to observe one status code, and the change is two
+lines of wiring. It was verified by reading.
 :::
 
 ## Phase 7: Console
