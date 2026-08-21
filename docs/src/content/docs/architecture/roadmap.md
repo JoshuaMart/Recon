@@ -74,6 +74,16 @@ the first pull request, which is also when the required checks get their names.
 
 **Goal**: freeze the [model](/architecture/data-model/). This is the most irreversible phase of the project.
 
+:::caution[Started with milestone 0's CI assertion red]
+An explicit derogation to [rule 1](#project-rules), taken by Joshua. Every job the workflow declares
+passes locally in the same form; what has not happened is the workflow running on a pull request, which
+needs the branch pushed and nothing else.
+
+The derogation is named and bounded to that one assertion rather than a relaxation of the rule: a rule
+enjambed in silence stops protecting anything, while one written down stays readable. **Milestone 0 does
+not close** until the box is ticked for the right reason.
+:::
+
 - [ ] `org`, `app_user`, `membership`, multi-tenant from the first migration
 - [ ] `program` and `scope_rule` with their validity windows and their `version`
 - [ ] `asset` with [canonical keys](/architecture/data-model/#43-canonical-keys), lineage and scope status
