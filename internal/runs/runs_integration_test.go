@@ -482,14 +482,34 @@ func TestADeadDiscoveryRunIsReplacedRatherThanWaitedOut(t *testing.T) {
 		t.Fatalf("sweep: %v", err)
 	}
 
+	// Not immediately. A permanently broken runner would otherwise provision
+	// and bill on every tick, which is the failure this delay bounds.
+	if again, err := cadence.Once(ctx); err != nil || again != 0 {
+		t.Fatalf("a replacement went out %d times before the retry delay, %v", again, err)
+	}
+
 	// A whole discovery interval has not passed, and the replacement still
 	// goes out: a run that failed in thirty seconds must not cost a week.
+	h.clock.now = h.clock.now.Add(h.sched.Config().DiscoveryRetry + time.Minute)
 	started, err := cadence.Once(ctx)
 	if err != nil {
 		t.Fatalf("the replacement: %v", err)
 	}
 	if started != 1 {
 		t.Fatalf("%d replacements went out, and the interval is seven days away", started)
+	}
+
+	// And the record of when this programme was last enumerated survived. The
+	// cursor and the fact are the same column, so clearing it to schedule a
+	// retry would answer "never enumerated" about a programme enumerated an
+	// hour ago.
+	var last *time.Time
+	if err := h.pool.QueryRow(ctx,
+		`SELECT last_discovery_at FROM program WHERE id = $1`, h.program).Scan(&last); err != nil {
+		t.Fatalf("read last_discovery_at: %v", err)
+	}
+	if last == nil {
+		t.Fatal("the record of the last discovery was destroyed to schedule a retry")
 	}
 
 	// And a run in flight still bounds the cadence to one at a time, which is
@@ -598,3 +618,67 @@ func (r *recorder) Start(_ context.Context, def *runs.Definition) (string, error
 }
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// A programme with nothing to enumerate is not due, so it is not selected and
+// refused on every tick. At a one minute cadence that is a warning a minute
+// forever rather than a signal.
+func TestAProgrammeWithNoApexIsNotDue(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	platform := &recorder{id: "run-01"}
+	scheduler := runs.New(h.sched.Signer(), h.sched.Config(), quiet(),
+		runs.WithClock(h.clock.Now), runs.WithPlatform(platform))
+	cadence := runs.NewCadence(h.pool, scheduler, time.Minute, quiet())
+
+	if started, err := cadence.Once(ctx); err != nil || started != 0 {
+		t.Fatalf("%d runs went out over a programme with no apex, %v", started, err)
+	}
+	if platform.calls != 0 {
+		t.Fatalf("the platform was called %d times", platform.calls)
+	}
+
+	// And it becomes due the moment it has one.
+	exec(t, h.pool, `INSERT INTO scope_rule (id, org_id, program_id, kind, matcher, pattern, valid_from)
+		VALUES ($1,$2,$3,'include','apex','acme.test',$4)`,
+		uuid.New(), h.org, h.program, h.clock.now.Add(-time.Hour))
+	if started, err := cadence.Once(ctx); err != nil || started != 1 {
+		t.Fatalf("%d runs went out once the perimeter existed, %v", started, err)
+	}
+}
+
+// An exclusion the scanner cannot be given is a real gap in the safety net, and
+// the run says so rather than dropping it.
+func TestAnExclusionThatCannotTravelIsSaidOutLoud(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	for _, rule := range []struct{ matcher, pattern string }{
+		{"fqdn", "vpn.acme.test"},
+		{"cidr", "10.0.0.0/8"},
+	} {
+		exec(t, h.pool, `INSERT INTO scope_rule (id, org_id, program_id, kind, matcher, pattern, valid_from)
+			VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+			uuid.New(), h.org, h.program, "exclude", rule.matcher, rule.pattern, h.clock.now.Add(-time.Hour))
+	}
+	exec(t, h.pool, `INSERT INTO scope_rule (id, org_id, program_id, kind, matcher, pattern, valid_from)
+		VALUES ($1,$2,$3,'include','apex','acme.test',$4)`,
+		uuid.New(), h.org, h.program, h.clock.now.Add(-time.Hour))
+
+	def, err := h.sched.Discovery(ctx, h.queries, h.org, h.program)
+	if err != nil {
+		t.Fatalf("discovery: %v", err)
+	}
+
+	if arg(def.Args, "--exclude") != "vpn.acme.test" {
+		t.Fatalf("the name exclusion did not travel: %v", def.Args)
+	}
+	// The range does not travel, and it must not travel as a name either: a
+	// scanner given "10.0.0.0/8" as a domain pattern would exclude nothing and
+	// say nothing.
+	for _, value := range def.Args {
+		if value == "10.0.0.0/8" {
+			t.Fatal("an address range was handed over as a name pattern")
+		}
+	}
+}

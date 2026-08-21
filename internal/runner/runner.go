@@ -29,9 +29,15 @@ func NewNone(log *slog.Logger) *None { return &None{log: log} }
 func (n *None) Name() string { return "none" }
 
 // Start logs what would have been started and returns no identifier.
+//
+// The invocation is redacted, and that is not caution. It carries two live
+// bearer credentials: one that posts this run's report and one that fetches its
+// frozen target list. Writing them at INFO would put in every log exactly what
+// the rest of this path took the trouble to keep out of a URL, and for the same
+// reason: logs outlive the run by a long way.
 func (n *None) Start(ctx context.Context, def *runs.Definition) (string, error) {
 	n.log.InfoContext(ctx, "run definition ready, nothing starts it here",
 		"run", def.RunID, "kind", def.Kind, "scope", def.Scope,
-		"targets", def.TargetCount, "args", def.Args)
+		"targets", def.TargetCount, "args", runs.Redacted(def.Args))
 	return "", nil
 }

@@ -50,7 +50,10 @@ func (h *Targets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// the scanner's --targets-header flag exists for: a token in a URL is a
 	// token in every access log, proxy log and error message that ever prints
 	// that URL, and those outlive the run by a long way.
-	token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	token, scheme := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !scheme {
+		token = ""
+	}
 	signed, err := h.signer.Verify(auth.PurposeTargets, strings.TrimSpace(token), h.now())
 	if err != nil {
 		h.log.WarnContext(ctx, "target list refused", "reason", err)

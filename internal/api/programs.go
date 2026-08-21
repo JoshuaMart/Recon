@@ -35,13 +35,22 @@ type Programs struct {
 	pool      *pgxpool.Pool
 	scheduler *runs.Scheduler
 	ingestor  *ingest.Ingestor
-	now       func() time.Time
-	log       *slog.Logger
+	// launchTimeout bounds the work that outlives the request, which without a
+	// bound of its own would have none at all.
+	launchTimeout time.Duration
+	now           func() time.Time
+	log           *slog.Logger
 }
 
 // NewPrograms builds them.
-func NewPrograms(pool *pgxpool.Pool, scheduler *runs.Scheduler, ingestor *ingest.Ingestor, log *slog.Logger) *Programs {
-	return &Programs{pool: pool, scheduler: scheduler, ingestor: ingestor, now: time.Now, log: log}
+func NewPrograms(pool *pgxpool.Pool, scheduler *runs.Scheduler, ingestor *ingest.Ingestor, launchTimeout time.Duration, log *slog.Logger) *Programs {
+	if launchTimeout <= 0 {
+		launchTimeout = time.Minute
+	}
+	return &Programs{
+		pool: pool, scheduler: scheduler, ingestor: ingestor,
+		launchTimeout: launchTimeout, now: time.Now, log: log,
+	}
 }
 
 // StartRun provisions one run over a programme.
@@ -128,7 +137,16 @@ func (h *Programs) StartRun(w http.ResponseWriter, r *http.Request, principal au
 	// leave an execution running with a valid credential against a run row that
 	// was rolled back; starting after means a platform refusing on a quota
 	// leaves a row the deadline sweeper owns, and nothing has to be repaired.
-	if err := h.scheduler.Launch(ctx, sqlcgen.New(h.pool), definition); err != nil {
+	//
+	// And detached from the request, which is the part that is easy to miss. A
+	// console that hangs up mid-call would otherwise cancel a start the
+	// platform has already accepted, or cancel the write that records what it
+	// called the execution: an execution nobody can find the logs of, which is
+	// the one thing that column exists for. The sweeper's story assumes a
+	// refusal means nothing started, and a cancelled call breaks that.
+	launchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), h.launchTimeout)
+	defer cancel()
+	if err := h.scheduler.Launch(launchCtx, sqlcgen.New(h.pool), definition); err != nil {
 		// The run exists and the sweeper owns it, so this is reported rather
 		// than turned into a failure the caller might retry into a second run.
 		h.log.ErrorContext(ctx, "run not started", "run", definition.RunID, "error", err)

@@ -293,8 +293,25 @@ func (s *Scheduler) Discovery(
 	// The exclusion patterns travel with the perimeter. A rule may have changed
 	// between a run being defined and a run starting, and they are the second
 	// safety net in front of the network rather than a duplicate of the scope.
-	for _, pattern := range excluded {
-		def.Args = append(def.Args, "--exclude", pattern)
+	//
+	// The scanner's exclusions are name patterns, so a rule matching on an
+	// address range or a path cannot travel. Those still classify at ingestion,
+	// which is after the packet, and that is a real gap in the safety net: it
+	// is logged rather than dropped in silence, because a perimeter whose
+	// exclusions half apply is worse than one whose limits are known.
+	var untravelled []string
+	for _, rule := range excluded {
+		switch rule.Matcher {
+		case "apex", "fqdn":
+			def.Args = append(def.Args, "--exclude", rule.Pattern)
+		default:
+			untravelled = append(untravelled, rule.Matcher+":"+rule.Pattern)
+		}
+	}
+	if len(untravelled) > 0 {
+		s.log.WarnContext(ctx, "exclusions the scanner cannot be given",
+			"program", program, "run", def.RunID, "rules", untravelled,
+			"effect", "those hosts are probed and classified out of scope afterwards")
 	}
 
 	// Written at creation rather than at completion. A run that dies on the
@@ -451,6 +468,29 @@ func (s *Scheduler) targetsURL(run uuid.UUID) string {
 	return fmt.Sprintf("%s/runs/%s/targets", strings.TrimSuffix(s.cfg.PublicURL, "/"), run)
 }
 
+// credentialFlags are the arguments whose value is a live credential.
+//
+// Both are bearer tokens for the life of the run they name: one posts its
+// report, the other fetches its frozen target list. Anything that prints an
+// invocation has to go through Redacted, which is why the list lives here
+// rather than at each call site that might forget it.
+var credentialFlags = map[string]struct{}{
+	"--webhook-header": {},
+	"--targets-header": {},
+}
+
+// Redacted is an invocation safe to write down.
+func Redacted(args []string) []string {
+	out := make([]string, len(args))
+	copy(out, args)
+	for i := range out {
+		if _, secret := credentialFlags[out[i]]; secret && i+1 < len(out) {
+			out[i+1] = "Authorization: Bearer <redacted>"
+		}
+	}
+	return out
+}
+
 // Scopes a run may be given, and they are the scanner's own names.
 //
 // The ladder is a scope rather than a list of stages, and each rung runs the
@@ -459,9 +499,9 @@ func (s *Scheduler) targetsURL(run uuid.UUID) string {
 // probe type. These are the same four values the run row is constrained to, so
 // the column and the flag cannot drift apart.
 const (
-	// ScopeEnum is a passive pass: enumeration and nothing else.
-	ScopeEnum = "enum"
-	// ScopeFull walks every rung, and it is what a discovery run does.
+	// ScopeFull walks every rung, and it is what a discovery run does. The
+	// scanner also accepts enum, resolve and ports; only the ones this
+	// provisions are named here, so an unused constant cannot drift.
 	ScopeFull = "full"
 )
 
@@ -492,6 +532,11 @@ func bounded(n int) int32 {
 }
 
 func pgUUID(id uuid.UUID) pgtype.UUID { return pgtype.UUID{Bytes: id, Valid: true} }
+
+// interval carries a duration into a statement that compares against one.
+func interval(d time.Duration) pgtype.Interval {
+	return pgtype.Interval{Microseconds: d.Microseconds(), Valid: true}
+}
 
 func stamp(t time.Time) pgtype.Timestamptz {
 	return pgtype.Timestamptz{Time: t.UTC(), Valid: true}

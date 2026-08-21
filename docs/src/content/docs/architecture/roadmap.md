@@ -361,6 +361,28 @@ cleared it: a run that failed in thirty seconds cost a week of coverage. And a d
 host's lineage, so "what did this source find" answered with every service in the inventory rather than
 with the names the source returned.
 
+**A review afterwards found six defects, and the sharpest was the one this phase had just taken trouble
+over.** The default runner logged the whole invocation at INFO, and the invocation carries two live
+bearer tokens: one that posts the run's report and one that fetches its frozen target list. The same
+diff had just moved a credential out of a URL because "a token in a URL is a token in every access log",
+and then wrote both of them into the log directly. Invocations go through a redaction that lives beside
+what builds them, so a call site cannot forget it.
+
+The others: the post-commit start ran on the request context, so a console hanging up mid-call could
+cancel a start the platform had already accepted or lose the name it gave the execution; clearing
+`last_discovery_at` to schedule a retry destroyed the record of when a programme was last enumerated and
+turned a permanently broken runner into a loop that provisions and bills on every tick, so the retry is a
+delay in the due query instead; a programme with no apex was selected and refused once a minute forever;
+an exclusion the scanner cannot be given was dropped in silence rather than named; and the target list
+endpoint accepted a credential without its `Bearer` scheme where the report endpoint refuses one.
+
+**Two findings were checked and did not hold.** The start response envelope was called wrong against
+`v1alpha1`, and the deployed API is `v1alpha2`, which returns the list this parses, as the live run
+proves. And `--stages full` on a verification run was called an unbudgeted enumeration, where the
+scanner's own documentation says a supplied list replaces enumeration rather than skipping it. The
+second half of the first finding was fair and is fixed: there was no test over the start call at all, so
+a mismatched envelope would have been a warning and an execution nobody could find the logs of.
+
 **One assertion is ticked for the half this repository owns.** A source with no key reporting itself is
 FastRecon's, and it is proven live. An **empty** variable being an error rather than "no key" is also
 FastRecon's, and it was not verified here. What Recon owes is that it names credentials and never carries

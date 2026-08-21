@@ -288,9 +288,9 @@ func (i *Ingestor) writeAsset(
 	// step would attribute it to whichever source returned the name, and a
 	// question like "what did this source actually find" would answer with
 	// every service in the inventory.
-	step := lineage(run, host)
-	if key.Kind == normalize.KindService {
-		step = derived(run, key)
+	step := derived(run, key)
+	if key.Kind != normalize.KindService {
+		step = lineage(run, host)
 	}
 	path, err := json.Marshal([]any{step})
 	if err != nil {

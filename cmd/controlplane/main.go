@@ -215,7 +215,7 @@ func routes(
 	// The console surface. Every route goes through one authorization layer
 	// that produces a principal, even while there is one kind of caller.
 	guard := api.NewGuard(pool, log)
-	programs := api.NewPrograms(pool, scheduler, ingestor, log)
+	programs := api.NewPrograms(pool, scheduler, ingestor, cfg.Runner.Timeout, log)
 	mux.Handle("POST /programs/{program}/runs", guard.Require(auth.ActionManageJobs, programs.StartRun))
 	// Entering an asset by hand is an assertion about the perimeter, which is
 	// a different privilege from writing what a scanner found.

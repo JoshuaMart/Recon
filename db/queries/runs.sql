@@ -69,30 +69,13 @@ SELECT id, kind, scope, state, deadline, created_at, started_at, target_count
 -- expiring it frees its targets and makes the failure visible.
 --
 -- name: ExpireRuns :many
-WITH expired AS (
-    UPDATE run SET
-        state       = 'expired',
-        finished_at = @at::timestamptz,
-        error       = COALESCE(error, 'the deadline passed and no report was delivered')
-     WHERE state IN ('pending', 'running')
-       AND deadline <= @at::timestamptz
-    RETURNING id, org_id, program_id, kind, scope, started_at, target_count
-),
--- A discovery run that delivered nothing gives its cadence slot back.
---
--- last_discovery_at is written at creation so that the cadence cannot start a
--- second run while the first is in flight. Left there after a run died, it also
--- means the programme waits a whole discovery interval for a replacement: a run
--- that failed in thirty seconds would cost a week of coverage. Clearing it here
--- is what makes the next tick provision one, and it cannot double-start,
--- because there is no longer a run in flight for the condition to see.
-replaced AS (
-    UPDATE program p SET last_discovery_at = NULL
-      FROM expired e
-     WHERE p.id = e.program_id AND e.kind = 'discovery'
-    RETURNING p.id
-)
-SELECT id, org_id, program_id, kind, scope, started_at, target_count FROM expired;
+UPDATE run SET
+    state       = 'expired',
+    finished_at = @at::timestamptz,
+    error       = COALESCE(error, 'the deadline passed and no report was delivered')
+ WHERE state IN ('pending', 'running')
+   AND deadline <= @at::timestamptz
+RETURNING id, org_id, program_id, kind, scope, started_at, target_count;
 
 -- MarkRunRunning records that a scanner opened the run.
 --
@@ -140,13 +123,39 @@ SELECT p.id, p.org_id, p.name, p.rate_limit_rps
    AND p.authorized_from <= @at::timestamptz
    AND (p.authorized_to IS NULL OR p.authorized_to > @at::timestamptz)
    AND (p.last_discovery_at IS NULL
-        OR p.last_discovery_at + p.discovery_interval <= @at::timestamptz)
+        OR p.last_discovery_at + p.discovery_interval <= @at::timestamptz
+        -- Or the last discovery ended without delivering, and the retry delay
+        -- has passed. A run that failed in thirty seconds must not cost a week
+        -- of coverage, and clearing last_discovery_at instead would be worse
+        -- twice over: it destroys the record of when this programme was last
+        -- enumerated, and it turns a permanently broken runner into a loop that
+        -- provisions on every tick and bills every one of them.
+        OR EXISTS (
+             SELECT 1 FROM run r
+              WHERE r.program_id = p.id
+                AND r.kind = 'discovery'
+                AND r.state IN ('expired', 'failed')
+                AND r.finished_at + @retry::interval <= @at::timestamptz
+                AND NOT EXISTS (
+                      SELECT 1 FROM run later
+                       WHERE later.program_id = p.id
+                         AND later.kind = 'discovery'
+                         AND later.created_at > r.created_at)))
    -- The condition that does the work. It prevents a provisioning storm and
    -- bounds concurrency to one discovery run per programme.
    AND NOT EXISTS (
         SELECT 1 FROM run r
          WHERE r.program_id = p.id AND r.kind = 'discovery'
            AND r.state IN ('pending', 'running'))
+   -- A programme with nothing to enumerate is not due. It would otherwise be
+   -- selected on every tick and refused on every tick, which at a one minute
+   -- cadence is a warning a minute forever rather than a signal.
+   AND EXISTS (
+        SELECT 1 FROM scope_rule s
+         WHERE s.program_id = p.id
+           AND s.kind = 'include' AND s.matcher = 'apex'
+           AND s.valid_from <= @at::timestamptz
+           AND (s.valid_to IS NULL OR s.valid_to > @at::timestamptz))
  ORDER BY p.id;
 
 -- ApexesForProgram is a discovery run's perimeter.
@@ -170,14 +179,13 @@ SELECT DISTINCT pattern
 -- knowingly when the pattern fits in the invocation.
 --
 -- name: ExclusionsForProgram :many
-SELECT DISTINCT pattern
+SELECT DISTINCT matcher, pattern
   FROM scope_rule
  WHERE program_id = @program_id::uuid
    AND kind = 'exclude'
-   AND matcher IN ('apex', 'fqdn')
    AND valid_from <= @at::timestamptz
    AND (valid_to IS NULL OR valid_to > @at::timestamptz)
- ORDER BY pattern;
+ ORDER BY matcher, pattern;
 
 -- RecordRunStart names the execution the platform created.
 --

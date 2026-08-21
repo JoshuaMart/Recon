@@ -59,7 +59,8 @@ func (c *Cadence) Once(ctx context.Context) (int, error) {
 	queries := sqlcgen.New(c.pool)
 
 	due, err := queries.ProgramsDueForDiscovery(ctx, sqlcgen.ProgramsDueForDiscoveryParams{
-		At: stamp(c.scheduler.now()),
+		At:    stamp(c.scheduler.now()),
+		Retry: interval(c.scheduler.cfg.DiscoveryRetry),
 	})
 	if err != nil {
 		return 0, err
@@ -89,9 +90,9 @@ func (c *Cadence) provision(ctx context.Context, org, program uuid.UUID, name st
 	definition, err := c.scheduler.Discovery(ctx, sqlcgen.New(tx), org, program)
 	switch {
 	case errors.Is(err, ErrNoPerimeter):
-		// A programme with no apex has nothing to enumerate. It is a scope
-		// mistake rather than a failure, and it says so once a tick rather than
-		// silently doing nothing.
+		// The selection above already requires an apex, so reaching this means
+		// the rule was closed between the two statements. Rare, and worth one
+		// line rather than the warning a minute it used to be.
 		c.log.WarnContext(ctx, "programme declares no apex", "program", program, "name", name)
 		return false
 	case errors.Is(err, ErrRunInFlight):

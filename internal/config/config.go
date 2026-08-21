@@ -180,6 +180,12 @@ type Verification struct {
 	// SweepInterval is how often runs past their deadline are expired. A run
 	// nothing expires holds its targets forever.
 	SweepInterval time.Duration `koanf:"sweep_interval"`
+	// DiscoveryRetry is how long after a discovery run that delivered nothing
+	// a replacement may be provisioned. It is much shorter than the discovery
+	// interval, because a run that failed in thirty seconds must not cost a
+	// week of coverage, and much longer than the tick, because a permanently
+	// broken runner would otherwise provision and bill on every one.
+	DiscoveryRetry time.Duration `koanf:"discovery_retry"`
 	// Ports is the curated list, and it is data rather than code. It travels
 	// in the run definition so discovery and verification scan the same ports:
 	// a second list configured on the scanner would be a second list to keep
@@ -301,6 +307,7 @@ func Defaults() Config {
 			Timeout:        30 * time.Minute,
 			Grace:          10 * time.Minute,
 			SweepInterval:  time.Minute,
+			DiscoveryRetry: time.Hour,
 			// Not nmap's top 100, which orders ports by how often they are
 			// open across the whole internet and therefore leads with mail and
 			// printing. The criterion here is that a port earns its place if
@@ -483,6 +490,7 @@ func (c *Config) Validate(role Role) error {
 			"resolve": c.Verification.Resolve, "full": c.Verification.Full,
 			"fingerprint": c.Verification.Fingerprint, "inactive": c.Verification.Inactive,
 			"timeout": c.Verification.Timeout, "sweep_interval": c.Verification.SweepInterval,
+			"discovery_retry": c.Verification.DiscoveryRetry,
 			"full_floor":      c.Verification.FullFloor,
 			"render_sole":     c.Verification.RenderSole,
 			"render_recovery": c.Verification.RenderRecovery,
