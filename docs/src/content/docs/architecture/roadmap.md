@@ -20,7 +20,7 @@ risk of this project.
 
 - [ ] Repository initialized, [structure decided](/architecture/stack/#132-repository-structure)
 - [ ] [Migration tool wired](/architecture/stack/#134-migrations-goose), versioned and reversible
-- [ ] Local Docker Compose: [PostgreSQL](/architecture/stack/#133-self-hosted-postgresql), FastRecon, the Fingerprinter and its Chrome sidecar
+- [ ] Local Docker Compose: [PostgreSQL](/architecture/stack/#133-self-hosted-postgresql), the Fingerprinter and its Chrome sidecar, on [the two networks](/architecture/verification/#85-network-isolation). FastRecon is not a service: it is an image a run starts
 - [ ] [Minimal CI](/architecture/stack/#138-tooling-and-ci): lint, tests, build
 - [ ] [Typed configuration](/architecture/stack/#136-configuration-and-secrets), no hard coded value
 - [ ] [Secrets out of the repository](/architecture/stack/#136-configuration-and-secrets), injected from the environment
@@ -32,8 +32,9 @@ risk of this project.
 - [ ] `docker compose up` starts everything in under 60 s on a clean machine
 - [ ] A migration can be applied then rolled back without loss
 - [ ] CI passes on an empty pull request
-- [ ] A backup is restored into an empty database and the inventory is identical
-- [ ] Connected as `asm_app`: `DROP TABLE asset` fails, `CREATE TABLE` fails, writing to a seeded table fails, reading it succeeds, `INSERT INTO asset` succeeds
+- [ ] A backup is restored into an empty database and the content is identical
+- [ ] Connected as `asm_app`: `CREATE TABLE` fails, `DROP TABLE` fails on a table the owner created, and reading and writing that table succeeds through the default privileges
+- [ ] From the fingerprinter's container, `psql` to the database fails, and the same connection succeeds from the control plane network
 
 ## Phase 1: Data model and ingestion
 
@@ -64,6 +65,7 @@ risk of this project.
 - [ ] A report attached to an expired `program` is rejected at ingestion
 - [ ] A report naming a host outside its run's frozen target list is **rejected**, not ignored
 - [ ] Monthly partitions are created automatically, and a row outside any partition fails
+- [ ] Connected as `asm_app`: `DROP TABLE asset` fails, writing to the seeded denylist fails, reading it succeeds, and `INSERT INTO asset` succeeds
 - [ ] The ingestion cost stays under the round trip budget per observation, measured rather than estimated
 
 ## Phase 2: Verification and lifecycle
