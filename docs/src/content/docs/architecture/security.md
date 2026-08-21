@@ -66,13 +66,22 @@ supplying the property.
 So the burden is inverted. Every query declares its intent:
 
 ```sql
--- @tenant: scoped      filtered on org_id at statement level
+-- @tenant: scoped      names org_id itself, as a filter or as a value it supplies
+-- @tenant: keyed       confined to one identifier, and isolated by the policy behind it
 -- @tenant: cross-org   crosses tenants, justification required
 -- @tenant: none        touches no table carrying org_id
 ```
 
 The guard no longer interprets SQL. It checks that an annotation exists, that it is not contradicted by
 something simple and exact, and that `cross-org` carries a reason. An unannotated query fails the build.
+
+**`keyed` is the form most statements actually take**, and it exists because `scoped` could not describe
+them without lying. `UPDATE asset_current ... WHERE asset_id = $1` names no organization and is not crossing
+tenants either: it is confined to one row whose tenant is decided elsewhere. Before Row-Level Security that
+"elsewhere" was the caller, which is a convention; after it, it is the policy, which is not. Annotating such
+a statement `scoped` would put it in the column that says "this one carries its own filter" and make the
+audit list useless, and annotating it `cross-org` would put it in the column that specifies `asm_sys` and
+make that list useless instead.
 
 The one thing it still decides, it decides exactly: **a correlation is not a filter.** `org_id = $2` says
 *which* tenant; `a.org_id = b.org_id` keeps two tables in step and isolates nothing. An `INSERT` naming
@@ -120,6 +129,51 @@ data to shift, that the multi-tenant isolation mechanism cannot be installed is 
 that gets RLS disabled "temporarily". The migration therefore **detects the available path** instead of
 failing, and the fallback is **tested like the main path**. A fallback nobody exercises is no better than an
 absent one: it only adds the certainty of having one.
+
+**Both paths are installed, and only the grant is conditional.** The migration always creates the `asm_sys`
+policy and always attempts the attribute, and it is the attempt that fails softly: a cluster refusing the
+grant keeps the policy alone, a cluster allowing it carries both. Installing only whichever one is available
+would make the fallback a code path no deployment ever runs, and the day it is needed is the day nobody can
+say whether it works. With both in place, taking the attribute away is enough to exercise the fallback for
+real, which is what the suite does.
+
+**Which tables carry a policy is read from the catalog, never from a list inside a migration.** The rule is
+the one already written for the column: a table carrying `org_id` is a tenant table and gets RLS, and the
+exemptions are the same three, the organization itself, the person, and the seeded reference data. A list
+kept by hand is precisely the thing this section says a migration forgets, so the check walks `pg_class` and
+fails on any table that has the column and no policy.
+
+**An unset variable is an empty string, not a null**, and the difference decides between zero rows and an
+error. `SET LOCAL` restores whatever the session held before the transaction, and a custom variable never
+set at session level holds `''` rather than nothing. A policy reading `current_setting('app.org_id', true)::uuid`
+therefore returns zero rows on a connection's first transaction and raises `invalid input syntax for type uuid`
+on its second. `NULLIF(current_setting('app.org_id', true), '')` is what makes the two identical, and the
+assertion that catches it has to reuse **one** connection across two transactions: a test acquiring a fresh
+connection per case passes with the fault in place.
+
+**`COPY FROM` is refused outright on a table with a policy**, and that takes away the batch path two writes
+were built on. PostgreSQL answers `COPY FROM not supported with row-level security` rather than applying the
+policy row by row, so freezing a run's target list and writing a report's notification events both stop
+working the moment RLS is enabled, and they stop working with an error rather than with a wrong result,
+which is the good half.
+
+The replacement is a single `INSERT ... SELECT` over parallel arrays: the columns travel as arrays, the
+statement is still one round trip, and the round trip budget the write path is measured against does not
+move. That was the entire argument for the copy path, so nothing is lost but the mechanism. What is gained
+is worth naming: the organization is now a scalar of the statement rather than a column repeated on every
+row, so a batch mixing two tenants is no longer expressible.
+
+**Resolving a credential crosses tenants, so it does it under the role that says so.** A token names itself,
+not an organization: the query turning it into a principal is the one that *discovers* the tenant, so it
+cannot carry the tenant. It runs on the system pool, one statement wide, keyed by a hash the caller has to
+hold already, and returning one row. Everything after it runs on the application pool with the organization
+that lookup returned. Leaving that query subject to RLS would offer two ways out, a policy nobody can
+satisfy or a table quietly exempted, and it is the second that gets chosen under pressure.
+
+A run posting its report is the same shape: its credential names a run. The organization is read from the
+run under `asm_sys`, once per report and never once per observation, and the ingestion transaction that
+follows is scoped like every other. The run row is then read **again** inside that transaction, under the
+policy, so a credential whose organization does not match its run finds nothing.
 
 **A test suite connected as the owner verifies nothing.** A policy does not apply to a table's owner, so an
 RLS suite run as `asm_owner` passes **entirely** without exercising anything. The connection identity is

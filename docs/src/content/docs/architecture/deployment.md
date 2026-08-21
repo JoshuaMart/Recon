@@ -267,6 +267,25 @@ than waiting for autovacuum.
 The control plane opens two pools, and that is deliberate: the role that crosses tenants is chosen when a
 pool is opened, not case by case in the code, otherwise the property goes back to being a convention.
 
+Which path takes which pool is the whole specification of the second one, so it is written here rather than
+inferred from the code:
+
+| Pool | What runs on it |
+|---|---|
+| `asm_sys` | the partition and housekeeping loop, the deadline sweeper, the discovery cadence, the Notifier, the render pass, the external host sweep, and the two lookups that turn a credential into an organization, one per kind of credential |
+| `asm_app` | everything a request does after that lookup, including the whole of report ingestion |
+
+The credential lookups are on the system pool for a reason that is not convenience: they are the queries
+that *discover* the tenant, so they cannot be filtered by one. That is argued in
+[11.1](/architecture/security/#row-level-security-two-roles-rather-than-one-variable), and they are the only
+members of that column reachable from a request. There are two because there are two kinds of credential: a
+console token names itself, and a run token names a run.
+
+**Every acquisition of the application pool goes through one helper that opens a transaction and sets the
+organization**, and there is no way to get a bare connection out of it. A `SET LOCAL` is transaction scoped
+by design, so a query outside a transaction cannot carry one, and an API that hands out both shapes is an
+API where the wrong one gets used at some point and returns zero rows instead of failing.
+
 The migration string must **never** be present in the control plane's environment. If it is, role
 separation buys nothing, since anyone obtaining execution in the control plane finds the owner credentials
 next to it. The separation has to be a fact of deployment rather than a naming convention, so the

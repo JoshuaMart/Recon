@@ -92,6 +92,39 @@ re-registrable and not the same finding.
 with no `asset` row and no due date. Creating one would mean scheduling checks against a domain nothing
 authorizes probing, which is doing by the side door what is forbidden head on.
 
+### Where each half runs
+
+**The internal half is ingestion's, and it works in both directions.** A render projects `external_hosts`,
+and the reference can become dangerous from either end: the page starts pointing at a host that is already
+dead, or a host that pages already point at dies. Only the first is visible when the referencing asset is
+written, and only the second is visible when the referenced one dies, so covering one direction covers
+roughly half the cases and produces a finding nobody can predict the shape of. Both are one statement, one
+on the render that writes the list and one on the transition into `inactive`, and both stay inside the
+ingestion transaction where every other event is produced.
+
+**The external half cannot be, and that is a stated exception rather than an oversight.** It needs a DNS
+answer about a domain nothing in an ingestion has any reason to have asked for. The two arguments of
+[12.3](#123-where-the-event-is-produced) are what decide it, and neither points the same way here: a sweep
+is refused because it would **re-derive** what ingestion just computed, and nothing in an ingestion computes
+whether somebody else's domain is still registered; and a sweep is refused because it **misses transient
+states**, and an expired registration is not transient, it is a step that stays until someone re-registers.
+
+So it is a loop, on the system pool because it serves every tenant in one tick, and it is bounded by what it
+is allowed to do:
+
+- It resolves the **apex** and only the apex, once per distinct apex per tick, never the host itself. That
+  is one lookup for every third party a whole inventory references, which is dozens rather than thousands.
+- It skips any host that is **in the same organization's inventory**, because that one is the internal half's
+  and has a real lifecycle behind it.
+- It skips **archived** assets, for the reason pivots do: an archived asset is not a lead.
+
+**The verdict is written onto the referencing asset, in `attributes`, and never into a table of its own.**
+That is what keeps the sentence above true: the third party has no row, no identity and no due date, it is a
+property of the pages that point at it. It also makes the emission idempotent without a second mechanism,
+since the event is produced when a host **enters** that list and the tick that finds the same domain still
+gone writes the same value and says nothing.
+
+
 ## 12.3 Where the event is produced
 
 **The event is written in the ingestion transaction, by ingestion itself.** Not by a periodic sweep of the

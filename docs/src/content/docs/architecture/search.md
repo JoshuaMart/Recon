@@ -61,6 +61,33 @@ queried by exact element, so `["nginx 1.24"]` would not answer a filter on `ngin
 asks for explicitly. The versions the interface shows travel alongside as `{name, version}` objects. The
 column is the index and the facet; the object is the evidence.
 
+### Technologies have two producers, and that is the one place the rule bends
+
+Every other value in this chapter has one. This one cannot, and the reason is that the two arguments used
+elsewhere point in opposite directions here.
+
+**Coverage says the probe has to contribute.** It is the same argument that puts `cert_spki_hash` on the
+`http` layer: the probe sees every service on every full pass, while a render happens on
+[five triggers](/architecture/verification/#83-when-a-render-happens) that can be three weeks apart or never.
+An inventory whose technology filter only knew what a browser saw would be blind on most of itself, and
+blind precisely on the assets no browser can open, which is where the interesting targets sit.
+
+**Depth says the render has to contribute.** A rendered page shows what a raw fetch cannot, and dropping
+that would make the richest detection in the system unfilterable.
+
+So both write, and the rule is kept where it actually matters: **they write different keys.** The probe's
+names land in `attributes.tech_http`, the render's `{name, version}` objects in `attributes.tech_render`,
+and neither can erase the other. What would break the rule is two producers writing the same value, which
+is what a single shared key would be, and which would make every pass of one layer overwrite the other's
+work and churn deduplication on the busiest table in the system.
+
+**The column is the union of the names**, recomputed from those two keys in the same statement that writes
+them. That is what a filter wants: "which of my assets run nginx" answers yes whether the probe or the
+browser saw it, and neither producer's absence turns into a false no.
+
+The version is only ever the render's, because only the render reports one. A technology known by name and
+not by version is the normal case and reads as such rather than as missing data.
+
 ### The redirect chain and the final URL are promoted columns
 
 Showing `200` on a service is true without being the information. The probe may have obtained a 308, then
@@ -72,6 +99,19 @@ So `status_chain` and `final_url` are columns rather than `attributes`, and the 
 filtering. It is the precedent of `title` and `status_code`: typed columns, unindexed, written by the
 `http` layer, existing so the list can render a row without reading `observation`. Filing them in the JSON
 blob would make them more expensive to read for the sole reason that nobody filters on them.
+
+**The two have different producers, because they have different observers.** `final_url` is the probe's: it
+reports where it landed, and it sees every service on every pass. `status_chain` is the render's, and not by
+preference. The scanner's contract reports the redirect **URLs** and the final code, never the code of each
+hop, so the probe does not hold the information the column is for; the browser reports one hop per entry with
+its status, so it does. Writing the column from the probe would mean inventing the intermediate codes, which
+is the one thing worse than an empty column.
+
+The cost is the usual one and is stated rather than discovered: the chain is present only on assets a render
+has reached, so it is missing on the [protected regime](/architecture/verification/#86-reachability-per-observer)
+exactly where the rest of the fingerprinter's output is missing. The row's `status_code` keeps full coverage,
+which is why it is the one the list leads with, and the chain is the detail beside it. Like every other value
+the render produces, it carries the fingerprinter's timestamp rather than the row's.
 
 **No index on `final_url`.** A "ends on /login" filter is conceivable and nobody has asked for it, and the
 index would cost on every write of the verification loop. The day the query exists, it is an `ALTER`.
@@ -162,6 +202,47 @@ is structural and a test requires it on *every* compilation, including that of a
 [Row-Level Security](/architecture/security/#row-level-security-two-roles-rather-than-one-variable), which is
 the only guarantee the compiler cannot remove from itself.
 
+### What the registry holds
+
+The registry is the whole of the compiler's vocabulary. A field absent from it is a refusal, so this table is
+also the answer to "what can be filtered", and it is short on purpose.
+
+| Field | Reads | Type | Operators |
+|---|---|---|---|
+| `key`, `host` | the column | text | `eq`, `prefix`, `suffix` |
+| `kind`, `lifecycle`, `scope_status`, `scheme` | the column | text | `eq`, `in` |
+| `port`, `status_code`, `asn` | the column | int | `eq`, `in`, `gt`, `gte`, `lt`, `lte` |
+| `country`, `cdn_provider`, `waf_vendor`, `server` | the column | text | `eq`, `in` |
+| `is_cdn`, `waf_detected` | the column | bool | `eq` |
+| `ip` | the column | inet | `eq`, `in_cidr` |
+| `technologies` | the column | text[] | `contains`, `in` |
+| `first_seen`, `last_seen`, `last_changed_at` | the column | timestamptz | `before`, `after` |
+| `volatility` | the bucket function | int | `eq`, `gt`, `gte`, `lt`, `lte` |
+| `favicon_hash`, `cert_spki_hash` | `attributes` | text | `eq` |
+| `script_hash`, `cookie_name`, `external_host` | `attributes` | text[] | `contains` |
+| `dead_external_host` | `attributes` | text[] | `contains` |
+| `takeover_candidate` | `attributes` | bool | `exists` |
+
+**The JSONB fields compile to containment and nothing else**, `attributes @> '{"favicon_hash": "..."}'`, on
+a scalar key and on an array key alike. That is the one form the GIN index of
+[10.2](#102-what-the-projection-carries) serves, and offering `->>` beside it would put an unindexed
+full scan behind an operator indistinguishable from the indexed one.
+
+**`dead_external_host` is written by the sweep rather than by a producer**, and it is in the registry for
+the same reason the finding is critical: "which of my pages load from a domain anybody can now register" is
+the question it exists to answer, and a finding that cannot be listed is one somebody reads once, in an
+alert, at nine in the evening.
+
+**`title` is not in the registry**, and its absence is the rule working rather than an oversight. It is a
+promoted column so the list can render a row, it carries no index by the same decision that left `final_url`
+without one, and the only operator anybody would want on it is `contains`, which is a scan of the tenant.
+The day the query is asked for, it is an `ALTER` and a line here, in that order.
+
+**`volatility` is the one field with no index and it is in anyway.** It reads a `STABLE` function of the
+bucket array and the day it was last shifted, so it cannot be indexed at all: the value of a row that has
+not moved changes with the calendar. It is evaluated per row, which is why it belongs in a query that
+already narrows on something else, and saying so here is better than someone measuring it later.
+
 ### The suffix is the query that matters
 
 A `text_pattern_ops` index accelerates a **prefix**. The query of an ASM inventory is a **suffix**,
@@ -170,6 +251,14 @@ scan of the tenant.
 
 An **expression index on `reverse(key)`** turns one into the other: the suffix becomes a prefix on the reversed
 string. No column, no data rewrite, one index migration, and `reverse` is immutable so it is indexable.
+
+**The index is on `host` as well as on `key`, and that is not symmetry.** A service is keyed
+`app.target.com:443/tcp` ([4.3](/architecture/data-model/#the-unit-of-a-web-asset-is-the-service-never-the-path)),
+so `.target.com` is a suffix of the *name* and not of the key: the query that reads "everything under this
+domain" returns the fqdn rows and silently drops every service, which is most of an inventory and all of the
+interesting part. `host` is the column that answers it, so `host` is the column that needs the reversed
+index too. The example in [10.1](#101-three-principles) filters on `key`, and it is the narrower query:
+`key` answers "this exact service", `host` answers "this perimeter".
 
 Deliberately kept: the suffix stays a **string** suffix, not domain membership. `.target.com` does not return
 `target.com` itself, and `evil-target.com` does not come back under `target.com` since the dot is in the
@@ -193,6 +282,21 @@ the start. A double write to Elasticsearch on day one is a classic trap.
 
 Optimizations to reach for before migrating: precomputed partial aggregates, `GROUP BY` on promoted columns
 only, and a cap on how many facet values come back.
+
+**The set is fixed and it is short.** `lifecycle`, `kind`, `port`, `scheme`, `status_code`, `country`,
+`asn`, `cdn_provider`, `waf_vendor` and `technologies`, which is the only one over an array. Every one of
+them is a promoted column with an index, which is the whole reason the list is this one: a facet over
+`attributes` would aggregate through a GIN index that answers containment and cannot group.
+
+**One statement, not ten.** The facets are computed in a single pass over the filtered set rather than one
+query per facet, because the expensive half is the filter and running it ten times is paying for it ten
+times. The filter is compiled once, into a CTE, and each facet groups over it.
+
+**Twenty values per facet, and the cut says so.** A truncated facet that looks complete makes somebody
+believe the inventory holds nine ports. The response carries the values, the count of each, and whether
+anything was left out, which is the same rule the export applies to rows and the timeline applies to
+observations.
+
 
 ## 10.5 Pivots
 
@@ -263,6 +367,14 @@ Two paths produce it, and the second is the one that gets forgotten:
 
 An asset is never deleted ([P3](/architecture/principles/)), so there is no third path. Manual reactivation is
 the inverse and must re-increment, otherwise the drift merely changes direction.
+
+**Today only one kind of asset can take that second path, and saying so is better than implying otherwise.**
+Archiving is decided when a **candidate host** exhausts its budget without ever coming alive, and a host
+that never came alive has no service, no render and therefore no pivot. So the decrement is a guarantee for
+the paths that are coming, the hand archived asset and the
+[Certificate Transparency candidate](/architecture/roadmap/) that never resolves, rather than something that
+fires on an ordinary week. It is built now because retrofitting a counter's decrement means first working
+out how far it has drifted.
 
 **The invariant that makes all of this checkable**: `pivot_count` is a function of the counted keys of
 `asset_current`, and of nothing else. A counter that reflects nothing cannot be repaired, for lack of anywhere to
