@@ -161,3 +161,25 @@ SELECT h.org_id, h.program_id, p.name, p.created_at, h.held,
   FROM held h
   JOIN program p ON p.id = h.program_id
  ORDER BY h.program_id;
+
+-- DigestInWindow reports whether a summary already speaks for this window.
+--
+-- Without it every suppressed event past the cap writes its own summary, and an
+-- anti-flood that produces one notification per suppressed notification is not
+-- one.
+--
+-- name: DigestInWindow :one
+SELECT count(*) FROM notification_event
+ WHERE program_id = @program_id::uuid
+   AND kind = 'digest'
+   AND priority = @priority::text
+   AND created_at >= @since::timestamptz;
+
+-- SuppressedInWindow is what the summary stands for.
+--
+-- name: SuppressedInWindow :one
+SELECT count(*) FROM notification_event
+ WHERE program_id = @program_id::uuid
+   AND priority = @priority::text
+   AND suppressed
+   AND created_at >= @since::timestamptz;

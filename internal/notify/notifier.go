@@ -53,6 +53,7 @@ type Summary struct {
 	Read       int
 	Sent       int
 	Suppressed int
+	Summarised int
 	Failed     int
 	Nowhere    int
 }
@@ -148,6 +149,11 @@ func (n *Notifier) deliver(
 				return
 			}
 			summary.Suppressed++
+			// And a summary speaks for it. Past the cap the individual events
+			// stay readable and unsent, but an overflow must never produce the
+			// absence of a notification: that is how an anti-flood turns into a
+			// loss of signal.
+			n.overflow(ctx, q, event, window, summary)
 			return
 		}
 	}
@@ -186,6 +192,68 @@ func (n *Notifier) deliver(
 
 	summary.Sent++
 	n.mark(ctx, q, event, summary)
+}
+
+// overflow writes the one summary a saturated window owes.
+//
+// It carries the priority of the window it replaces rather than its own, so a
+// flood of high events is summarised at high and reaches a channel whose floor
+// would have refused a medium one. And it is written once per window: without
+// that, every suppressed event writes its own summary and the anti-flood
+// produces one notification per notification it suppressed.
+func (n *Notifier) overflow(
+	ctx context.Context, q *sqlcgen.Queries, event sqlcgen.PendingEventsRow,
+	window Window, summary *Summary,
+) {
+	since := stamp(n.now().Add(-window.Span))
+
+	existing, err := q.DigestInWindow(ctx, sqlcgen.DigestInWindowParams{
+		ProgramID: event.ProgramID,
+		Priority:  event.Priority,
+		Since:     since,
+	})
+	if err != nil {
+		n.log.ErrorContext(ctx, "overflow summary check failed", "event", event.ID, "error", err)
+		return
+	}
+	if existing > 0 {
+		return
+	}
+
+	held, err := q.SuppressedInWindow(ctx, sqlcgen.SuppressedInWindowParams{
+		ProgramID: event.ProgramID,
+		Priority:  event.Priority,
+		Since:     since,
+	})
+	if err != nil {
+		n.log.ErrorContext(ctx, "overflow count failed", "event", event.ID, "error", err)
+		return
+	}
+
+	payload, err := jsonPayload(map[string]any{
+		"summary": fmt.Sprintf("%d further %s events on %s in the last %s",
+			held, event.Kind, event.ProgramName, window.Span),
+		"held":   held,
+		"reason": "window cap",
+		"kind":   event.Kind,
+	})
+	if err != nil {
+		n.log.ErrorContext(ctx, "overflow payload failed", "event", event.ID, "error", err)
+		return
+	}
+
+	if _, err := q.WriteEvents(ctx, []sqlcgen.WriteEventsParams{{
+		OrgID:     event.OrgID,
+		ProgramID: event.ProgramID,
+		Kind:      KindDigest,
+		Priority:  event.Priority,
+		Payload:   payload,
+		CreatedAt: stamp(n.now()),
+	}}); err != nil {
+		n.log.ErrorContext(ctx, "overflow summary failed", "event", event.ID, "error", err)
+		return
+	}
+	summary.Summarised++
 }
 
 func (n *Notifier) mark(ctx context.Context, q *sqlcgen.Queries, event sqlcgen.PendingEventsRow, summary *Summary) {

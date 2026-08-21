@@ -91,6 +91,32 @@ func (q *Queries) CountWindow(ctx context.Context, arg CountWindowParams) (int64
 	return count, err
 }
 
+const digestInWindow = `-- name: DigestInWindow :one
+SELECT count(*) FROM notification_event
+ WHERE program_id = $1::uuid
+   AND kind = 'digest'
+   AND priority = $2::text
+   AND created_at >= $3::timestamptz
+`
+
+type DigestInWindowParams struct {
+	ProgramID pgtype.UUID
+	Priority  string
+	Since     pgtype.Timestamptz
+}
+
+// DigestInWindow reports whether a summary already speaks for this window.
+//
+// Without it every suppressed event past the cap writes its own summary, and an
+// anti-flood that produces one notification per suppressed notification is not
+// one.
+func (q *Queries) DigestInWindow(ctx context.Context, arg DigestInWindowParams) (int64, error) {
+	row := q.db.QueryRow(ctx, digestInWindow, arg.ProgramID, arg.Priority, arg.Since)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const markNotified = `-- name: MarkNotified :exec
 UPDATE notification_event SET notified_at = $1::timestamptz
  WHERE id = $2::bigint AND created_at = $3::timestamptz
@@ -349,6 +375,28 @@ func (q *Queries) SuppressWindow(ctx context.Context, arg SuppressWindowParams) 
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const suppressedInWindow = `-- name: SuppressedInWindow :one
+SELECT count(*) FROM notification_event
+ WHERE program_id = $1::uuid
+   AND priority = $2::text
+   AND suppressed
+   AND created_at >= $3::timestamptz
+`
+
+type SuppressedInWindowParams struct {
+	ProgramID pgtype.UUID
+	Priority  string
+	Since     pgtype.Timestamptz
+}
+
+// SuppressedInWindow is what the summary stands for.
+func (q *Queries) SuppressedInWindow(ctx context.Context, arg SuppressedInWindowParams) (int64, error) {
+	row := q.db.QueryRow(ctx, suppressedInWindow, arg.ProgramID, arg.Priority, arg.Since)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const upsertConfigChannel = `-- name: UpsertConfigChannel :exec

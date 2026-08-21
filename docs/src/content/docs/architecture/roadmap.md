@@ -409,28 +409,18 @@ them, which is asserted on the definition it produces.
 - [x] An application version bump produces a readable notification saying *what* changed
 - [x] A rescan with no real change produces **no** notification
 - [x] A first run produces **one** summary and its whole flood suppressed, on a real perimeter rather than a synthetic one
-- [ ] On the same set, a later run turning 5 000 assets active sends at most 20 notifications per window, the rest carried by summaries, and **no event lost**
+- [x] On the same set, a later run turning 5 000 assets active sends at most 20 notifications per window, the rest carried by summaries, and **no event lost**
 - [x] A takeover candidate is notified at critical priority, at most one Notifier tick after the event was written
 - [x] A fingerprinter version bump produces diffs classified as detection improved, with no alert
 - [x] A dangling CNAME recorded in phase 2 produces a critical notification **without recollecting anything**
-- [ ] A mass tip into `unobservable` triggers a distinct alert rather than being swallowed by a summary
-- [ ] A webhook answering 500 marks **no** event notified, and sending resumes on recovery
+- [x] A mass tip into `unobservable` triggers a distinct alert rather than being swallowed by a summary
+- [x] A webhook answering 500 marks **no** event notified, and sending resumes on recovery
 - [x] A program event with no `asset_id` is accepted, and a `takeover_candidate` without one is **refused by the database**
-- [ ] A failed first run leaves the grace active; a later successful one ends it
-- [ ] A grace nothing ends expires at 7 days, emits its summary and reports the incident
+- [x] A failed first run leaves the grace active; a later successful one ends it
+- [x] A grace nothing ends expires at 7 days, emits its summary and reports the incident
 - [x] The ingestion cost stays under budget, events included, on a batch where everything changes
 
-:::caution[Phase 5 is not closed]
-Four assertions are still red, and all four are about **volume**: the twenty-per-window cap and its
-summary, the grace that expires at seven days with its incident, and the webhook that answers 500. Every
-one of them needs a fixture this suite does not have yet, and none is a question the parts already
-asserted can settle by looking harder.
 
-What is built and asserted is the shape: the event is written in the ingestion transaction and its
-payload is frozen there, the diff runs on normalized structures on **both** sides, the revelation
-classification holds, the grace and the windows are pure functions with their own tests, and the channel
-is a per organization row with a template rather than a connector.
-:::
 
 :::note[Measured]
 **Three bugs were found by writing the assertions, and the second is the one that mattered most.**
@@ -451,6 +441,13 @@ names. It also broke the revelation classification, because a pure addition arri
 phantom ones, so a detection improvement alerted as a real change. Both sides are normalized now, by the
 same function, which is what [12.1](/architecture/notifications/#121-structured-diffs) asks for in the
 sentence about two divergent implementations.
+
+**The same silence existed twice, and the second one only appeared at volume.** Past the window cap the
+individual events were suppressed and no summary followed them either, so a run turning five thousand
+assets active sent twenty notifications and swallowed the rest without a word. A saturated window now
+writes one summary, once per window, carrying **the priority of the window it replaces** rather than its
+own: a flood of high events summarised at medium would be refused by a channel whose floor is high, which
+is the same loss by another route.
 
 **A first run held back its whole flood and said nothing at all**, which is the anti-flood becoming the
 silence it exists to prevent. On a real perimeter, forty eight arrivals were suppressed correctly and no

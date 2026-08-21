@@ -91,7 +91,7 @@ func (l *Loop) Once(ctx context.Context) {
 	}
 	l.notifier.log.InfoContext(ctx, "notifier tick",
 		"read", summary.Read, "sent", summary.Sent, "suppressed", summary.Suppressed,
-		"failed", summary.Failed, "nowhere", summary.Nowhere)
+		"summarised", summary.Summarised, "failed", summary.Failed, "nowhere", summary.Nowhere)
 }
 
 // Aggregates writes the events no single observation can settle.
