@@ -129,6 +129,13 @@ func TestAFloodIsCappedSummarisedAndNotLost(t *testing.T) {
 	if n := f.count(t, `SELECT count(*) FROM notification_event WHERE kind = 'digest'`); n != 1 {
 		t.Fatalf("%d summaries for one saturated window", n)
 	}
+
+	// And it stands for what it says it stands for. Written on the first event
+	// past the cap it would count one held event and claim to speak for the
+	// four thousand nine hundred and seventy nine that followed.
+	if held := f.count(t, `SELECT (payload->>'held')::int FROM notification_event WHERE kind = 'digest'`); held != flood-cap {
+		t.Fatalf("the summary stands for %d events, and %d were held", held, flood-cap)
+	}
 }
 
 // A programme going dark must not be swallowed by the summary of twenty new

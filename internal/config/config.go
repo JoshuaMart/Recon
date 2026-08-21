@@ -24,6 +24,8 @@ import (
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/providers/structs"
 	"github.com/knadh/koanf/v2"
+
+	"github.com/JoshuaMart/recon/internal/notify"
 )
 
 // Role is which binary is asking. It decides what a configuration must carry
@@ -591,10 +593,6 @@ func (c *Config) Validate(role Role) error {
 			fail("runner.provider must be %s or %s, got %q", RunnerNone, RunnerScaleway, c.Runner.Provider)
 		}
 
-		// A run reaches this control plane from somewhere else entirely, so
-		// this cannot be derived from the listen address. Without it a run
-		// definition names nowhere, and the failure would surface as a scanner
-		// that cannot fetch its targets rather than as a missing setting.
 		switch c.Notify.MinPriority {
 		case "critical", "high", "medium", "low":
 		default:
@@ -603,10 +601,19 @@ func (c *Config) Validate(role Role) error {
 		if c.Notify.Interval <= 0 || c.Notify.Timeout <= 0 || c.Notify.Batch <= 0 {
 			fail("notify.interval, notify.timeout and notify.batch must all be positive")
 		}
-		if c.Notify.UnobservableAlert <= 0 || c.Notify.UnobservableAlert > 1 {
-			fail("notify.unobservable_alert must be a share in (0, 1], got %v", c.Notify.UnobservableAlert)
+		// The floor is the first re-emission tier, and below it the mass tip
+		// would never speak at all: the setting would be accepted, pass its own
+		// check, and be silently overridden.
+		if floor := notify.UnobservableTiers[0]; c.Notify.UnobservableAlert < floor || c.Notify.UnobservableAlert > 1 {
+			fail("notify.unobservable_alert must be a share in [%v, 1], because %v is the first "+
+				"tier a mass tip re-emits at and nothing below it can ever fire, got %v",
+				floor, floor, c.Notify.UnobservableAlert)
 		}
 
+		// A run reaches this control plane from somewhere else entirely, so
+		// this cannot be derived from the listen address. Without it a run
+		// definition names nowhere, and the failure would surface as a scanner
+		// that cannot fetch its targets rather than as a missing setting.
 		if c.Verification.PublicURL == "" {
 			fail("verification.public_url is required: it is where a run fetches its " +
 				"target list and posts its report")

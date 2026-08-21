@@ -143,9 +143,20 @@ WITH held AS (
       FROM notification_event e
      WHERE e.suppressed
        AND e.kind = 'new_active'
+       -- A window overflow writes a digest too, and any digest excluding a
+       -- programme here would silence its onboarding summary for good: a large
+       -- first run saturates the high window on port openings, which the grace
+       -- does not hold, so the overflow digest would land first and the
+       -- onboarding one never.
        AND NOT EXISTS (
              SELECT 1 FROM notification_event d
-              WHERE d.program_id = e.program_id AND d.kind = 'digest')
+              WHERE d.program_id = e.program_id
+                AND d.kind = 'digest'
+                AND d.payload ->> 'reason' = 'first run')
+       -- The grace is at most seven days, so nothing older can still be
+       -- waiting for one. Without the bound this walks every suppressed row of
+       -- the retention window, twice a minute, forever.
+       AND e.created_at > $1::timestamptz
      GROUP BY e.org_id, e.program_id
 )
 SELECT h.org_id, h.program_id, p.name, p.created_at, h.held,
@@ -159,6 +170,10 @@ SELECT h.org_id, h.program_id, p.name, p.created_at, h.held,
   JOIN program p ON p.id = h.program_id
  ORDER BY h.program_id
 `
+
+type OnboardingDueParams struct {
+	Since pgtype.Timestamptz
+}
 
 type OnboardingDueRow struct {
 	OrgID              pgtype.UUID
@@ -182,8 +197,8 @@ type OnboardingDueRow struct {
 // the absence of a notification. That is how an anti-flood turns into a loss of
 // signal, and a first run that says nothing at all is the same failure wearing
 // a different name.
-func (q *Queries) OnboardingDue(ctx context.Context) ([]OnboardingDueRow, error) {
-	rows, err := q.db.Query(ctx, onboardingDue)
+func (q *Queries) OnboardingDue(ctx context.Context, arg OnboardingDueParams) ([]OnboardingDueRow, error) {
+	rows, err := q.db.Query(ctx, onboardingDue, arg.Since)
 	if err != nil {
 		return nil, err
 	}

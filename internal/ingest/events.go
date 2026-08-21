@@ -5,6 +5,7 @@ import (
 
 	"github.com/JoshuaMart/recon/internal/diff"
 	"github.com/JoshuaMart/recon/internal/lifecycle"
+	"github.com/JoshuaMart/recon/internal/normalize"
 	"github.com/JoshuaMart/recon/internal/notify"
 )
 
@@ -25,12 +26,6 @@ var fieldEvents = map[string]string{
 	"open_ports":   notify.KindPortOpened,
 }
 
-// notable turns one written observation into the events it is worth.
-//
-// It runs inside the ingestion transaction, on the two payloads the write
-// statement already returned. Both arguments are in hand: re-deriving them in a
-// sweep would mean re-parsing what was just parsed, and would miss every
-// transient state between two passes.
 // announce tells what this observation changed about the asset itself.
 //
 // It runs on every observation, including a deduplicated one, and that is the
@@ -56,19 +51,11 @@ func (i *Ingestor) announce(run Run, st *state, obs observation, discoverySource
 
 	base := i.base(st, obs)
 
-	// A takeover candidate is the finding this product exists for, and it is
-	// never held back by anything.
-	if obs.takeover != nil {
-		payload := clone(base)
-		payload["finding"] = obs.takeover.Map()
-		add(notify.KindTakeover, payload)
-	}
-
 	// A transition is told once per asset, not once per observation. A host
 	// writes a dns layer and a tcp layer in the same report, and both see the
 	// same arrival: emitting from each would notify it twice, three times with
 	// a service, and every one of them would be true.
-	if !st.announced {
+	if st.announced != st.lifecycle {
 		switch {
 		case st.lifecycle == lifecycle.Active && st.previousLifecycle != lifecycle.Active:
 			payload := clone(base)
@@ -77,13 +64,13 @@ func (i *Ingestor) announce(run Run, st *state, obs observation, discoverySource
 			// happened to be written first would be arbitrary.
 			delete(payload, "layer")
 			add(notify.KindNewActive, payload)
-			st.announced = true
+			st.announced = st.lifecycle
 		case st.lifecycle == lifecycle.Inactive && st.previousLifecycle != lifecycle.Inactive:
 			payload := clone(base)
 			payload["from"] = st.previousLifecycle
 			delete(payload, "layer")
 			add(notify.KindWentInactive, payload)
-			st.announced = true
+			st.announced = st.lifecycle
 		}
 	}
 }
@@ -96,11 +83,6 @@ func (i *Ingestor) diffEvents(
 	run Run, st *state, obs observation, previous map[string]any,
 	previousVersion, version, discoverySource string, summary *Summary,
 ) {
-	changes := diff.Compare(previous, obs.data)
-	if len(changes) == 0 {
-		return
-	}
-
 	asset := st.id
 	at := i.now()
 	add := func(kind string, payload map[string]any) {
@@ -117,10 +99,32 @@ func (i *Ingestor) diffEvents(
 	}
 	base := i.base(st, obs)
 
+	// A takeover candidate is the finding this product exists for, and it is
+	// never held back by anything. It rides the insert path rather than the
+	// transition one on purpose: a name that stays dangling is re-derived from
+	// every report, and critical escapes the windows, so telling it from
+	// announce would re-send the same alert on every scan for as long as the
+	// finding lasts. A re-confirmed finding deduplicates and says nothing.
+	if obs.takeover != nil {
+		payload := clone(base)
+		payload["finding"] = obs.takeover.Map()
+		add(notify.KindTakeover, payload)
+	}
+
+	changes := diff.Compare(previous, obs.data)
+	if len(changes) == 0 {
+		return
+	}
+
 	// The instrument is dated. A pure addition across a version bump is the
 	// observer seeing better rather than the world changing, and untreated it
 	// would alert across a whole inventory after one update.
-	if diff.Revelation(changes, previousVersion, version) {
+	//
+	// Only on the layer the classification is about. The scanner's version is
+	// stamped on the dns, tcp and http layers too, so applying it there would
+	// reclassify a newly opened port as a detection improvement for one pass
+	// after every scanner upgrade, across a whole inventory.
+	if obs.layer == normalize.LayerFingerprint && diff.Revelation(changes, previousVersion, version) {
 		payload := clone(base)
 		payload["diff"] = changes
 		payload["summary"] = diff.Summarise(changes)

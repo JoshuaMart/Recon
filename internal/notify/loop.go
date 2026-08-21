@@ -168,7 +168,9 @@ func (n *Notifier) Aggregates(ctx context.Context, threshold float64) error {
 // so it escapes the windows: folding an aggregate into a second aggregate
 // counts it twice and loses it.
 func (n *Notifier) onboarding(ctx context.Context, q *sqlcgen.Queries, now time.Time) error {
-	due, err := q.OnboardingDue(ctx)
+	due, err := q.OnboardingDue(ctx, sqlcgen.OnboardingDueParams{
+		Since: pgtype.Timestamptz{Time: now.Add(-GraceAge).UTC(), Valid: true},
+	})
 	if err != nil {
 		return fmt.Errorf("read the onboarding summaries: %w", err)
 	}

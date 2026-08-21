@@ -342,3 +342,32 @@ func TestTheDiffComparesNormalizedAgainstNormalized(t *testing.T) {
 			len(h.kinds(t, notify.KindChainChanged)), h.events(t))
 	}
 }
+
+// A name that stays dangling is re-derived from every report, and critical
+// escapes the windows. Telling it from the transition path would re-send the
+// same alert on every scan, forever, for every dangling asset in an inventory.
+func TestADanglingCNAMEIsToldOnceRatherThanEveryPass(t *testing.T) {
+	h := newHarness(t)
+	set := h.scope(t, include("acme.test"))
+	c := &clock{now: time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)}
+	ing := h.dated(c)
+	h.discovered(t)
+
+	orphan := deadHost("old.acme.test", ingest.ReasonNXDomain, "bucket.s3.example.net.")
+	for range 4 {
+		if _, err := ing.Report(context.Background(), h.queries, h.out(c), set, orphan); err != nil {
+			t.Fatalf("ingest: %v", err)
+		}
+		c.now = c.now.Add(12 * time.Hour)
+	}
+
+	if found := h.kinds(t, notify.KindTakeover); len(found) != 1 {
+		t.Fatalf("%d critical alerts for one finding confirmed four times", len(found))
+	}
+	// And the finding is still there, held open rather than re-announced.
+	if n := h.count(t,
+		`SELECT count(*) FROM asset_current WHERE program_id = $1 AND attributes ? 'takeover_candidate'`,
+		h.program); n != 1 {
+		t.Fatalf("the finding stopped being recorded: %d assets carry it", n)
+	}
+}

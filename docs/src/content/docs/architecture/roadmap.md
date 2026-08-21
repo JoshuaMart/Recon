@@ -458,6 +458,30 @@ programme, as a programme event so it escapes the windows, and it names the coun
 process, so a deployment that configured a webhook and then created its tenant had no channel until
 somebody restarted for an unrelated reason. The notifier retries until there is a tenant to attach to.
 
+**A review afterwards found fourteen defects, and the three serious ones were each a notification
+saying the wrong thing rather than a crash.**
+
+A dangling CNAME re-alerted on **every pass**. The finding is re-derived from every report and critical
+escapes the windows, so telling it from the transition path meant the same alert on every scan cycle,
+forever, for every dangling asset in an inventory. It rides the insert path now: a re-confirmed finding
+deduplicates and says nothing.
+
+The overflow summary was written on the **first** event past the cap and counted what was held **at that
+instant**, which is one. So a flood of five thousand produced a summary claiming to speak for one event
+while four thousand nine hundred and eighty went unmentioned, and the assertion passed because it only
+checked that a summary existed. Summaries are written once the tick is over, counting what they actually
+stand for.
+
+And any digest excluded a programme from its onboarding summary, permanently. A large first run
+saturates the high window on port openings, which the grace does not hold, so the overflow digest landed
+first and the onboarding one never: the whole point of the commit before it, undone by a query that did
+not distinguish the two kinds of summary.
+
+**The revelation classification was running on every layer.** The scanner's version is stamped on the
+dns, tcp and http observations too, so for one pass after every scanner upgrade a newly opened port was
+reclassified as a low priority "detection improved" across a whole inventory. It applies to the layer
+the classification is about.
+
 **The round trip budget went to 3.00 and came back to 2.67.** Reading the first run grace in a query of
 its own cost one round trip per report, and the statement that already stands between the credential and
 the write had the three facts in reach.

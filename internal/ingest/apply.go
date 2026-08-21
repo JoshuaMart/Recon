@@ -36,10 +36,14 @@ type state struct {
 	// typed in asset is born from a probe observation, so reading that would
 	// make the hand fed branch dead code in production while its test passes.
 	source string
-	// announced marks the lifecycle transition as already told. An asset has
+	// announced is the state already told for. An asset has
 	// one transition per report and several observations, so emitting from
-	// each layer would notify the same arrival two or three times over.
-	announced bool
+	// each layer would notify the same arrival two or three times over. It
+	// holds the state rather than a flag so that an asset which moves again
+	// inside one report, active and then inactive as a later layer reports a
+	// death, still says so: otherwise the arrival stands as the only record
+	// and it is the opposite of where the asset ended up.
+	announced string
 	// previousLifecycle is what this asset was before this report touched it.
 	// A transition is the difference between the two, and reading the column
 	// afterwards would compare a state with itself.

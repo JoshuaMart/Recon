@@ -35,10 +35,18 @@ type Grace struct {
 // leave the grace partway through and flood with the rest. A programme in the
 // middle of a first run is not a programme without discovery.
 func (g Grace) Active(at time.Time) bool {
+	// A grace nobody filled in is not a grace. The zero value would otherwise
+	// read as active, because a programme with no runs and no assets is exactly
+	// what a fresh one looks like, and a caller that forgot to read the facts
+	// would suppress silently rather than notify. An alert too many is the safe
+	// direction here; a silence is not.
+	if g.CreatedAt.IsZero() {
+		return false
+	}
 	if g.CompletedDiscovery {
 		return false
 	}
-	if !g.CreatedAt.IsZero() && !at.Before(g.CreatedAt.Add(GraceAge)) {
+	if !at.Before(g.CreatedAt.Add(GraceAge)) {
 		return false
 	}
 	return g.AnyDiscovery || g.Assets < GraceAssets

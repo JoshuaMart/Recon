@@ -474,7 +474,11 @@ SELECT r.id, r.org_id, r.program_id, r.kind, r.scope, r.state, r.deadline,
                   AND d.state = 'completed') AS completed_discovery,
        EXISTS (SELECT 1 FROM run d
                 WHERE d.program_id = p.id AND d.kind = 'discovery') AS any_discovery,
-       (SELECT count(*) FROM asset a WHERE a.program_id = p.id) AS assets
+       -- Bounded, because the grace only ever asks whether the inventory is
+       -- under the threshold. A full count over a programme's assets on every
+       -- ingestion is not the "rides along for nothing" this comment claims.
+       (SELECT count(*) FROM (
+            SELECT 1 FROM asset a WHERE a.program_id = p.id LIMIT 500) bounded) AS assets
   FROM run r
   JOIN program p ON p.id = r.program_id
  WHERE r.id = @run_id::uuid;
