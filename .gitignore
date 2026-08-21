@@ -1,0 +1,12 @@
+# Secrets. Only the example is committed.
+.env
+
+# Build output.
+/bin/
+/dist/
+
+# Local backup archives, which are data rather than source.
+/var/
+
+# Editors.
+.DS_Store

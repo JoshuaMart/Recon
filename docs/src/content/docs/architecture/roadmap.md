@@ -18,23 +18,52 @@ risk of this project.
 **Goal**: be able to write code without structural debt. The tooling choices are in the
 [technical base](/architecture/stack/).
 
-- [ ] Repository initialized, [structure decided](/architecture/stack/#132-repository-structure)
-- [ ] [Migration tool wired](/architecture/stack/#134-migrations-goose), versioned and reversible
-- [ ] Local Docker Compose: [PostgreSQL](/architecture/stack/#133-self-hosted-postgresql), the Fingerprinter and its Chrome sidecar, on [the two networks](/architecture/verification/#85-network-isolation). FastRecon is not a service: it is an image a run starts
-- [ ] [Minimal CI](/architecture/stack/#138-tooling-and-ci): lint, tests, build
-- [ ] [Typed configuration](/architecture/stack/#136-configuration-and-secrets), no hard coded value
-- [ ] [Secrets out of the repository](/architecture/stack/#136-configuration-and-secrets), injected from the environment
-- [ ] [Database backup](/architecture/stack/#backups-the-consequence-of-self-hosting), archiving to a destination that is configuration, so the restore is exercised locally
-- [ ] [Two PostgreSQL roles](/architecture/deployment/#96-postgresql-roles), before any business migration
+- [x] Repository initialized, [structure decided](/architecture/stack/#132-repository-structure)
+- [x] [Migration tool wired](/architecture/stack/#134-migrations-goose), versioned and reversible
+- [x] Local Docker Compose: [PostgreSQL](/architecture/stack/#133-self-hosted-postgresql), the Fingerprinter and its Chrome sidecar, on [the two networks](/architecture/verification/#85-network-isolation). FastRecon is not a service: it is an image a run starts
+- [x] [Minimal CI](/architecture/stack/#138-tooling-and-ci): lint, tests, build
+- [x] [Typed configuration](/architecture/stack/#136-configuration-and-secrets), no hard coded value
+- [x] [Secrets out of the repository](/architecture/stack/#136-configuration-and-secrets), injected from the environment
+- [x] [Database backup](/architecture/stack/#backups-the-consequence-of-self-hosting), archiving to a destination that is configuration, so the restore is exercised locally
+- [x] [Two PostgreSQL roles](/architecture/deployment/#96-postgresql-roles), before any business migration
 
 ### Milestone 0
 
-- [ ] `docker compose up` starts everything in under 60 s on a clean machine
-- [ ] A migration can be applied then rolled back without loss
-- [ ] CI passes on an empty pull request
-- [ ] A backup is restored into an empty database from the configured archive destination, and the content is identical
-- [ ] Connected as `asm_app`: `CREATE TABLE` fails, `DROP TABLE` fails on a table the owner created, and reading and writing that table succeeds through the default privileges
-- [ ] From the fingerprinter's container, `psql` to the database fails, and the same connection succeeds from the control plane network
+- [x] `docker compose up` starts everything in under 60 s on a clean machine
+- [x] A migration can be applied then rolled back without loss
+- [x] CI passes on an empty pull request
+- [x] A backup is restored into an empty database from the configured archive destination, and the content is identical
+- [x] Connected as `asm_app`: `CREATE TABLE` fails, `DROP TABLE` fails on a table the owner created, and reading and writing that table succeeds through the default privileges
+- [x] From the fingerprinter's container, `psql` to the database fails, and the same connection succeeds from the control plane network
+
+:::note[Measured]
+**Cold start in 12.6 s**, from an empty volume with the images already pulled: PostgreSQL, one Chrome,
+the rendering service, the migration, the role grant and the control plane.
+
+**Reversibility** is proved by unwinding to version 0 and replaying, with a table the migration does not
+own written in between. The roles disappear and come back; the row survives. Rolling back a schema that
+carries no data would have proved nothing about loss.
+
+**The restore is the assertion the archive destination change was made for**, and it is discriminating by
+construction: the rows it checks are written **after** the base backup, so they exist only in the archived
+WAL. Verified by removing the recovery signal, which brings the count back to one and fails with the
+message that predicts it.
+
+**The role confinement is checked in both directions.** Reading and writing an owner-created table must
+succeed through the default privileges, otherwise every refusal beside it would pass just as well on a
+role that can do nothing at all. `CREATE TABLE`, `DROP TABLE`, `ALTER TABLE` and `CREATE ROLE` are all
+refused.
+
+**Isolation reports what it proved rather than what one would like it to.** Between the docker networks
+the rendering side reaches neither the database nor the internal API by name, and the control side reaches
+the database, so the refusals mean isolation rather than a stack that is down. A published port is still
+reachable from any container through the host gateway, because the local runtime proxies it to the host's
+loopback. That is stated by the script instead of being claimed away: nothing in the deployed topology
+publishes a port onto a host the rendering network shares.
+
+**The environment guard is a linter rule, not a convention**, and it was verified by breaking it: a
+`os.Getenv` outside the configuration package fails the lint with the reason attached.
+:::
 
 ## Phase 1: Data model and ingestion
 

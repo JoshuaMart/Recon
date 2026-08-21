@@ -1,0 +1,35 @@
+# The rendering service's configuration, mounted into its container: the
+# published image ships its detections but no config file.
+#
+# Nothing here is a credential, and that is the point. The service holds none:
+# everything it needs to do its job arrives in the scan request.
+
+server:
+  port: 3001
+  read_timeout: 10s
+
+scanner:
+  max_redirects: 10
+  request_timeout: 30s
+  headers:
+    User-Agent: "Recon/1.0"
+  concurrent_scans: 20
+  # A pool at capacity frees a slot within seconds, so refusing on the spot
+  # turns a busy service into a retry storm. Waiting without a ceiling is worse:
+  # the caller spends its own budget queueing.
+  acquire_timeout: 5s
+
+browser:
+  # One instance locally. Production sizes the pool for throughput; the local
+  # stack needs the topology to be right, not the capacity, and three Chrome
+  # containers is most of the sixty seconds milestone 0 allows for a cold start.
+  control_urls:
+    - "http://chrome-1:9222"
+  # Above concurrent_scans, and by a margin: this is a safety limit rather than
+  # the admission gate. If it binds first, saturation reaches the caller as a
+  # scan that timed out instead of a refusal it could retry.
+  max_pages: 60
+  page_timeout: 15s
+
+detections:
+  yaml_dir: "./detections/"

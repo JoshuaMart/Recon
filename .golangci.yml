@@ -1,0 +1,55 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - depguard
+    - forbidigo
+    - gosec
+    - rowserrcheck
+    - sqlclosecheck
+
+  settings:
+    forbidigo:
+      analyze-types: true
+      forbid:
+        # Without an automatic constraint, "no value is read from the
+        # environment outside internal/config" holds for about three weeks.
+        - pattern: '^os\.(Getenv|LookupEnv|Environ|Setenv|Unsetenv)$'
+          msg: >-
+            read configuration through internal/config, which is the only place
+            in this repository that touches the environment
+        # Logs are structured and carry a correlation id. A println is a line
+        # nothing can correlate and nothing can filter.
+        - pattern: '^fmt\.Print(f|ln)?$'
+          msg: use the logger, or write to os.Stderr explicitly in a command
+
+    depguard:
+      rules:
+        sql:
+          # The migration runner needs database/sql because goose does.
+          # Everything else talks to the database through pgx, and a second
+          # driver stack would be a second set of connection settings that
+          # nobody keeps in step.
+          files:
+            - '!**/internal/store/*.go'
+          deny:
+            - pkg: database/sql
+              desc: use pgx through internal/store
+
+  exclusions:
+    rules:
+      # The one package allowed to read the environment, by definition.
+      - path: 'internal/config/'
+        linters: [forbidigo]
+      # A command's job is to print to a terminal.
+      - path: 'cmd/'
+        linters: [forbidigo]
+      - path: '_test\.go'
+        linters: [gosec, forbidigo]
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports

@@ -1,0 +1,205 @@
+# The local stack. Milestone 0 asks that this comes up in under sixty seconds
+# on a clean machine, so images are pinned to a minor tag and data lives in
+# named volumes: a bind mount for the data directory is ruinously slow on
+# macOS.
+#
+# From the repository root:
+#   make up
+#
+# What is deliberately not here: a scanner. FastRecon is a one-shot job, not a
+# daemon. It is an image a run starts, with its perimeter supplied as overrides
+# on the start call, so there is nothing for it to listen to.
+
+name: recon
+
+networks:
+  # The inventory and everything allowed to reach it.
+  control:
+  # The rendering service and its browser, and nothing else. A headless browser
+  # executing target-controlled JavaScript beside the database is an SSRF engine
+  # adjacent to the inventory, so the split is the point rather than tidiness.
+  scan:
+
+volumes:
+  pgdata:
+
+services:
+  postgres:
+    networks: [control]
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-asm_owner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-recon}
+    command:
+      # Continuous archiving, on from the first start. Turning it on later
+      # needs a restart and a fresh base backup, which is the kind of thing
+      # that gets postponed until the day it is needed.
+      - postgres
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_command=test ! -f /archive/wal/%f && cp %p /archive/wal/%f
+      - -c
+      - wal_level=replica
+      # A cold restore needs the WAL that follows the base backup, and the
+      # default keeps too little to survive a slow one.
+      - -c
+      - max_wal_size=1GB
+    # Bound to the loopback interface. Published without a host this listens on
+    # every interface of the machine, which on a shared network is an open
+    # PostgreSQL port.
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      # Mounted at /var/lib/postgresql rather than at its data subdirectory:
+      # the official image recommends this from 18 onwards so a later
+      # pg_upgrade --link does not run into a mount point boundary.
+      - pgdata:/var/lib/postgresql
+      # The archive destination is configuration (13.3). A path here, a bucket
+      # in production, and the restore is exercised against whichever it is.
+      - ${BACKUP_ARCHIVE_DIR:-../../var/archive}:/archive
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-asm_owner} -d ${POSTGRES_DB:-recon}"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 3s
+
+  # The archive directory has to exist and be writable by postgres before the
+  # first archive_command fires, or every WAL segment fails to ship and the
+  # only sign is a line in the log.
+  archive-init:
+    networks: [control]
+    image: postgres:18-alpine
+    user: root
+    entrypoint: ["sh", "-c"]
+    command: ["mkdir -p /archive/wal /archive/base && chown -R postgres:postgres /archive"]
+    volumes:
+      - ${BACKUP_ARCHIVE_DIR:-../../var/archive}:/archive
+    restart: "no"
+
+  # A service of its own rather than a step inside the control plane, so a
+  # failed migration is readable and the application is gated on it by the
+  # deployment rather than by an ordering somebody has to remember.
+  migrate:
+    networks: [control]
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+      target: migrate
+    command: ["up"]
+    environment:
+      RECON_LOG__FORMAT: text
+      RECON_DATABASE__MIGRATION_URL: >-
+        postgres://${POSTGRES_USER:-asm_owner}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-recon}?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # The migration creates the roles NOLOGIN with their privileges and stops
+  # there. Granting LOGIN and a secret is the deployment's job, so that no
+  # password ever lives in a migration file.
+  db-app-role:
+    networks: [control]
+    image: postgres:18-alpine
+    entrypoint: ["sh", "-c"]
+    # Through stdin rather than -c: psql does not interpolate variables in -c.
+    # The passwords go in as psql variables so they never reach a command line
+    # that ps could show.
+    #
+    # The two roles get two passwords. What separates them is what row-level
+    # security lets them see, so one shared credential would turn that
+    # distinction into a comment.
+    #
+    # The semicolons are not decoration: a newline does not end a statement for
+    # psql, so without them the second ALTER reads as a continuation of the
+    # first and the whole thing is a syntax error.
+    command:
+      - >-
+        printf '%s;\n%s;\n'
+        "ALTER ROLE asm_app WITH LOGIN PASSWORD :'pw'"
+        "ALTER ROLE asm_sys WITH LOGIN PASSWORD :'syspw'"
+        | psql -v ON_ERROR_STOP=1 -v pw="$$APP_PASSWORD" -v syspw="$$SYSTEM_PASSWORD"
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-asm_owner}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB:-recon}
+      APP_PASSWORD: ${APP_PASSWORD:?set APP_PASSWORD in .env}
+      SYSTEM_PASSWORD: ${SYSTEM_PASSWORD:?set SYSTEM_PASSWORD in .env}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  controlplane:
+    networks: [control]
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+      target: controlplane
+    environment:
+      RECON_ENV: dev
+      RECON_LOG__FORMAT: text
+      RECON_HTTP__ADDR: ":8080"
+      # asm_app, never the owner. RECON_DATABASE__MIGRATION_URL is deliberately
+      # absent, and the configuration refuses to start if it appears: role
+      # separation buys nothing if whoever reaches execution here finds the
+      # owner credentials next to the application ones.
+      RECON_DATABASE__URL: >-
+        postgres://asm_app:${APP_PASSWORD}@postgres:5432/${POSTGRES_DB:-recon}?sslmode=disable
+    ports:
+      - "127.0.0.1:${CONTROLPLANE_PORT:-8080}:8080"
+    depends_on:
+      db-app-role:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/controlplane", "-health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 2s
+    restart: unless-stopped
+
+  # The browser the rendering service drives over CDP. One instance locally:
+  # the stack needs the topology to be right, not the throughput.
+  chrome-1:
+    networks: [scan]
+    image: chromedp/headless-shell:latest
+    init: true
+    shm_size: '1g'
+    command:
+      - --remote-allow-origins=*
+      - --disable-dev-shm-usage
+      - --disable-gpu
+      - --disable-background-networking
+      - --disable-default-apps
+      - --disable-extensions
+      - --disable-sync
+      - --no-first-run
+      - --metrics-recording-only
+    logging:
+      driver: "none"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/9222' 2>/dev/null"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  # Renders pages controlled by a target, so it sits alone with its browser and
+  # holds no credential of any kind. Everything it needs arrives in the request.
+  fingerprinter:
+    networks: [scan]
+    image: ghcr.io/joshuamart/fingerprinter:latest
+    volumes:
+      - ./fingerprinter.yml:/app/config.yml:ro
+    ports:
+      - "127.0.0.1:${FINGERPRINTER_PORT:-3001}:3001"
+    depends_on:
+      chrome-1:
+        condition: service_healthy
+    restart: unless-stopped

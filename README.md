@@ -5,7 +5,7 @@
 </p>
 
 > [!WARNING]
-> Work in progress. The design exists, the code does not yet.
+> Work in progress. Foundations are in; the inventory is not.
 
 Attack surface management for bug bounty. Find assets the others miss, and find them first.
 
@@ -25,16 +25,33 @@ Recon owns an inventory and drives two scanners, each in its own repository:
 Neither holds a database credential. The scope, the scheduling, the correlation, the diff and the
 authorization live in the control plane, which is where the value is.
 
+## Running the stack
+
+```sh
+cp .env.example .env    # local credentials, never committed
+make up                 # postgres, migrations, roles, control plane, renderer
+make help               # everything else
+```
+
+What a pull request has to pass, which is also what CI runs:
+
+```sh
+make check              # vet, lint, unit tests
+make test-integration   # needs Docker
+```
+
 ## Reading the design
 
 ```sh
-cd docs
-pnpm install
-pnpm dev
+cd docs && pnpm install && pnpm dev
 ```
 
 ## Layout
 
 | Directory | Contents |
 |---|---|
+| `cmd/` | The binaries: `controlplane`, `migrate` |
+| `internal/` | The control plane's own code |
+| `db/` | Migrations, embedded into the binary |
+| `deploy/compose/` | The local stack, and the checks that guard its topology |
 | `docs/` | The design record (Astro and Starlight) |

@@ -1,0 +1,15 @@
+#!/usr/bin/env sh
+# A secret scan before the commit, not only in CI.
+#
+# The real failure mode is not a .env committed by distraction: it is a
+# credential inside a configuration file that legitimately carries settings. CI
+# catches it too, but by then it is in a branch somebody may already have.
+set -eu
+
+if ! command -v docker >/dev/null 2>&1; then
+	echo "pre-commit: docker not found, skipping the secret scan." >&2
+	exit 0
+fi
+
+docker run --rm -v "$(pwd):/repo" zricethezav/gitleaks:latest \
+	protect --staged --source=/repo --redact --no-banner

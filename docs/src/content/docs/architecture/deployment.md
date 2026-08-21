@@ -225,10 +225,14 @@ than waiting for autovacuum.
 The control plane opens two pools, and that is deliberate: the role that crosses tenants is chosen when a
 pool is opened, not case by case in the code, otherwise the property goes back to being a convention.
 
-The migration string must **never** be present in the control plane's environment in production. If it is,
-role separation buys nothing, since anyone obtaining execution in the control plane finds the owner
-credentials next to it. The separation has to be a fact of deployment rather than a naming convention: the
-migration string lives in the release job, not in the service definition.
+The migration string must **never** be present in the control plane's environment. If it is, role
+separation buys nothing, since anyone obtaining execution in the control plane finds the owner credentials
+next to it. The separation has to be a fact of deployment rather than a naming convention, so the
+configuration **refuses to start** when both appear, and the migration string lives in the release job
+rather than in the service definition.
+
+The refusal is symmetric: the migrator refuses the application credential too. Neither process has any
+business holding the other's.
 
 ## 9.7 Bootstrap
 

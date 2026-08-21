@@ -1,0 +1,12 @@
+# Known-fake credentials are exempted one literal at a time, never by path: a
+# test file can hold a real credential as easily as any other.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "recon-container-passwords"
+description = "Passwords used only to start a throwaway container in a test"
+regex = '''(owner|app)-password-for-a-container'''
+[rules.allowlist]
+regexTarget = "match"
+regexes = ['''.*''']
