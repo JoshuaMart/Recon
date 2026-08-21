@@ -25,6 +25,7 @@ import (
 	"github.com/JoshuaMart/recon/internal/auth"
 	"github.com/JoshuaMart/recon/internal/config"
 	"github.com/JoshuaMart/recon/internal/enrich"
+	"github.com/JoshuaMart/recon/internal/external"
 	"github.com/JoshuaMart/recon/internal/fingerprint"
 	"github.com/JoshuaMart/recon/internal/ingest"
 	"github.com/JoshuaMart/recon/internal/maintenance"
@@ -66,11 +67,23 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	pool, err := store.Open(ctx, cfg.Database.URL, cfg.Database.MaxConns, cfg.Database.ConnectTimeout)
+	// Two pools, and that is the whole of the isolation being structural: the
+	// role a component connects with is chosen here, once, rather than case by
+	// case in the code. Everything a request does runs on the first; the loops
+	// that serve every tenant in one tick run on the second and say so by the
+	// role they hold.
+	appPool, err := store.Open(ctx, cfg.Database.URL, cfg.Database.MaxConns, cfg.Database.ConnectTimeout)
 	if err != nil {
 		return err
 	}
-	defer pool.Close()
+	defer appPool.Close()
+	scoped := store.NewScoped(appPool)
+
+	system, err := store.Open(ctx, cfg.Database.SystemURL, cfg.Database.MaxConns, cfg.Database.ConnectTimeout)
+	if err != nil {
+		return err
+	}
+	defer system.Close()
 
 	signer, err := auth.NewSigner(cfg.Security.SigningKey)
 	if err != nil {
@@ -96,13 +109,25 @@ func run() error {
 
 	// Started unconditionally, and before anything can write: a partition job
 	// behind a toggle is an ingestion outage three months later.
-	go maintenance.New(sqlcgen.New(pool), cfg.Maintenance.Interval, log).Run(ctx)
+	go maintenance.New(sqlcgen.New(system), cfg.Maintenance.Interval, log).Run(ctx)
 	// The other loop that must not be optional. A run nothing expires holds
 	// its targets forever, and the assets it froze are invisible to every
 	// later tick.
-	go runs.NewSweeper(scheduler, sqlcgen.New(pool), cfg.Verification.SweepInterval, log).Run(ctx)
+	go runs.NewSweeper(scheduler, sqlcgen.New(system), cfg.Verification.SweepInterval, log).Run(ctx)
 	// The pass that provisions enumeration, distinct from the one on due dates.
-	go runs.NewCadence(pool, scheduler, cfg.Verification.SweepInterval, log).Run(ctx)
+	go runs.NewCadence(system, scheduler, cfg.Verification.SweepInterval, log).Run(ctx)
+
+	// The one loop that asks a question about somebody else's domain, and the
+	// only outbound work in the control plane. It resolves an apex and nothing
+	// else: no connection, no request, no render. An interval of zero turns it
+	// off, for a deployment that would rather make no outbound query at all.
+	if cfg.External.Interval > 0 {
+		go external.New(system, external.NewDNS(cfg.External.Timeout),
+			cfg.External.Interval, cfg.External.Batch, log).Run(ctx)
+	} else {
+		log.WarnContext(ctx, "the external host sweep is off, so an expired third party domain "+
+			"will only be found where the host is in this inventory")
+	}
 
 	// The only asynchronous half of the alert path. Producing an event is
 	// ingestion's job, in its transaction; this can lag without consequence.
@@ -111,7 +136,7 @@ func run() error {
 	// where exactly one organization exists: a configuration file cannot name a
 	// tenant. The loop retries that until there is one, because the
 	// organization is created by a command outside this process.
-	notifier := notify.New(pool, notify.NewSender(cfg.Notify.Timeout, nil), cfg.Notify.Batch, log)
+	notifier := notify.New(system, notify.NewSender(cfg.Notify.Timeout, nil), cfg.Notify.Batch, log)
 	go notify.NewLoop(notifier, cfg.Notify.Interval, cfg.Notify.UnobservableAlert, notify.ConfigChannel{
 		URL:         cfg.Notify.WebhookURL,
 		Template:    cfg.Notify.Template,
@@ -125,7 +150,7 @@ func run() error {
 	if cfg.Render.URL != "" {
 		budget := render.NewBudget(cfg.Render.Cost, nil)
 		client := fingerprint.New(cfg.Render.URL, cfg.Render.Timeout, nil)
-		pass := render.New(pool, client, ingestor, budget, render.Options{
+		pass := render.New(system, client, ingestor, budget, render.Options{
 			Batch:             cfg.Render.Batch,
 			Concurrency:       cfg.Render.Concurrency,
 			UnobservableAlert: cfg.Render.UnobservableAlert,
@@ -138,7 +163,7 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:              cfg.HTTP.Addr,
-		Handler:           routes(cfg, pool, signer, scheduler, ingestor, log),
+		Handler:           routes(cfg, scoped, system, signer, scheduler, ingestor, log),
 		ReadHeaderTimeout: cfg.HTTP.ReadTimeout,
 	}
 
@@ -215,22 +240,22 @@ func probe() error {
 }
 
 func routes(
-	cfg *config.Config, pool *pgxpool.Pool, signer *auth.Signer,
+	cfg *config.Config, scoped *store.Scoped, system *pgxpool.Pool, signer *auth.Signer,
 	scheduler *runs.Scheduler, ingestor *ingest.Ingestor, log *slog.Logger,
 ) http.Handler {
 	mux := http.NewServeMux()
 
 	// Where a run's report lands. It authenticates before reading anything
 	// else, and the run comes from the credential rather than from the body.
-	mux.Handle("POST /reports", api.NewReports(pool, signer, ingestor, log))
+	mux.Handle("POST /reports", api.NewReports(scoped, system, signer, ingestor, log))
 
 	// The only thing a run is given about the inventory, scoped to that run.
-	mux.Handle("GET /runs/{run}/targets", api.NewTargets(pool, signer, log))
+	mux.Handle("GET /runs/{run}/targets", api.NewTargets(scoped, system, signer, log))
 
 	// The console surface. Every route goes through one authorization layer
 	// that produces a principal, even while there is one kind of caller.
-	guard := api.NewGuard(pool, log)
-	programs := api.NewPrograms(pool, scheduler, ingestor, cfg.Runner.Timeout, log)
+	guard := api.NewGuard(system, log)
+	programs := api.NewPrograms(scoped, scheduler, ingestor, cfg.Runner.Timeout, log)
 	mux.Handle("POST /programs/{program}/runs", guard.Require(auth.ActionManageJobs, programs.StartRun))
 	// Entering an asset by hand is an assertion about the perimeter, which is
 	// a different privilege from writing what a scanner found.
@@ -240,9 +265,19 @@ func routes(
 	// rather than ingest: something holding ingest could otherwise schedule
 	// renders of its choosing and spend a programme's budget on targets it
 	// picked.
-	renders := api.NewRenders(pool, cfg.Render.ReplanSpread, log)
+	renders := api.NewRenders(scoped, cfg.Render.ReplanSpread, log)
 	mux.Handle("POST /assets/{asset}/render", guard.Require(auth.ActionManageJobs, renders.Request))
 	mux.Handle("POST /renders/replan", guard.Require(auth.ActionManageJobs, renders.Replan))
+
+	// The inventory itself. read_assets and never ingest: a run holds ingest
+	// and everything it needs is in its definition, so a compromised one cannot
+	// exfiltrate a perimeter.
+	assets := api.NewAssets(scoped, log)
+	mux.Handle("POST /assets/search", guard.Require(auth.ActionReadAssets, assets.Search))
+	mux.Handle("POST /assets/facets", guard.Require(auth.ActionReadAssets, assets.Facets))
+	mux.Handle("POST /assets/export", guard.Require(auth.ActionReadAssets, assets.Export))
+	// What the search accepts, served rather than deduced.
+	mux.Handle("GET /assets/fields", guard.Require(auth.ActionReadAssets, assets.Fields))
 
 	// Liveness. It touches nothing, because a probe that queries the database
 	// turns a slow database into a restarted process.
@@ -256,7 +291,7 @@ func routes(
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 
-		if err := pool.Ping(ctx); err != nil {
+		if err := scoped.Ping(ctx); err != nil {
 			log.ErrorContext(ctx, "readiness check failed", "error", err)
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 				"status": "unavailable",

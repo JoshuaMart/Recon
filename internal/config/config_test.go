@@ -38,6 +38,7 @@ func TestTwoUnderscoresNestAndOneDoesNot(t *testing.T) {
 	cfg, err := config.Load(config.RoleControlPlane, config.Options{
 		Environ: environ(
 			"RECON_DATABASE__URL=postgres://app@localhost/recon",
+			"RECON_DATABASE__SYSTEM_URL=postgres://sys@localhost/recon",
 			"RECON_SECURITY__SIGNING_KEY=a-signing-key-long-enough-to-be-one",
 			"RECON_VERIFICATION__PUBLIC_URL=https://recon.example",
 			// One underscore inside a key, two between levels. If the
@@ -159,6 +160,51 @@ func TestTheConfigPathIsNotAnOption(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("load: %v", err)
+	}
+}
+
+// The loops that serve every tenant need the role that is allowed to, and the
+// absence of that credential has no safe reading: under row-level security the
+// application role answers them with zero rows rather than with an error, so
+// the housekeeping creates no partition and the notifier sends nothing, quietly
+// and while looking healthy.
+func TestTheControlPlaneRefusesToStartWithOnlyOneCredential(t *testing.T) {
+	t.Parallel()
+
+	_, err := config.Load(config.RoleControlPlane, config.Options{
+		Environ: environ(
+			"RECON_DATABASE__URL=postgres://app@localhost/recon",
+			"RECON_SECURITY__SIGNING_KEY=a-signing-key-long-enough-to-be-one",
+			"RECON_VERIFICATION__PUBLIC_URL=https://recon.example",
+		),
+	})
+	if err == nil {
+		t.Fatal("a control plane with no system credential was accepted")
+	}
+	if !strings.Contains(err.Error(), "system_url") {
+		t.Errorf("the error does not name the option: %v", err)
+	}
+}
+
+// And the same credential twice is the separation being a naming convention
+// rather than a fact of deployment: the role that crosses tenants would be the
+// role that must not.
+func TestTheControlPlaneRefusesTheSameCredentialTwice(t *testing.T) {
+	t.Parallel()
+
+	_, err := config.Load(config.RoleControlPlane, config.Options{
+		Environ: environ(
+			"RECON_DATABASE__URL=postgres://app@localhost/recon",
+			"RECON_DATABASE__SYSTEM_URL=postgres://app@localhost/recon",
+			"RECON_SECURITY__SIGNING_KEY=a-signing-key-long-enough-to-be-one",
+			"RECON_VERIFICATION__PUBLIC_URL=https://recon.example",
+		),
+	})
+	if err == nil {
+		t.Fatal("one credential given for both roles was accepted")
+	}
+	if !strings.Contains(err.Error(), "same credential") {
+		t.Errorf("the error does not say what is wrong: %v", err)
 	}
 }
 

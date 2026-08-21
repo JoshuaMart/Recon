@@ -110,7 +110,14 @@ func (c *Cadence) provision(ctx context.Context, org, program uuid.UUID, name st
 	// After the commit, deliberately. A platform that refuses on a quota leaves
 	// a row the deadline sweeper owns, and the next tick tries again once that
 	// row is out of the way.
-	if err := c.scheduler.Launch(ctx, sqlcgen.New(c.pool), definition); err != nil {
+	// The cadence serves every tenant, so its pool crosses them and the record
+	// below needs no organization of its own.
+	record := func(ctx context.Context, runID uuid.UUID, external string) error {
+		return sqlcgen.New(c.pool).RecordRunStart(ctx, sqlcgen.RecordRunStartParams{
+			RunID: pgUUID(runID), ExternalID: external,
+		})
+	}
+	if err := c.scheduler.Launch(ctx, record, definition); err != nil {
 		c.log.ErrorContext(ctx, "discovery run not started",
 			"program", program, "name", name, "run", definition.RunID, "error", err)
 		return false

@@ -8,11 +8,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/JoshuaMart/recon/internal/auth"
 	"github.com/JoshuaMart/recon/internal/fingerprint"
 	"github.com/JoshuaMart/recon/internal/lifecycle"
+	"github.com/JoshuaMart/recon/internal/store"
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
@@ -22,15 +22,15 @@ import (
 // tidiness: something holding ingest could otherwise schedule renders of its
 // choosing and spend a programme's budget on targets it picked.
 type Renders struct {
-	pool   *pgxpool.Pool
+	db     *store.Scoped
 	spread time.Duration
 	now    func() time.Time
 	log    *slog.Logger
 }
 
 // NewRenders builds them.
-func NewRenders(pool *pgxpool.Pool, spread time.Duration, log *slog.Logger) *Renders {
-	return &Renders{pool: pool, spread: spread, now: time.Now, log: log}
+func NewRenders(db *store.Scoped, spread time.Duration, log *slog.Logger) *Renders {
+	return &Renders{db: db, spread: spread, now: time.Now, log: log}
 }
 
 // Request puts one asset at the head of the queue.
@@ -42,7 +42,19 @@ func (h *Renders) Request(w http.ResponseWriter, r *http.Request, principal auth
 		return
 	}
 
-	queries := sqlcgen.New(h.pool)
+	// A transaction rather than a bare query, because that is the only shape
+	// that can carry an organization: the policies read a variable that is
+	// transaction scoped. The two reads and the write below then see one
+	// consistent state as a side effect, which they did not before.
+	tx, err := h.db.Begin(ctx, principal.OrgID)
+	if err != nil {
+		h.log.ErrorContext(ctx, "begin failed", "error", err)
+		fail(w, http.StatusInternalServerError, "unavailable", "the request could not be served")
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	queries := sqlcgen.New(tx)
 	row, err := queries.AssetForRender(ctx, sqlcgen.AssetForRenderParams{AssetID: uuidTo(assetID)})
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && uuid.UUID(row.OrgID.Bytes) != principal.OrgID) {
 		// A caller learning that an identifier exists in another organization
@@ -96,6 +108,12 @@ func (h *Renders) Request(w http.ResponseWriter, r *http.Request, principal auth
 	// It refuses an asset that has left the scheduler and one outside the
 	// perimeter alike, and answering on the lifecycle alone told a caller to
 	// wait for a render nothing would ever select.
+	if err := tx.Commit(ctx); err != nil {
+		h.log.ErrorContext(ctx, "commit failed", "asset", assetID, "error", err)
+		fail(w, http.StatusInternalServerError, "unavailable", "the request could not be served")
+		return
+	}
+
 	queued := after.Lifecycle != lifecycle.Archived && after.ScopeStatus == "in_scope"
 	writeJSON(w, http.StatusOK, map[string]any{
 		"asset_id": assetID,
@@ -112,13 +130,26 @@ func (h *Renders) Request(w http.ResponseWriter, r *http.Request, principal auth
 func (h *Renders) Replan(w http.ResponseWriter, r *http.Request, principal auth.Principal) {
 	ctx := r.Context()
 
-	moved, err := sqlcgen.New(h.pool).ReplanRenders(ctx, sqlcgen.ReplanRendersParams{
+	tx, err := h.db.Begin(ctx, principal.OrgID)
+	if err != nil {
+		h.log.ErrorContext(ctx, "begin failed", "error", err)
+		fail(w, http.StatusInternalServerError, "unavailable", "the request could not be served")
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	moved, err := sqlcgen.New(tx).ReplanRenders(ctx, sqlcgen.ReplanRendersParams{
 		OrgID:         uuidTo(principal.OrgID),
 		At:            stamp(h.now()),
 		SpreadSeconds: int64(h.spread / time.Second),
 	})
 	if err != nil {
 		h.log.ErrorContext(ctx, "replan failed", "org", principal.OrgID, "error", err)
+		fail(w, http.StatusInternalServerError, "unavailable", "the request could not be served")
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		h.log.ErrorContext(ctx, "commit failed", "org", principal.OrgID, "error", err)
 		fail(w, http.StatusInternalServerError, "unavailable", "the request could not be served")
 		return
 	}

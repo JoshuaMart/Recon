@@ -74,6 +74,7 @@ type Config struct {
 	Security Security `koanf:"security"`
 
 	Maintenance  Maintenance  `koanf:"maintenance"`
+	External     External     `koanf:"external"`
 	Verification Verification `koanf:"verification"`
 	Render       Render       `koanf:"render"`
 	Runner       Runner       `koanf:"runner"`
@@ -269,7 +270,10 @@ type Database struct {
 	// security once it exists.
 	URL string `koanf:"url"`
 	// SystemURL is asm_sys: the background loops that serve every tenant in
-	// one tick. Empty until the phase that introduces them.
+	// one tick, and the two lookups that turn a credential into an
+	// organization. It is required on the control plane, because under
+	// row-level security a loop connected as the application role reads zero
+	// rows rather than failing.
 	SystemURL string `koanf:"system_url"`
 	// MigrationURL is asm_owner. It must never be in the control plane's
 	// environment: role separation buys nothing if whoever reaches execution
@@ -278,6 +282,20 @@ type Database struct {
 
 	MaxConns       int32         `koanf:"max_conns"`
 	ConnectTimeout time.Duration `koanf:"connect_timeout"`
+}
+
+// External is the sweep that asks whether somebody else's domain is still
+// registered.
+//
+// A DNS lookup is allowed outside a scan authorization: what the guardrails
+// protect is interaction with a third party's infrastructure, and a query to a
+// public resolver reaches neither the domain nor its servers. An interval of
+// zero turns the loop off entirely, for a deployment that would rather not make
+// outbound queries at all.
+type External struct {
+	Interval time.Duration `koanf:"interval"`
+	Timeout  time.Duration `koanf:"timeout"`
+	Batch    int           `koanf:"batch"`
 }
 
 // Enrich points at the Geo-IP databases.
@@ -308,6 +326,11 @@ func Defaults() Config {
 			ConnectTimeout: 5 * time.Second,
 		},
 		Maintenance: Maintenance{Interval: time.Hour},
+		// Six hours, because a domain expiring is a step that stays rather
+		// than a transient, and a tighter cadence would buy latency on a fact
+		// that does not move while paying for it in queries against every
+		// third party a whole deployment references.
+		External: External{Interval: 6 * time.Hour, Timeout: 5 * time.Second, Batch: 5000},
 		Notify: Notify{
 			MinPriority:       "low",
 			Interval:          30 * time.Second,
@@ -503,6 +526,22 @@ func (c *Config) Validate(role Role) error {
 		}
 		if c.Database.URL == "" {
 			fail("database.url is required: the control plane connects as the application role")
+		}
+		// Required rather than optional, and the reason is that its absence has
+		// no safe reading. A control plane with one credential would have to
+		// run the loops that serve every tenant as the application role, which
+		// row-level security answers with zero rows: the housekeeping would
+		// create no partition, the sweeper would expire no run and the notifier
+		// would send nothing, all of it quietly and all of it looking healthy.
+		if c.Database.SystemURL == "" {
+			fail("database.system_url is required: the loops that serve every tenant in one tick " +
+				"connect as the system role, and under row-level security the application role " +
+				"answers them with zero rows rather than with an error")
+		}
+		if c.Database.SystemURL == c.Database.URL {
+			fail("database.system_url and database.url are the same credential, so the role that " +
+				"crosses tenants is the role that must not: the separation is a fact of deployment " +
+				"rather than a naming convention")
 		}
 		// The one refusal that is a security property rather than a check.
 		if c.Database.MigrationURL != "" {

@@ -182,12 +182,31 @@ func TestTheApplicationRoleAgainstTheRealTables(t *testing.T) {
 	seedOneAsset(t, ownerConn)
 	appConn := connect(t, appURL(url))
 
-	// What it must be able to do. This half first: without it, every refusal
-	// beside it would pass just as well on a role that can do nothing.
-	exec(t, appConn, `
+	const writeAnAsset = `
 		INSERT INTO asset (id, org_id, program_id, kind, key, host, discovery_source, scope_status, first_seen, last_seen)
 		VALUES (gen_random_uuid(), $1, $2, 'fqdn', 'written-by-the-app.target.test', 'written-by-the-app.target.test',
-		        'manual', 'in_scope', now(), now())`, tenantID, programID)
+		        'manual', 'in_scope', now(), now())`
+
+	// The same write twice, and the difference between them is the whole of
+	// the isolation: with the organization set it lands, without it the policy
+	// refuses. Before row-level security the second one succeeded.
+	tx, err := appConn.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT set_config('app.org_id', $1, true)`, tenantID); err != nil {
+		t.Fatalf("set the organization: %v", err)
+	}
+	if _, err := tx.Exec(ctx, writeAnAsset, tenantID, programID); err != nil {
+		t.Fatalf("the application role cannot write into its own organization: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	if _, err := appConn.Exec(ctx, writeAnAsset, tenantID, programID); err == nil {
+		t.Error("a write with no organization set was accepted, so the policy is not applied")
+	}
 
 	var patterns int
 	if err := appConn.QueryRow(ctx, `SELECT count(*) FROM generic_pivot_value`).Scan(&patterns); err != nil {

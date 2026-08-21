@@ -10,6 +10,7 @@
 -- previous lifecycle and the previous scope status free: the alternative is a
 -- second round trip on the hottest write path of the system.
 --
+-- @tenant: keyed
 -- name: UpsertAssetAndProjection :one
 WITH input AS (
     SELECT
@@ -184,6 +185,7 @@ SELECT
 -- path of the system and open a window where an asset's state contradicts its
 -- last observation.
 --
+-- @tenant: keyed
 -- name: WriteObservation :one
 WITH input AS (
     SELECT
@@ -231,7 +233,30 @@ WITH input AS (
         -- The finding without its date, so that a pass which re-confirms it
         -- compares equal and keeps the original.
         sqlc.narg(takeover)::jsonb    AS takeover,
-        @takeover_kind::text          AS takeover_kind
+        @takeover_kind::text          AS takeover_kind,
+        -- The pivots, lifted out of the payload by the caller. A facet
+        -- aggregates over what the table holds and a counter maintained on
+        -- write cannot be maintained if the write never sees the value, so
+        -- this is the precondition for the whole search chapter rather than a
+        -- convenience.
+        --
+        -- One producer per value: the render owns the four below and the probe
+        -- owns the certificate, and each layer's keys are removed and rewritten
+        -- together so that a value a layer stops reporting stops being counted.
+        sqlc.narg(favicon_hash)::text     AS favicon_hash,
+        sqlc.narg(script_hashes)::text[]  AS script_hashes,
+        sqlc.narg(cookie_names)::text[]   AS cookie_names,
+        sqlc.narg(external_hosts)::text[] AS external_hosts,
+        -- Objects rather than names, because the render is the only producer
+        -- that knows a version. The column keeps the names.
+        sqlc.narg(tech_render)::jsonb     AS tech_render,
+        sqlc.narg(cert_spki_hash)::text   AS cert_spki_hash,
+        -- One code per hop, and the render's rather than the probe's: the
+        -- scanner reports the redirect URLs and the final code, never the code
+        -- of each hop, so the probe does not hold what this column is for.
+        -- Writing it from the probe would mean inventing the intermediate
+        -- codes, which is worse than an empty column.
+        sqlc.narg(status_chain)::int[]    AS status_chain
 ),
 head AS (
     SELECT o.id, o.observed_at, o.outcome, o.data, o.last_producer_version
@@ -286,6 +311,111 @@ layered AS (
         last_checked_at          = GREATEST(asset_layer.last_checked_at, EXCLUDED.last_checked_at)
     RETURNING asset_id
 ),
+attrs AS (
+    -- The attributes as they will be, computed once.
+    --
+    -- Three things need them and they must agree: the projection stores the
+    -- object, the technology column is derived from it, and the pivot counters
+    -- are the difference between it and what the row holds now. Three
+    -- expressions saying the same thing is how a counter drifts from the table
+    -- it is supposed to be a function of.
+    SELECT c.asset_id, c.attributes AS before, merged.attributes AS after
+      FROM asset_current c, input i,
+           LATERAL (SELECT (
+               CASE
+                   WHEN i.takeover IS NOT NULL THEN
+                       c.attributes || jsonb_build_object('takeover_candidate',
+                           i.takeover || jsonb_build_object('detected_at', COALESCE(
+                               CASE WHEN (c.attributes -> 'takeover_candidate') - 'detected_at' = i.takeover
+                                    THEN c.attributes -> 'takeover_candidate' ->> 'detected_at' END,
+                               to_char(i.observed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))))
+                   -- Cleared only by the layer that could have produced it. DNS
+                   -- sees an orphan CNAME and HTTP sees an unclaimed service,
+                   -- and neither has any business erasing the other's finding.
+                   WHEN c.attributes -> 'takeover_candidate' ->> 'kind' = i.takeover_kind
+                       THEN c.attributes - 'takeover_candidate'
+                   ELSE c.attributes
+               END
+               -- The layer's own keys go away and come back together. Merging
+               -- alone would keep the favicon of a page that no longer has one,
+               -- which is the COALESCE that keeps a title forever wearing
+               -- another name, and it would keep counting a pivot nothing
+               -- carries.
+               - CASE
+                   WHEN i.layer = 'fingerprint' THEN
+                       ARRAY['favicon_hash', 'script_hashes', 'cookie_names',
+                             'external_hosts', 'tech_render']
+                   WHEN i.promote THEN ARRAY['cert_spki_hash', 'tech_http']
+                   ELSE ARRAY[]::text[]
+                 END
+           ) || CASE
+               WHEN i.layer = 'fingerprint' THEN jsonb_strip_nulls(jsonb_build_object(
+                   'favicon_hash', i.favicon_hash,
+                   'script_hashes',  CASE WHEN array_length(i.script_hashes, 1) > 0
+                                          THEN to_jsonb(i.script_hashes) END,
+                   'cookie_names',   CASE WHEN array_length(i.cookie_names, 1) > 0
+                                          THEN to_jsonb(i.cookie_names) END,
+                   'external_hosts', CASE WHEN array_length(i.external_hosts, 1) > 0
+                                          THEN to_jsonb(i.external_hosts) END,
+                   'tech_render',    CASE WHEN jsonb_typeof(i.tech_render) = 'array'
+                                           AND jsonb_array_length(i.tech_render) > 0
+                                          THEN i.tech_render END))
+               WHEN i.promote THEN jsonb_strip_nulls(jsonb_build_object(
+                   'cert_spki_hash', i.cert_spki_hash,
+                   'tech_http',      CASE WHEN array_length(i.technologies, 1) > 0
+                                          THEN to_jsonb(i.technologies) END))
+               ELSE '{}'::jsonb
+           END AS attributes) AS merged
+     WHERE c.asset_id = i.asset_id
+),
+movement AS (
+    -- What this observation does to the counters: the difference between the
+    -- projection as it will be and as it is, which this statement still holds
+    -- because it has not written yet.
+    SELECT i.org_id, moved.pivot_type, moved.pivot_value, moved.delta
+      FROM input i, attrs a,
+           LATERAL (
+               SELECT pivot_type, pivot_value, sum(delta)::int AS delta
+                 FROM (SELECT gained.pivot_type, gained.pivot_value, 1 AS delta
+                         FROM pivot_values(a.after) AS gained(pivot_type, pivot_value)
+                       UNION ALL
+                       SELECT lost.pivot_type, lost.pivot_value, -1 AS delta
+                         FROM pivot_values(a.before) AS lost(pivot_type, pivot_value)) AS movements
+                GROUP BY pivot_type, pivot_value
+               HAVING sum(delta) <> 0
+           ) AS moved
+),
+raised AS (
+    -- Incrementing is the easy half, and the only one that may create a row.
+    INSERT INTO pivot_count AS pc (org_id, pivot_type, pivot_value, count)
+    SELECT m.org_id, m.pivot_type, m.pivot_value, m.delta
+      FROM movement m WHERE m.delta > 0
+    ON CONFLICT (org_id, pivot_type, pivot_value)
+    DO UPDATE SET count = pc.count + EXCLUDED.count
+    RETURNING pc.pivot_value
+),
+lowered AS (
+    -- A decrement cannot travel through the same statement, and the reason is
+    -- exact rather than stylistic: PostgreSQL evaluates a table's CHECK
+    -- constraints on the proposed row *before* it resolves the conflict, so a
+    -- proposed count of -1 fails "count >= 0" even though the row it would
+    -- become is an update to zero. That is one error message away from
+    -- somebody removing the constraint, and the constraint is what catches a
+    -- decrement running twice.
+    --
+    -- An UPDATE is also the honest shape here: a decrement targets a value the
+    -- projection already carried, so there is nothing to create. If it matches
+    -- no row the counter had already drifted, and the recount is what says so.
+    --
+    -- The two never touch the same row: a value has one delta, and the deltas
+    -- are split on its sign.
+    UPDATE pivot_count pc SET count = pc.count + m.delta
+      FROM movement m
+     WHERE m.delta < 0
+       AND pc.org_id = m.org_id AND pc.pivot_type = m.pivot_type
+       AND pc.pivot_value = m.pivot_value
+    RETURNING pc.pivot_value
+),
 projected AS (
     UPDATE asset_current c SET
         lifecycle  = i.lifecycle,
@@ -295,9 +425,17 @@ projected AS (
 
         status_code  = CASE WHEN i.promote THEN i.status_code  ELSE c.status_code  END,
         final_url    = CASE WHEN i.promote THEN i.final_url    ELSE c.final_url    END,
+        -- Written by the render alone, and rewritten whole on every render so
+        -- that a page which stops redirecting stops showing a chain. Untouched
+        -- by every other layer, which is what keeps one producer per value.
+        status_chain = CASE WHEN i.layer = 'fingerprint' THEN i.status_chain
+                            ELSE c.status_chain END,
         title        = CASE WHEN i.promote THEN i.title        ELSE c.title        END,
         server       = CASE WHEN i.promote THEN i.server       ELSE c.server       END,
-        technologies = CASE WHEN i.promote THEN COALESCE(i.technologies, '{}') ELSE c.technologies END,
+        -- Derived from the two keys that feed it rather than written by one
+        -- layer, so a render's detection and a probe's are both filterable and
+        -- neither erases the other.
+        technologies = technology_names(a.after),
         waf_detected = CASE WHEN i.promote THEN i.waf_detected ELSE c.waf_detected END,
         waf_vendor   = CASE WHEN i.promote THEN i.waf_vendor   ELSE c.waf_vendor   END,
         -- Structural and observed identically by both observers, so it is
@@ -330,36 +468,51 @@ projected AS (
                 THEN c.fingerprint_priority
             ELSE i.fingerprint_priority END,
 
-        -- The timestamp is added here rather than by the probe. A date inside
-        -- the payload would differ on every pass, so a dangling CNAME probed
-        -- hourly would write a row an hour and defeat deduplication on exactly
-        -- the assets worth following. Comparing the finding without its date
-        -- is what keeps the original instant across confirmations.
-        attributes = CASE
-            WHEN i.takeover IS NOT NULL THEN
-                c.attributes || jsonb_build_object('takeover_candidate',
-                    i.takeover || jsonb_build_object('detected_at', COALESCE(
-                        CASE WHEN (c.attributes -> 'takeover_candidate') - 'detected_at' = i.takeover
-                             THEN c.attributes -> 'takeover_candidate' ->> 'detected_at' END,
-                        to_char(i.observed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))))
-            -- Cleared only by the layer that could have produced it. DNS sees
-            -- an orphan CNAME and HTTP sees an unclaimed service, and neither
-            -- has any business erasing the other's finding.
-            WHEN c.attributes -> 'takeover_candidate' ->> 'kind' = i.takeover_kind
-                THEN c.attributes - 'takeover_candidate'
-            ELSE c.attributes END,
+        -- Computed in the CTE above, because the counters and the technology
+        -- column are read from the same value. The takeover timestamp is added
+        -- there rather than by the probe: a date inside the payload would
+        -- differ on every pass, so a dangling CNAME probed hourly would write a
+        -- row an hour and defeat deduplication on exactly the assets worth
+        -- following.
+        attributes = a.after,
 
         last_seen       = GREATEST(c.last_seen, i.observed_at),
         last_checked_at = GREATEST(c.last_checked_at, i.observed_at),
         last_ok_at      = COALESCE(i.last_ok_at, c.last_ok_at),
-        -- Null on an asset that has never changed. Only an insertion is a
-        -- change: a confirmation of the same state is a probe, and a date that
-        -- moved on every probe would make every filter on recency return the
-        -- whole inventory.
-        last_changed_at = CASE WHEN EXISTS (SELECT 1 FROM inserted)
-                               THEN i.observed_at ELSE c.last_changed_at END
-      FROM input i
-     WHERE c.asset_id = i.asset_id
+
+        -- A change is an insertion that had something to differ from.
+        --
+        -- Only an insertion, because a confirmation of the same state is a
+        -- probe and a date that moved on every probe would make every filter on
+        -- recency return the whole inventory. And only where a head existed,
+        -- because a first observation is a first contact: the asset already
+        -- carries its arrival as its age, and counting it here would count it
+        -- once per layer, so a freshly discovered asset would score three or
+        -- four and "volatility > 2" would return everything just found, which
+        -- is the opposite of the question.
+        last_changed_at = CASE
+            WHEN EXISTS (SELECT 1 FROM inserted) AND EXISTS (SELECT 1 FROM head)
+                THEN i.observed_at ELSE c.last_changed_at END,
+
+        -- Seven daily buckets plus one of margin, so no total is stored and
+        -- nothing has to be decremented as a change expires. The shift and the
+        -- increment are one call: separated, the increment lands in a bucket
+        -- belonging to another day.
+        change_buckets = CASE
+            WHEN EXISTS (SELECT 1 FROM inserted) AND EXISTS (SELECT 1 FROM head)
+                THEN record_change(c.change_buckets, c.buckets_day,
+                                   (i.observed_at AT TIME ZONE 'UTC')::date)
+            ELSE c.change_buckets END,
+        -- Written from the same instant the bucket was chosen with, and in UTC,
+        -- because observed_at is stored in UTC. Reading the database's local
+        -- calendar day here would move every boundary by the offset and be
+        -- invisible to any test that does not cross midnight.
+        buckets_day = CASE
+            WHEN EXISTS (SELECT 1 FROM inserted) AND EXISTS (SELECT 1 FROM head)
+                THEN (i.observed_at AT TIME ZONE 'UTC')::date
+            ELSE c.buckets_day END
+      FROM input i, attrs a
+     WHERE c.asset_id = i.asset_id AND a.asset_id = c.asset_id
     RETURNING c.asset_id
 )
 SELECT
@@ -368,8 +521,133 @@ SELECT
     (SELECT h.data FROM head h WHERE NOT EXISTS (SELECT 1 FROM confirmed)) AS previous_data,
     (SELECT h.last_producer_version FROM head h WHERE NOT EXISTS (SELECT 1 FROM confirmed)) AS previous_producer_version;
 
+-- DeadExternalHosts is the internal half, read from the referencing side.
+--
+-- An external host is out of scope by definition: it belongs to somebody else,
+-- it gets no due date and nothing ever probes it, so its death cannot be
+-- observed for lack of ever having looked. What is detectable is this cross
+-- reference: a host a page loads a script from, present in the same
+-- organization's inventory, and declared dead by the lifecycle. That is the
+-- home made CDN, the static bucket, the build domain, dying while production
+-- pages keep pointing at it.
+--
+-- Only inactive. An archived asset is one that never came alive rather than one
+-- that died, and a script pointing at a name nothing ever answered on is not
+-- the same finding.
+--
+-- @tenant: scoped
+-- name: DeadExternalHosts :many
+SELECT DISTINCT c.host
+  FROM asset_current c
+ WHERE c.org_id = @org_id::uuid
+   AND c.host = ANY(@hosts::text[])
+   -- The name, not one of its services. A service going quiet while the host
+   -- still resolves is a port closing, which the lifecycle already speaks for,
+   -- and reading it as a dead external host would raise a critical alert every
+   -- time somebody turned off a port.
+   AND c.kind = 'fqdn'
+   AND c.lifecycle = 'inactive';
+
+-- ReferencesToHost is the same finding read from the other side.
+--
+-- Covering one direction covers about half the cases, and which half depends on
+-- the order two unrelated events happened in, which is not a property anybody
+-- can predict or explain. The page can start pointing at a host that is already
+-- dead, which the statement above sees, or a host that pages already point at
+-- can die, which only this one sees.
+--
+-- Bounded, because a widely referenced internal host is exactly the case that
+-- matters and exactly the one that would produce a thousand events.
+--
+-- @tenant: scoped
+-- name: ReferencesToHost :many
+SELECT c.asset_id, c.program_id, c.key
+  FROM asset_current c
+ WHERE c.org_id = @org_id::uuid
+   AND c.attributes @> jsonb_build_object('external_hosts', jsonb_build_array(@host::text))
+   AND c.lifecycle <> 'archived'
+ ORDER BY c.asset_id
+ LIMIT @cap::int;
+
+-- ThirdPartyHosts is what the external half walks.
+--
+-- The other case, and the more dangerous of the two: a genuine third party
+-- whose domain expired and anyone can re-register. Covering it means resolving
+-- names the organization does not own, which is allowed because what the
+-- guardrails protect is interaction with somebody else's infrastructure, and a
+-- query to a public resolver reaches neither.
+--
+-- Hosts already in the same organization's inventory are skipped: those are the
+-- internal half's, and they have a real lifecycle behind them. Archived assets
+-- are skipped for the reason pivots are: an archived asset is not a lead.
+--
+-- @tenant: cross-org
+-- @why: the sweep serves every tenant in one tick, and the set of third party
+--       hosts to resolve is deduplicated across all of them: the same public CDN
+--       appears in every inventory and is worth one lookup, not one per tenant.
+-- name: ThirdPartyHosts :many
+SELECT c.asset_id, c.org_id, c.program_id, c.key, e.host
+  FROM asset_current c,
+       LATERAL jsonb_array_elements_text(c.attributes -> 'external_hosts') AS e(host)
+ WHERE jsonb_typeof(c.attributes -> 'external_hosts') = 'array'
+   AND c.lifecycle <> 'archived'
+   AND NOT EXISTS (
+        SELECT 1 FROM asset_current own
+         WHERE own.org_id = c.org_id AND own.host = e.host)
+ ORDER BY c.asset_id, e.host
+ LIMIT @cap::int;
+
+-- MarkDeadExternalHosts writes the verdict onto the referencing asset.
+--
+-- Onto the asset and never into a table of its own, which is what keeps the
+-- rule true: the third party has no asset row, no identity and no due date, it
+-- is a property of the pages that point at it. Creating one would mean
+-- scheduling checks against a domain nothing authorizes probing, which is doing
+-- by the side door what is forbidden head on.
+--
+-- The previous list comes back, which is what makes the emission idempotent
+-- without a second mechanism: the event is produced when a host *enters* it, and
+-- the tick that finds the same domain still gone writes the same value and says
+-- nothing.
+--
+-- @tenant: keyed
+-- name: MarkDeadExternalHosts :one
+WITH previous AS (
+    SELECT asset_id, COALESCE(attributes -> 'dead_external_hosts', '[]'::jsonb) AS before
+      FROM asset_current WHERE asset_id = @asset_id::uuid
+),
+written AS (
+    UPDATE asset_current c SET attributes = CASE
+        WHEN array_length(@dead::text[], 1) IS NULL THEN c.attributes - 'dead_external_hosts'
+        ELSE c.attributes || jsonb_build_object('dead_external_hosts', to_jsonb(@dead::text[]))
+        END
+      FROM previous p
+     WHERE c.asset_id = p.asset_id
+    RETURNING c.asset_id
+)
+SELECT p.before FROM previous p WHERE EXISTS (SELECT 1 FROM written);
+
+-- StoreFavicon keeps one copy of an image per organization.
+--
+-- One row per distinct favicon whatever the number of assets sharing it, which
+-- is the property that matters since a shared favicon is the interesting case.
+-- Not in the projection: one or two kilobytes per asset in the hottest write
+-- path and in every search response is gigabytes on a large inventory, and an
+-- image is neither a filter nor a pivot. It is the depiction of one.
+--
+-- DO NOTHING makes a known favicon a no-op, so writing costs nothing in steady
+-- state. It is not a screenshot cache: a screenshot never reaches PostgreSQL
+-- and normalization drops it, and the difference is not one of degree.
+--
+-- @tenant: scoped
+-- name: StoreFavicon :exec
+INSERT INTO favicon_image (org_id, hash, media_type, bytes)
+VALUES (@org_id::uuid, @hash::text, @media_type::text, @bytes::bytea)
+ON CONFLICT (org_id, hash) DO NOTHING;
+
 -- CountObservations is the deduplication rate's denominator on a replayed set.
 --
+-- @tenant: scoped
 -- name: CountObservations :one
 SELECT count(*) FROM observation WHERE org_id = @org_id::uuid;
 
@@ -380,6 +658,7 @@ SELECT count(*) FROM observation WHERE org_id = @org_id::uuid;
 -- make the answer depend on two clocks agreeing, and a rule closed a moment
 -- ago would read as still in force for the width of the gap.
 --
+-- @tenant: keyed
 -- name: ListScopeRules :many
 SELECT id, kind, matcher, pattern
   FROM scope_rule
@@ -396,6 +675,7 @@ SELECT id, kind, matcher, pattern
 -- becomes in scope again, and gets its due dates back. That is a scan outside
 -- the authorization, produced by the pass that exists to prevent one.
 --
+-- @tenant: keyed
 -- name: ListProgramAssets :many
 SELECT a.id, a.kind, a.key, a.host, a.scope_status, c.ip
   FROM asset a
@@ -411,6 +691,7 @@ SELECT a.id, a.kind, a.key, a.host, a.scope_status, c.ip
 -- reclassifying in two transactions leaves a window where the system scans
 -- what was just taken away from it.
 --
+-- @tenant: keyed
 -- name: ApplyScopeStatus :exec
 WITH updated AS (
     UPDATE asset SET scope_status = @scope_status::text
@@ -432,6 +713,7 @@ UPDATE asset_current SET
 -- The authorization window is checked here rather than only the state: a run
 -- that started before an expiry must not write after it.
 --
+-- @tenant: keyed
 -- name: ProgramForRun :one
 SELECT p.id, p.org_id, p.state, p.authorized_from, p.authorized_to
   FROM program p
@@ -442,9 +724,11 @@ SELECT p.id, p.org_id, p.state, p.authorized_from, p.authorized_to
 -- Replacement rather than merge: a merge would let an entry added outside the
 -- repository survive every deployment, and the divergence would be invisible.
 --
+-- @tenant: none
 -- name: ClearGenericPivots :exec
 DELETE FROM generic_pivot_value;
 
+-- @tenant: none
 -- name: InsertGenericPivot :exec
 INSERT INTO generic_pivot_value (pivot_type, pattern, note)
 VALUES (@pivot_type::text, @pattern::text, sqlc.narg(note)::text)
@@ -452,6 +736,7 @@ ON CONFLICT (pivot_type, pattern) DO UPDATE SET note = EXCLUDED.note;
 
 -- EnsurePartitions creates this month's partition and the next ones.
 --
+-- @tenant: none
 -- name: EnsurePartitions :one
 SELECT ensure_monthly_partitions(to_regclass(@target::text), @months_ahead::int);
 
@@ -461,6 +746,24 @@ SELECT ensure_monthly_partitions(to_regclass(@target::text), @months_ahead::int)
 -- query: a run that started before an expiry must not write after it, and the
 -- check is worth nothing if it is one somebody can forget to make.
 --
+-- OrgForRun turns a run credential into the tenant it belongs to.
+--
+-- One statement, before the ingestion transaction and outside it, on the system
+-- pool. Once per report and never once per observation, so the round trip
+-- budget the write path is measured against does not move.
+--
+-- The run is then read again inside the scoped transaction, under the policy,
+-- which is what makes this lookup safe to be unfiltered: a credential whose
+-- organization does not match its run finds nothing there.
+--
+-- @tenant: cross-org
+-- @why: the same shape as PrincipalForToken. A credential names itself rather
+--       than an organization, so the statement resolving it is the one that
+--       discovers the tenant and cannot be filtered by one.
+-- name: OrgForRun :one
+SELECT org_id FROM run WHERE id = @run_id::uuid;
+
+-- @tenant: keyed
 -- name: RunForIngest :one
 SELECT r.id, r.org_id, r.program_id, r.kind, r.scope, r.state, r.deadline,
        p.state AS program_state, p.authorized_from, p.authorized_to,
@@ -483,9 +786,11 @@ SELECT r.id, r.org_id, r.program_id, r.kind, r.scope, r.state, r.deadline,
   JOIN program p ON p.id = r.program_id
  WHERE r.id = @run_id::uuid;
 
+-- @tenant: keyed
 -- name: ListRunTargets :many
 SELECT key FROM run_target WHERE run_id = @run_id::uuid;
 
+-- @tenant: scoped
 -- name: CreateRun :exec
 INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline, target_count)
 VALUES (@id::uuid, @org_id::uuid, @program_id::uuid, @kind::text, @scope::text,
@@ -497,6 +802,7 @@ VALUES (@id::uuid, @org_id::uuid, @program_id::uuid, @kind::text, @scope::text,
 -- the only thing that separates a run something actually opened from one whose
 -- provisioning failed, and those two call for opposite actions.
 --
+-- @tenant: keyed
 -- name: CloseRun :exec
 UPDATE run SET
     state       = @state::text,
@@ -517,12 +823,49 @@ UPDATE run SET
 -- again. Silence is not a measurement, and turning it into one is how a
 -- truncated run archives live assets.
 --
+-- @tenant: keyed
 -- name: RescheduleAsset :exec
+WITH target AS (
+    SELECT asset_id, org_id, attributes FROM asset_current WHERE asset_id = @asset_id::uuid
+),
+given_back AS (
+    -- An archived asset gives back all its pivots although no value changed,
+    -- and this is the path that gets forgotten. A counter only ever drifts
+    -- through the decrement, and it drifts upward: a pivot announced at 41 that
+    -- links 12 is worse than an absent one, because it sends somebody looking
+    -- for thirty hosts that do not exist.
+    --
+    -- Nothing in a payload comparison signals this. It is the lifecycle
+    -- transition that says so, which is why it travels in the same statement as
+    -- the schedule rather than in a sweep of its own.
+    --
+    -- An UPDATE rather than an upsert: giving a value back is only ever done to
+    -- a counter that already exists, and the CHECK on the column is what
+    -- catches it running twice.
+    UPDATE pivot_count pc SET count = pc.count - 1
+      FROM target t, pivot_values(t.attributes) p
+     WHERE @archive::boolean
+       AND pc.org_id = t.org_id AND pc.pivot_type = p.pivot_type
+       AND pc.pivot_value = p.pivot_value
+    RETURNING pc.pivot_value
+)
 UPDATE asset_current SET
     -- An asset whose budget ran out ends archived rather than inactive. It is
     -- not dead: it never existed, and the two readings call for opposite
     -- things in a console.
     lifecycle = CASE WHEN @archive::boolean THEN 'archived' ELSE lifecycle END,
+    -- The keys go with the counters, which is what makes pivot_count a function
+    -- of asset_current rather than a tally with its own opinion. A counter that
+    -- reflects nothing cannot be repaired, for lack of anywhere to read the
+    -- truth; this one recomputes from a scan of the table.
+    --
+    -- technologies and external_hosts stay where they are. They carry no
+    -- counter: they are a filter and an aggregation, and the invariant speaks
+    -- only about what is counted.
+    attributes = CASE
+        WHEN @archive::boolean THEN attributes - ARRAY['favicon_hash', 'cert_spki_hash',
+                                                       'script_hashes', 'cookie_names']
+        ELSE attributes END,
     next_resolve_at = CASE
         WHEN @archive::boolean OR scope_status <> 'in_scope' THEN NULL
         WHEN @move_resolve::boolean THEN sqlc.narg(next_resolve_at)::timestamptz
@@ -537,7 +880,7 @@ UPDATE asset_current SET
     -- second usually points at a local problem, a resolver or a banned
     -- address, rather than at the target, and it has to stay visible.
     total_attempts = total_attempts + 1
- WHERE asset_id = @asset_id::uuid;
+ WHERE asset_id = (SELECT asset_id FROM target);
 
 -- ScheduleDeclaredURLs gives a declared path its render once its service has
 -- answered.
@@ -550,6 +893,7 @@ UPDATE asset_current SET
 -- One statement for a whole report rather than one per service: it reads a
 -- state the observations have already written.
 --
+-- @tenant: keyed
 -- name: ScheduleDeclaredURLs :exec
 UPDATE asset_current u SET
     next_fingerprint_at  = @at::timestamptz,
@@ -570,6 +914,10 @@ UPDATE asset_current u SET
 -- it: a caller that forgot one of them would hold a credential nobody can take
 -- away.
 --
+-- @tenant: cross-org
+-- @why: a token names itself and never an organization, so this is the
+--       statement that discovers the tenant and cannot be filtered by one. One row,
+--       keyed by a hash the caller has to hold already.
 -- name: PrincipalForToken :one
 SELECT t.id, t.org_id, t.created_by, t.scopes
   FROM api_token t

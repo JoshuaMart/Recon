@@ -18,6 +18,9 @@
 -- provisioned. A render is a request to somebody's server, and an expired
 -- programme must not receive one because a due date said so.
 --
+-- @tenant: cross-org
+-- @why: the render queue is one predicate over the whole inventory, and the
+--       budget it competes for is the deployment's rather than a tenant's.
 -- name: SelectDueRenders :many
 SELECT c.asset_id, c.org_id, c.program_id, c.kind, c.key, c.host, c.port, c.scheme,
        c.final_url, c.http_reachable, c.fingerprint_reachable,
@@ -40,6 +43,7 @@ SELECT c.asset_id, c.org_id, c.program_id, c.kind, c.key, c.host, c.port, c.sche
 -- manual request lives in the high queue with an immediate due date, and a
 -- replan triggered a second later would bury it for a week without trace.
 --
+-- @tenant: keyed
 -- name: PromoteRender :exec
 UPDATE asset_current SET
     next_fingerprint_at  = LEAST(COALESCE(next_fingerprint_at, @at::timestamptz), @at::timestamptz),
@@ -56,6 +60,10 @@ UPDATE asset_current SET
 -- stopped clearing challenges. Swallowed by a per asset summary it is invisible
 -- exactly when it matters.
 --
+-- @tenant: cross-org
+-- @why: the mass tip alert is computed for every programme in one pass. It
+--       groups by tenant and never merges two, which is what makes the crossing a
+--       traversal rather than a leak.
 -- name: CountUnobservable :many
 SELECT c.program_id, c.org_id, p.name,
        count(*) FILTER (WHERE c.lifecycle = 'unobservable') AS unobservable,
@@ -79,6 +87,7 @@ HAVING count(*) FILTER (WHERE c.lifecycle = 'unobservable') > 0
 -- twice lands every asset on the same date both times instead of reshuffling an
 -- inventory that is already queued.
 --
+-- @tenant: scoped
 -- name: ReplanRenders :execrows
 WITH input AS (
     SELECT
@@ -107,6 +116,7 @@ UPDATE asset_current c SET
 -- would let the rendering service invent inventory, which is the one thing the
 -- isolated component must not be able to do.
 --
+-- @tenant: keyed
 -- name: AssetForRender :one
 SELECT c.asset_id, c.org_id, c.program_id, c.kind, c.key, c.lifecycle,
        c.scope_status, c.port, c.backoff_tier, c.http_streak, c.fingerprint_streak,
@@ -130,6 +140,7 @@ SELECT c.asset_id, c.org_id, c.program_id, c.kind, c.key, c.lifecycle,
 -- priority raised would keep an asset that was urgent once ahead of the queue
 -- for every pass afterwards.
 --
+-- @tenant: keyed
 -- name: RescheduleRender :exec
 UPDATE asset_current SET
     next_fingerprint_at  = CASE WHEN scope_status = 'in_scope' AND lifecycle <> 'archived'
@@ -146,6 +157,7 @@ UPDATE asset_current SET
 -- would leave the baseline at whatever priority the column defaults to and
 -- silently put a mass of first renders in the queue that exists to stay short.
 --
+-- @tenant: keyed
 -- name: EarnBaseline :exec
 UPDATE asset_current SET
     next_fingerprint_at  = @at::timestamptz,

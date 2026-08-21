@@ -741,33 +741,18 @@ func (i *Ingestor) writeEvents(ctx context.Context, q *sqlcgen.Queries, run Run,
 		return nil
 	}
 
-	at := stamp(i.now())
-	rows := make([]sqlcgen.WriteEventsParams, 0, len(summary.Notifications))
+	batch, err := notify.Batch(run.OrgID, run.ProgramID, i.now(), summary.Notifications)
+	if err != nil {
+		return err
+	}
 	for _, event := range summary.Notifications {
-		payload, err := json.Marshal(event.Payload)
-		if err != nil {
-			return fmt.Errorf("encode %s payload: %w", event.Kind, err)
-		}
-		row := sqlcgen.WriteEventsParams{
-			OrgID:      uuidTo(run.OrgID),
-			ProgramID:  uuidTo(run.ProgramID),
-			Kind:       event.Kind,
-			Priority:   event.Priority,
-			Payload:    payload,
-			CreatedAt:  at,
-			Suppressed: event.Suppressed,
-		}
-		if event.AssetID != nil {
-			row.AssetID = uuidTo(*event.AssetID)
-		}
 		if event.Suppressed {
 			summary.Suppressed++
 		}
-		rows = append(rows, row)
 	}
 
-	if _, err := q.WriteEvents(ctx, rows); err != nil {
-		return fmt.Errorf("write %d events: %w", len(rows), err)
+	if _, err := q.WriteEvents(ctx, batch); err != nil {
+		return fmt.Errorf("write %d events: %w", len(summary.Notifications), err)
 	}
 	return nil
 }

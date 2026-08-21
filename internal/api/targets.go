@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/JoshuaMart/recon/internal/auth"
+	"github.com/JoshuaMart/recon/internal/store"
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
@@ -22,15 +23,19 @@ import (
 // over the run, the purpose and an expiry, so a token minted to fetch a list
 // cannot be replayed to post a report.
 type Targets struct {
-	pool   *pgxpool.Pool
+	db *store.Scoped
+	// system resolves the run's organization, and nothing else. A run token
+	// names a run rather than a tenant, so this is the lookup that discovers
+	// the tenant the rest of the request is scoped to.
+	system *pgxpool.Pool
 	signer *auth.Signer
 	now    func() time.Time
 	log    *slog.Logger
 }
 
 // NewTargets builds the handler.
-func NewTargets(pool *pgxpool.Pool, signer *auth.Signer, log *slog.Logger) *Targets {
-	return &Targets{pool: pool, signer: signer, now: time.Now, log: log}
+func NewTargets(db *store.Scoped, system *pgxpool.Pool, signer *auth.Signer, log *slog.Logger) *Targets {
+	return &Targets{db: db, system: system, signer: signer, now: time.Now, log: log}
 }
 
 // ServeHTTP answers with one canonical host per line.
@@ -66,7 +71,22 @@ func (h *Targets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := h.pool.Begin(ctx)
+	// One statement, outside the transaction, on the pool that crosses tenants.
+	// Everything after it is scoped to what it returned, and the run is read
+	// again inside that transaction under the policy: a signature naming a run
+	// of another organization then finds nothing rather than being trusted.
+	org, err := sqlcgen.New(h.system).OrgForRun(ctx, sqlcgen.OrgForRunParams{RunID: uuidTo(signed)})
+	if errors.Is(err, pgx.ErrNoRows) {
+		fail(w, http.StatusUnauthorized, "unauthorized", "the credential is missing, wrong or expired")
+		return
+	}
+	if err != nil {
+		h.log.ErrorContext(ctx, "read run organization failed", "run", signed, "error", err)
+		fail(w, http.StatusInternalServerError, "unavailable", "the target list could not be read")
+		return
+	}
+
+	tx, err := h.db.Begin(ctx, uuid.UUID(org.Bytes))
 	if err != nil {
 		h.log.ErrorContext(ctx, "begin failed", "error", err)
 		fail(w, http.StatusInternalServerError, "unavailable", "the target list could not be read")

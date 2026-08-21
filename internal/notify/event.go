@@ -12,13 +12,21 @@
 package notify
 
 import (
+	"encoding/json"
+	"fmt"
+	"time"
+
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
+
+	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
 // Kinds of event. Text with a named check rather than an enum, because the list
 // is still moving.
 const (
 	KindTakeover      = "takeover_candidate"
+	KindExternalDead  = "external_host_dead"
 	KindNewActive     = "new_active"
 	KindPortOpened    = "port_opened"
 	KindWentInactive  = "went_inactive"
@@ -49,6 +57,7 @@ func AtLeast(priority, floor string) bool { return rank[priority] >= rank[floor]
 // Priorities is the table of what each kind is worth.
 var Priorities = map[string]string{
 	KindTakeover:      Critical,
+	KindExternalDead:  Critical,
 	KindNewActive:     High,
 	KindPortOpened:    High,
 	KindUnobservable:  High,
@@ -60,6 +69,52 @@ var Priorities = map[string]string{
 	KindTitleChanged:  Low,
 	KindDetection:     Low,
 	KindDigest:        Medium,
+}
+
+// Batch turns the events of one organization and one programme into the
+// parallel arrays the insert takes.
+//
+// One builder rather than one per call site, and the reason is the shape of the
+// statement rather than tidiness: it indexes the arrays together, so a batch
+// assembled from two places with one column missing would write nulls instead
+// of failing. Built in a single loop, there is no way to produce that.
+//
+// The organization and the programme are scalars because every caller has them
+// as constants of the batch, which is also what makes a batch mixing two
+// tenants inexpressible.
+func Batch(org, program uuid.UUID, at time.Time, events []Event) (sqlcgen.WriteEventsParams, error) {
+	params := sqlcgen.WriteEventsParams{
+		OrgID:      pgtype.UUID{Bytes: org, Valid: true},
+		ProgramID:  pgtype.UUID{Bytes: program, Valid: true},
+		AssetIds:   make([]pgtype.UUID, 0, len(events)),
+		Kinds:      make([]string, 0, len(events)),
+		Priorities: make([]string, 0, len(events)),
+		Payloads:   make([][]byte, 0, len(events)),
+		CreatedAts: make([]pgtype.Timestamptz, 0, len(events)),
+		Suppressed: make([]bool, 0, len(events)),
+	}
+	stamped := pgtype.Timestamptz{Time: at.UTC(), Valid: true}
+
+	for _, event := range events {
+		payload, err := json.Marshal(event.Payload)
+		if err != nil {
+			return sqlcgen.WriteEventsParams{}, fmt.Errorf("encode %s payload: %w", event.Kind, err)
+		}
+		// Null rather than a zero uuid on a programme event. That nullability
+		// is a rule the database enforces, and a column looking populated while
+		// naming nothing is worse than an empty one.
+		asset := pgtype.UUID{}
+		if event.AssetID != nil {
+			asset = pgtype.UUID{Bytes: *event.AssetID, Valid: true}
+		}
+		params.AssetIds = append(params.AssetIds, asset)
+		params.Kinds = append(params.Kinds, event.Kind)
+		params.Priorities = append(params.Priorities, event.Priority)
+		params.Payloads = append(params.Payloads, payload)
+		params.CreatedAts = append(params.CreatedAts, stamped)
+		params.Suppressed = append(params.Suppressed, event.Suppressed)
+	}
+	return params, nil
 }
 
 // Event is one thing worth telling somebody.

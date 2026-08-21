@@ -19,6 +19,7 @@ import (
 	"github.com/JoshuaMart/recon/internal/ingest"
 	"github.com/JoshuaMart/recon/internal/notify"
 	"github.com/JoshuaMart/recon/internal/scope"
+	"github.com/JoshuaMart/recon/internal/store"
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
@@ -36,7 +37,12 @@ const supportedSchemaMajor = "1"
 
 // Reports ingests what a run produced.
 type Reports struct {
-	pool     *pgxpool.Pool
+	db *store.Scoped
+	// system resolves the run's organization and nothing else. A run token
+	// names a run rather than a tenant, so this is the lookup that discovers
+	// the one the write is scoped to: once per report, never once per
+	// observation, so the round trip budget of the write path does not move.
+	system   *pgxpool.Pool
 	signer   *auth.Signer
 	ingestor *ingest.Ingestor
 	now      func() time.Time
@@ -44,8 +50,8 @@ type Reports struct {
 }
 
 // NewReports builds the handler.
-func NewReports(pool *pgxpool.Pool, signer *auth.Signer, ingestor *ingest.Ingestor, log *slog.Logger) *Reports {
-	return &Reports{pool: pool, signer: signer, ingestor: ingestor, now: time.Now, log: log}
+func NewReports(db *store.Scoped, system *pgxpool.Pool, signer *auth.Signer, ingestor *ingest.Ingestor, log *slog.Logger) *Reports {
+	return &Reports{db: db, system: system, signer: signer, ingestor: ingestor, now: time.Now, log: log}
 }
 
 // ServeHTTP accepts one report.
@@ -83,7 +89,18 @@ func (h *Reports) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := h.pool.Begin(ctx)
+	org, err := sqlcgen.New(h.system).OrgForRun(ctx, sqlcgen.OrgForRunParams{RunID: uuidTo(runID)})
+	if errors.Is(err, pgx.ErrNoRows) {
+		fail(w, http.StatusUnauthorized, "unauthorized", "the credential is missing, wrong or expired")
+		return
+	}
+	if err != nil {
+		h.log.ErrorContext(ctx, "read run organization failed", "run", runID, "error", err)
+		fail(w, http.StatusInternalServerError, "unavailable", "the report could not be written")
+		return
+	}
+
+	tx, err := h.db.Begin(ctx, uuid.UUID(org.Bytes))
 	if err != nil {
 		h.log.ErrorContext(ctx, "begin failed", "error", err)
 		fail(w, http.StatusInternalServerError, "unavailable", "the report could not be written")

@@ -180,6 +180,13 @@ services:
       # owner credentials next to the application ones.
       RECON_DATABASE__URL: >-
         postgres://asm_app:${APP_PASSWORD}@postgres:5432/${POSTGRES_DB:-recon}?sslmode=disable
+      # The second pool. The loops that serve every tenant in one tick connect
+      # with the role that is allowed past row-level security, and they say so
+      # by holding this credential rather than by omitting a filter. Both are
+      # required: with one credential those loops read zero rows and look
+      # healthy doing it.
+      RECON_DATABASE__SYSTEM_URL: >-
+        postgres://asm_sys:${SYSTEM_PASSWORD}@postgres:5432/${POSTGRES_DB:-recon}?sslmode=disable
       # What makes a run's credentials unforgeable. There is nothing to store
       # and nothing to revoke because everything rests on this.
       RECON_SECURITY__SIGNING_KEY: ${SIGNING_KEY:?set SIGNING_KEY in .env}

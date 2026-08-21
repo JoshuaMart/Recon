@@ -324,6 +324,19 @@ func (i *Ingestor) apply(
 		params.Takeover = finding
 	}
 
+	// The pivots, read from the normalized payload rather than from the
+	// producer's document. The journal stores the normalized form, so reading
+	// anything else here would let the projection and the journal disagree
+	// about what was seen.
+	lifted := liftPivots(obs.layer, result.Data)
+	params.FaviconHash = lifted.FaviconHash
+	params.ScriptHashes = lifted.ScriptHashes
+	params.CookieNames = lifted.CookieNames
+	params.ExternalHosts = lifted.ExternalHosts
+	params.TechRender = lifted.TechRender
+	params.CertSpkiHash = lifted.CertSPKIHash
+	params.StatusChain = lifted.StatusChain
+
 	row, err := q.WriteObservation(ctx, params)
 	if err != nil {
 		return fmt.Errorf("write %s observation: %w", obs.layer, err)
@@ -337,11 +350,39 @@ func (i *Ingestor) apply(
 
 	summary.Observations++
 
+	// The image, in the same transaction as the projection that names its hash.
+	// A statement of its own because it carries bytes, and only where there is
+	// an image to carry, which is the render path and only when the service
+	// inlined one.
+	if obs.layer == normalize.LayerFingerprint {
+		if image, ok := liftFavicon(result.Data); ok {
+			if err := q.StoreFavicon(ctx, sqlcgen.StoreFaviconParams{
+				OrgID:     uuidTo(run.OrgID),
+				Hash:      image.Hash,
+				MediaType: image.MediaType,
+				Bytes:     image.Bytes,
+			}); err != nil {
+				return fmt.Errorf("store the favicon of %s, %s: %w", st.id, image.describe(), err)
+			}
+		}
+	}
+
 	// What the asset became is told whether or not a row was written. A death
 	// is three identical nxdomains and the transition lands on the third, so
 	// producing it only where a row was written would make the most common
 	// death in the system silent.
+	became := st.announced
 	i.announce(run, st, obs, st.source, summary)
+
+	// A name going quiet while production pages still load scripts from it is
+	// the supply chain case with the step where somebody has to visit already
+	// taken. Nothing in a payload comparison says it: the transition is what
+	// does, so it is read here and not in the diff.
+	if became != st.announced && st.lifecycle == lifecycle.Inactive {
+		if err := i.externalReferrers(ctx, q, run, st, st.source, summary); err != nil {
+			return err
+		}
+	}
 
 	if row.Deduplicated {
 		summary.Deduplicated++
@@ -371,6 +412,14 @@ func (i *Ingestor) apply(
 	normalized := obs
 	normalized.data = result.Data
 	i.diffEvents(run, st, normalized, before, previousVersion, report.Run.Version, st.source, summary)
+
+	// The other direction: this page points at a host the inventory has already
+	// declared dead. On the insert path, like the takeover finding, so a render
+	// that reports the same page again says nothing rather than re-alerting on
+	// every pass for as long as the reference lasts.
+	if err := i.externalReferences(ctx, q, run, st, normalized, st.source, summary); err != nil {
+		return err
+	}
 
 	// A change the HTTP layer detected buys a render, and only in the nominal
 	// regime. When the raw client is the one being turned away, the probe keeps

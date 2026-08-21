@@ -12,12 +12,12 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/JoshuaMart/recon/internal/auth"
 	"github.com/JoshuaMart/recon/internal/ingest"
 	"github.com/JoshuaMart/recon/internal/runs"
 	"github.com/JoshuaMart/recon/internal/scope"
+	"github.com/JoshuaMart/recon/internal/store"
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
@@ -32,7 +32,7 @@ const maxEntries = 5000
 
 // Programs holds the routes a console drives.
 type Programs struct {
-	pool      *pgxpool.Pool
+	db        *store.Scoped
 	scheduler *runs.Scheduler
 	ingestor  *ingest.Ingestor
 	// launchTimeout bounds the work that outlives the request, which without a
@@ -43,12 +43,12 @@ type Programs struct {
 }
 
 // NewPrograms builds them.
-func NewPrograms(pool *pgxpool.Pool, scheduler *runs.Scheduler, ingestor *ingest.Ingestor, launchTimeout time.Duration, log *slog.Logger) *Programs {
+func NewPrograms(db *store.Scoped, scheduler *runs.Scheduler, ingestor *ingest.Ingestor, launchTimeout time.Duration, log *slog.Logger) *Programs {
 	if launchTimeout <= 0 {
 		launchTimeout = time.Minute
 	}
 	return &Programs{
-		pool: pool, scheduler: scheduler, ingestor: ingestor,
+		db: db, scheduler: scheduler, ingestor: ingestor,
 		launchTimeout: launchTimeout, now: time.Now, log: log,
 	}
 }
@@ -81,7 +81,7 @@ func (h *Programs) StartRun(w http.ResponseWriter, r *http.Request, principal au
 		body.Scope = "full"
 	}
 
-	tx, err := h.pool.Begin(ctx)
+	tx, err := h.db.Begin(ctx, principal.OrgID)
 	if err != nil {
 		h.unavailable(ctx, w, "begin failed", err)
 		return
@@ -146,7 +146,24 @@ func (h *Programs) StartRun(w http.ResponseWriter, r *http.Request, principal au
 	// refusal means nothing started, and a cancelled call breaks that.
 	launchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), h.launchTimeout)
 	defer cancel()
-	if err := h.scheduler.Launch(launchCtx, sqlcgen.New(h.pool), definition); err != nil {
+	// The write that names the execution opens its own scoped transaction,
+	// after the platform has answered rather than around the call: a
+	// transaction held open for as long as somebody else's control plane takes
+	// to reply is a pool connection held for the same time.
+	record := func(ctx context.Context, runID uuid.UUID, external string) error {
+		tx, err := h.db.Begin(ctx, principal.OrgID)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if err := sqlcgen.New(tx).RecordRunStart(ctx, sqlcgen.RecordRunStartParams{
+			RunID: uuidTo(runID), ExternalID: external,
+		}); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
+	if err := h.scheduler.Launch(launchCtx, record, definition); err != nil {
 		// The run exists and the sweeper owns it, so this is reported rather
 		// than turned into a failure the caller might retry into a second run.
 		h.log.ErrorContext(ctx, "run not started", "run", definition.RunID, "error", err)
@@ -202,7 +219,7 @@ func (h *Programs) EnterAssets(w http.ResponseWriter, r *http.Request, principal
 		return
 	}
 
-	tx, err := h.pool.Begin(ctx)
+	tx, err := h.db.Begin(ctx, principal.OrgID)
 	if err != nil {
 		h.unavailable(ctx, w, "begin failed", err)
 		return

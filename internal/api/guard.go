@@ -20,14 +20,23 @@ import (
 // Checks scattered inline would force an audit of every endpoint the day a
 // second role appears, and that audit is the thing nobody does.
 type Guard struct {
-	pool *pgxpool.Pool
-	now  func() time.Time
-	log  *slog.Logger
+	// system is the pool that crosses tenants, and it is the right one here
+	// for a reason that is not convenience: a token names itself and never an
+	// organization, so this is the query that *discovers* the tenant and
+	// cannot be filtered by one. Leaving it subject to the policies would
+	// offer two ways out, a predicate nobody can satisfy or a table quietly
+	// exempted, and it is the second that gets chosen under pressure.
+	//
+	// It is one statement, keyed by a hash the caller has to hold already, and
+	// it returns one row. Everything after it runs scoped.
+	system *pgxpool.Pool
+	now    func() time.Time
+	log    *slog.Logger
 }
 
 // NewGuard builds the authorization layer.
-func NewGuard(pool *pgxpool.Pool, log *slog.Logger) *Guard {
-	return &Guard{pool: pool, now: time.Now, log: log}
+func NewGuard(system *pgxpool.Pool, log *slog.Logger) *Guard {
+	return &Guard{system: system, now: time.Now, log: log}
 }
 
 // Handler is a route that has already been told who is asking.
@@ -63,7 +72,7 @@ func (g *Guard) resolve(r *http.Request) (auth.Principal, error) {
 		return auth.Principal{}, auth.ErrMissing
 	}
 
-	row, err := sqlcgen.New(g.pool).PrincipalForToken(r.Context(), sqlcgen.PrincipalForTokenParams{
+	row, err := sqlcgen.New(g.system).PrincipalForToken(r.Context(), sqlcgen.PrincipalForTokenParams{
 		TokenHash: auth.Hash(token),
 		At:        stamp(g.now()),
 	})

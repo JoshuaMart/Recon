@@ -17,6 +17,10 @@ import (
 //
 // It is a tracer rather than a wrapper so that nothing in the write path has to
 // know it is being measured.
+// It counts what pgx reports as a query, and a COPY is not one of those: pgx
+// traces it through a different hook entirely. That is worth knowing rather than
+// discovering, because it is how the measured figure fell by a third the day two
+// writes moved onto the copy path, without the work changing at all.
 type QueryCounter struct{ n atomic.Int64 }
 
 // TraceQueryStart counts one.

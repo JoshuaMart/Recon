@@ -8,10 +8,19 @@
 -- everything changes, which is exactly the scenario the milestone measures. So
 -- the budget is counted per observation beyond the fixed cost of a batch.
 --
--- name: WriteEvents :copyfrom
+-- Parallel arrays rather than COPY, for the reason written above AddRunTargets:
+-- COPY FROM is refused on a table carrying a policy. Same round trip, and the
+-- organization and the programme become scalars of the statement, which every
+-- caller already had in hand as constants of the batch.
+--
+-- @tenant: scoped
+-- name: WriteEvents :execrows
 INSERT INTO notification_event (
     org_id, program_id, asset_id, kind, priority, payload, created_at, suppressed)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
+SELECT @org_id::uuid, @program_id::uuid,
+       (@asset_ids::uuid[])[i], (@kinds::text[])[i], (@priorities::text[])[i],
+       (@payloads::jsonb[])[i], (@created_ats::timestamptz[])[i], (@suppressed::boolean[])[i]
+  FROM generate_subscripts(@kinds::text[], 1) AS i;
 
 -- PendingEvents is the notifier's queue.
 --
@@ -19,6 +28,10 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8);
 -- partial index means a closed month costs an empty index to consult rather
 -- than a month of rows to filter.
 --
+-- @tenant: cross-org
+-- @why: the notifier drains every tenant's queue in one tick, ordered by
+--       priority across all of them: a takeover leaves before a title change whoever
+--       owns either.
 -- name: PendingEvents :many
 SELECT e.id, e.created_at, e.org_id, e.program_id, e.asset_id, e.kind, e.priority, e.payload,
        a.key AS asset_key, p.name AS program_name
@@ -38,6 +51,7 @@ SELECT e.id, e.created_at, e.org_id, e.program_id, e.asset_id, e.kind, e.priorit
 -- By (id, created_at) rather than id alone: the primary key is composite, and
 -- forgetting the second half scans every partition on each mark.
 --
+-- @tenant: keyed
 -- name: MarkNotified :exec
 UPDATE notification_event SET notified_at = @at::timestamptz
  WHERE id = @id::bigint AND created_at = @created_at::timestamptz;
@@ -53,6 +67,7 @@ UPDATE notification_event SET notified_at = @at::timestamptz
 -- shrink the cap at the precise moment a programme went dark, which is when the
 -- most room is needed.
 --
+-- @tenant: keyed
 -- name: CountWindow :one
 SELECT count(*)
   FROM notification_event
@@ -67,12 +82,14 @@ SELECT count(*)
 -- overflow must never produce the absence of a notification, which is how an
 -- anti-flood turns into a loss of signal.
 --
+-- @tenant: keyed
 -- name: SuppressWindow :execrows
 UPDATE notification_event SET suppressed = true
  WHERE id = ANY(@ids::bigint[]) AND created_at = ANY(@created_ats::timestamptz[]);
 
 -- ChannelsForOrg is where an organization's alerts go.
 --
+-- @tenant: scoped
 -- name: ChannelsForOrg :many
 SELECT id, url, secret_ref, template, min_priority, managed_by
   FROM notification_channel
@@ -86,6 +103,7 @@ SELECT id, url, secret_ref, template, min_priority, managed_by
 -- active row without disabling the first, and every alert goes out twice, one
 -- of them to the destination just replaced.
 --
+-- @tenant: scoped
 -- name: UpsertConfigChannel :exec
 INSERT INTO notification_channel (id, org_id, url, template, min_priority, managed_by)
 VALUES (@id::uuid, @org_id::uuid, @url::text, sqlc.narg(template)::text,
@@ -104,6 +122,10 @@ ON CONFLICT (org_id) WHERE managed_by = 'config' DO UPDATE SET
 -- URL to one of several organizations would leak one tenant's alerts into
 -- another's channel.
 --
+-- @tenant: cross-org
+-- @why: counting organizations is the one question that cannot be asked from
+--       inside one, and the answer decides whether a configured channel may be
+--       attached at all.
 -- name: OneOrganization :many
 SELECT id FROM org ORDER BY created_at LIMIT 2;
 
@@ -114,6 +136,9 @@ SELECT id FROM org ORDER BY created_at LIMIT 2;
 -- ingestion keeps writing and the inventory stays correct. It is the kind of
 -- outage that goes unnoticed until the takeover it misses.
 --
+-- @tenant: cross-org
+-- @why: housekeeping watches the whole queue. A per tenant count cannot
+--       detect a notifier that stopped, which is the failure this exists for.
 -- name: StuckEvents :one
 SELECT count(*) FROM notification_event
  WHERE notified_at IS NULL AND NOT suppressed AND created_at < @before::timestamptz;
@@ -124,6 +149,9 @@ SELECT count(*) FROM notification_event
 -- rows are written in waves and the delete is bounded. Partitioning on
 -- suppressed would be the wrong axis.
 --
+-- @tenant: cross-org
+-- @why: retention is a property of the deployment, applied to every tenant's
+--       partitions at once.
 -- name: PurgeSuppressed :execrows
 DELETE FROM notification_event
  WHERE suppressed AND created_at < @before::timestamptz;
@@ -140,6 +168,9 @@ DELETE FROM notification_event
 -- signal, and a first run that says nothing at all is the same failure wearing
 -- a different name.
 --
+-- @tenant: cross-org
+-- @why: the first run summary is due per programme, and the loop that emits it
+--       serves every tenant in one tick.
 -- name: OnboardingDue :many
 WITH held AS (
     SELECT e.org_id, e.program_id, count(*) AS held
@@ -179,6 +210,7 @@ SELECT h.org_id, h.program_id, p.name, p.created_at, h.held,
 -- anti-flood that produces one notification per suppressed notification is not
 -- one.
 --
+-- @tenant: keyed
 -- name: DigestInWindow :one
 SELECT count(*) FROM notification_event
  WHERE program_id = @program_id::uuid
@@ -188,6 +220,7 @@ SELECT count(*) FROM notification_event
 
 -- SuppressedInWindow is what the summary stands for.
 --
+-- @tenant: keyed
 -- name: SuppressedInWindow :one
 SELECT count(*) FROM notification_event
  WHERE program_id = @program_id::uuid

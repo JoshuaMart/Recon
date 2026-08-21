@@ -17,6 +17,7 @@
 -- enters this inventory as the answer to a name, so the name is where the
 -- schedule belongs, and a service is observed through its host's run.
 --
+-- @tenant: scoped
 -- name: SelectDueHosts :many
 SELECT c.asset_id, c.key, c.lifecycle, c.backoff_tier
   FROM asset_current c
@@ -40,12 +41,27 @@ SELECT c.asset_id, c.key, c.lifecycle, c.backoff_tier
 
 -- AddRunTargets freezes the list in one round trip.
 --
--- The copy path rather than a statement per target: a batch is hundreds of
--- rows, and a run that costs five hundred round trips to define is one nobody
--- will let the scheduler start often.
+-- One statement rather than one per target: a batch is hundreds of rows, and a
+-- run that costs five hundred round trips to define is one nobody will let the
+-- scheduler start often.
 --
--- name: AddRunTargets :copyfrom
-INSERT INTO run_target (run_id, asset_id, org_id, key) VALUES ($1, $2, $3, $4);
+-- Columns as parallel arrays rather than COPY, and not by preference.
+-- PostgreSQL refuses COPY FROM outright on a table carrying a policy, with
+-- "COPY FROM not supported with row-level security", so the copy path stopped
+-- working the day isolation was enabled. This is the same single round trip,
+-- and it makes the organization a scalar of the statement rather than a column
+-- repeated per row, so a batch mixing two tenants is no longer expressible.
+--
+-- generate_subscripts rather than a multi-argument unnest, which sqlc's
+-- analyser cannot type. The arrays are built together by the caller and are the
+-- same length by construction; a short one would read as nulls rather than
+-- fail, which is why they are built in one loop and never assembled.
+--
+-- @tenant: scoped
+-- name: AddRunTargets :execrows
+INSERT INTO run_target (run_id, asset_id, org_id, key)
+SELECT @run_id::uuid, (@asset_ids::uuid[])[i], @org_id::uuid, (@keys::text[])[i]
+  FROM generate_subscripts(@asset_ids::uuid[], 1) AS i;
 
 -- LiveRunForProgram is what a second request runs into.
 --
@@ -53,6 +69,7 @@ INSERT INTO run_target (run_id, asset_id, org_id, key) VALUES ($1, $2, $3, $4);
 -- run something has actually opened from one whose provisioning failed, and
 -- those two call for opposite actions.
 --
+-- @tenant: keyed
 -- name: LiveRunForProgram :one
 SELECT id, kind, scope, state, deadline, created_at, started_at, target_count
   FROM run
@@ -68,6 +85,10 @@ SELECT id, kind, scope, state, deadline, created_at, started_at, target_count
 -- is ingested, so an abandoned run leaves the inventory exactly as it found it;
 -- expiring it frees its targets and makes the failure visible.
 --
+-- @tenant: cross-org
+-- @why: the deadline sweeper serves every tenant in one tick. A run nothing
+--       expires holds its targets forever, and the assets it froze are invisible to
+--       every later pass.
 -- name: ExpireRuns :many
 UPDATE run SET
     state       = 'expired',
@@ -79,6 +100,7 @@ RETURNING id, org_id, program_id, kind, scope, started_at, target_count;
 
 -- MarkRunRunning records that a scanner opened the run.
 --
+-- @tenant: keyed
 -- name: MarkRunRunning :exec
 UPDATE run SET
     state      = 'running',
@@ -87,6 +109,7 @@ UPDATE run SET
 
 -- RunForTargets reads what the target list endpoint has to check.
 --
+-- @tenant: keyed
 -- name: RunForTargets :one
 SELECT r.id, r.org_id, r.program_id, r.kind, r.scope, r.state, r.deadline
   FROM run r
@@ -94,6 +117,7 @@ SELECT r.id, r.org_id, r.program_id, r.kind, r.scope, r.state, r.deadline
 
 -- ProgramForScheduling reads what a run needs to be defined.
 --
+-- @tenant: keyed
 -- name: ProgramForScheduling :one
 SELECT id, org_id, name, state, authorized_from, authorized_to, rate_limit_rps,
        discovery_interval, last_discovery_at, version
@@ -106,6 +130,7 @@ SELECT id, org_id, name, state, authorized_from, authorized_to, rate_limit_rps,
 -- must not be restarted by the cadence: the deadline sweeper already handles
 -- it, and confusing the two would start two.
 --
+-- @tenant: keyed
 -- name: TouchDiscovery :exec
 UPDATE program SET last_discovery_at = @at::timestamptz WHERE id = @program_id::uuid;
 
@@ -116,6 +141,10 @@ UPDATE program SET last_discovery_at = @at::timestamptz WHERE id = @program_id::
 -- refused when the run opens: an execution billed to do nothing, every thirty
 -- seconds.
 --
+-- @tenant: cross-org
+-- @why: the discovery cadence provisions enumeration for every programme of
+--       every tenant in one pass, and a per tenant sweep would need a list of tenants
+--       to walk, which is the same crossing wearing a loop.
 -- name: ProgramsDueForDiscovery :many
 SELECT p.id, p.org_id, p.name, p.rate_limit_rps
   FROM program p
@@ -160,6 +189,7 @@ SELECT p.id, p.org_id, p.name, p.rate_limit_rps
 
 -- ApexesForProgram is a discovery run's perimeter.
 --
+-- @tenant: keyed
 -- name: ApexesForProgram :many
 SELECT DISTINCT pattern
   FROM scope_rule
@@ -178,6 +208,7 @@ SELECT DISTINCT pattern
 -- packet. One probe too many is not much, and it is not a property to accept
 -- knowingly when the pattern fits in the invocation.
 --
+-- @tenant: keyed
 -- name: ExclusionsForProgram :many
 SELECT DISTINCT matcher, pattern
   FROM scope_rule
@@ -193,5 +224,6 @@ SELECT DISTINCT matcher, pattern
 -- committed first: a platform that refuses on a quota must leave a row the
 -- deadline sweeper owns, not an absence.
 --
+-- @tenant: keyed
 -- name: RecordRunStart :exec
 UPDATE run SET external_id = @external_id::text WHERE id = @run_id::uuid;

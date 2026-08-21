@@ -230,18 +230,21 @@ func (s *Scheduler) Verification(
 		return nil, err
 	}
 
-	targets := make([]sqlcgen.AddRunTargetsParams, 0, len(due))
+	// Built in one loop, which is what keeps the two arrays the same length:
+	// the statement indexes them together and a short one would read as nulls
+	// rather than fail.
+	assets := make([]pgtype.UUID, 0, len(due))
 	keys := make([]string, 0, len(due))
 	for _, row := range due {
-		targets = append(targets, sqlcgen.AddRunTargetsParams{
-			RunID:   pgUUID(def.RunID),
-			AssetID: row.AssetID,
-			OrgID:   pgUUID(org),
-			Key:     row.Key,
-		})
+		assets = append(assets, row.AssetID)
 		keys = append(keys, row.Key)
 	}
-	if _, err := q.AddRunTargets(ctx, targets); err != nil {
+	if _, err := q.AddRunTargets(ctx, sqlcgen.AddRunTargetsParams{
+		RunID:    pgUUID(def.RunID),
+		OrgID:    pgUUID(org),
+		AssetIds: assets,
+		Keys:     keys,
+	}); err != nil {
 		return nil, fmt.Errorf("freeze target list: %w", err)
 	}
 
@@ -552,7 +555,16 @@ func stamp(t time.Time) pgtype.Timestamptz {
 // the signed tokens and the frozen list expire with it, and the due dates were
 // never moved, so the next tick starts a fresh run over the same assets.
 // Nothing has to be repaired.
-func (s *Scheduler) Launch(ctx context.Context, q *sqlcgen.Queries, def *Definition) error {
+// Recorder writes the name the platform gave an execution.
+//
+// A function rather than a handle on the database, because the write happens
+// *after* a call to a cloud API and must not happen inside a transaction that
+// was open during it. A pool of ten connections cannot absorb one held for as
+// long as somebody else's control plane takes to answer, and the caller is
+// also the only one that knows which organization the transaction belongs to.
+type Recorder func(ctx context.Context, runID uuid.UUID, externalID string) error
+
+func (s *Scheduler) Launch(ctx context.Context, record Recorder, def *Definition) error {
 	if s.platform == nil {
 		return nil
 	}
@@ -566,10 +578,7 @@ func (s *Scheduler) Launch(ctx context.Context, q *sqlcgen.Queries, def *Definit
 		return nil
 	}
 
-	if err := q.RecordRunStart(ctx, sqlcgen.RecordRunStartParams{
-		RunID:      pgUUID(def.RunID),
-		ExternalID: external,
-	}); err != nil {
+	if err := record(ctx, def.RunID, external); err != nil {
 		// The execution is running and this is only its name. Losing it costs
 		// the logs of that run, which is worth an error and not a rollback.
 		return fmt.Errorf("record the start of %s: %w", def.RunID, err)

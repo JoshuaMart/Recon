@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -32,6 +33,11 @@ import (
 const signingKey = "a-signing-key-long-enough-to-be-one"
 
 type harness struct {
+	// pool is the owner's, and it is the test's own hand rather than the
+	// application's: fixtures and assertions go through it. Every handler below
+	// runs on the two pools a deployment gives it, because a suite connected as
+	// the owner exercises no policy at all and would pass with row-level
+	// security switched off entirely.
 	pool    *pgxpool.Pool
 	server  *httptest.Server
 	signer  *auth.Signer
@@ -83,6 +89,21 @@ func newHarness(t *testing.T) *harness {
 	}
 	t.Cleanup(pool.Close)
 
+	// The migration leaves both roles NOLOGIN and without a password, since
+	// granting those belongs to the deployment. Here the test plays it.
+	for _, role := range []struct{ name, password string }{
+		{"asm_app", "app-password-for-a-container"},
+		{"asm_sys", "sys-password-for-a-container"},
+	} {
+		if _, err := pool.Exec(ctx,
+			"ALTER ROLE "+role.name+" WITH LOGIN PASSWORD '"+role.password+"'"); err != nil {
+			t.Fatalf("grant login to %s: %v", role.name, err)
+		}
+	}
+	appPool := poolAs(t, url, "asm_app", "app-password-for-a-container")
+	sysPool := poolAs(t, url, "asm_sys", "sys-password-for-a-container")
+	scoped := store.NewScoped(appPool)
+
 	signer, err := auth.NewSigner(signingKey)
 	if err != nil {
 		t.Fatalf("signer: %v", err)
@@ -106,13 +127,13 @@ func newHarness(t *testing.T) *harness {
 	// about a refusal is which of them answers, and a mux built per test would
 	// let a route be reachable in a test and unrouted in the binary.
 	mux := http.NewServeMux()
-	mux.Handle("POST /reports", api.NewReports(pool, signer, ingestor, quiet))
-	mux.Handle("GET /runs/{run}/targets", api.NewTargets(pool, signer, quiet))
-	guard := api.NewGuard(pool, quiet)
-	programs := api.NewPrograms(pool, h.sched, ingestor, time.Minute, quiet)
+	mux.Handle("POST /reports", api.NewReports(scoped, sysPool, signer, ingestor, quiet))
+	mux.Handle("GET /runs/{run}/targets", api.NewTargets(scoped, sysPool, signer, quiet))
+	guard := api.NewGuard(sysPool, quiet)
+	programs := api.NewPrograms(scoped, h.sched, ingestor, time.Minute, quiet)
 	mux.Handle("POST /programs/{program}/runs", guard.Require(auth.ActionManageJobs, programs.StartRun))
 	mux.Handle("POST /programs/{program}/assets", guard.Require(auth.ActionManageScope, programs.EnterAssets))
-	renders := api.NewRenders(pool, 72*time.Hour, quiet)
+	renders := api.NewRenders(scoped, 72*time.Hour, quiet)
 	mux.Handle("POST /assets/{asset}/render", guard.Require(auth.ActionManageJobs, renders.Request))
 	mux.Handle("POST /renders/replan", guard.Require(auth.ActionManageJobs, renders.Replan))
 
@@ -126,6 +147,24 @@ func newHarness(t *testing.T) *harness {
 	           VALUES ($1, $2, $3, 'include', 'apex', 'target.test')`,
 		uuid.New(), h.org, h.program)
 	return h
+}
+
+// poolAs opens a pool as one of the two runtime roles.
+func poolAs(t *testing.T, ownerURL, role, password string) *pgxpool.Pool {
+	t.Helper()
+
+	cfg, err := pgxpool.ParseConfig(ownerURL)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	url := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
+		role, password, cfg.ConnConfig.Host, cfg.ConnConfig.Port, cfg.ConnConfig.Database)
+	pool, err := pgxpool.New(context.Background(), url)
+	if err != nil {
+		t.Fatalf("pool as %s: %v", role, err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
 }
 
 func (h *harness) exec(t *testing.T, sql string, args ...any) {

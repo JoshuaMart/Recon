@@ -129,26 +129,22 @@ func (n *Notifier) Aggregates(ctx context.Context, threshold float64) error {
 			continue
 		}
 
-		payload, err := jsonPayload(map[string]any{
-			"summary": fmt.Sprintf("%d of %d assets unobservable (%.0f%%)",
-				row.Unobservable, row.Total, ratio*100),
-			"unobservable": row.Unobservable,
-			"total":        row.Total,
-			"ratio":        ratio,
-			"tier":         UnobservableTiers[tier],
-		})
+		batch, err := Batch(uuid.UUID(row.OrgID.Bytes), program, now, []Event{{
+			Kind:     KindUnobservable,
+			Priority: Priorities[KindUnobservable],
+			Payload: map[string]any{
+				"summary": fmt.Sprintf("%d of %d assets unobservable (%.0f%%)",
+					row.Unobservable, row.Total, ratio*100),
+				"unobservable": row.Unobservable,
+				"total":        row.Total,
+				"ratio":        ratio,
+				"tier":         UnobservableTiers[tier],
+			},
+		}})
 		if err != nil {
 			return err
 		}
-
-		if _, err := queries.WriteEvents(ctx, []sqlcgen.WriteEventsParams{{
-			OrgID:     row.OrgID,
-			ProgramID: row.ProgramID,
-			Kind:      KindUnobservable,
-			Priority:  Priorities[KindUnobservable],
-			Payload:   payload,
-			CreatedAt: pgtype.Timestamptz{Time: now.UTC(), Valid: true},
-		}}); err != nil {
+		if _, err := queries.WriteEvents(ctx, batch); err != nil {
 			return fmt.Errorf("write the mass tip of %s: %w", program, err)
 		}
 		n.tips[program] = tip{tier: tier, at: now}
@@ -197,30 +193,23 @@ func (n *Notifier) onboarding(ctx context.Context, q *sqlcgen.Queries, now time.
 		if incident {
 			payload["incident"] = "the first discovery run never completed"
 		}
-		encoded, err := jsonPayload(payload)
+		events := []Event{{
+			Kind:     KindDigest,
+			Priority: Priorities[KindDigest],
+			Payload:  payload,
+		}}
+		if incident {
+			events = append(events, Event{
+				Kind:     KindRunNeverEnded,
+				Priority: Priorities[KindRunNeverEnded],
+				Payload:  payload,
+			})
+		}
+		batch, err := Batch(uuid.UUID(row.OrgID.Bytes), uuid.UUID(row.ProgramID.Bytes), now, events)
 		if err != nil {
 			return err
 		}
-
-		events := []sqlcgen.WriteEventsParams{{
-			OrgID:     row.OrgID,
-			ProgramID: row.ProgramID,
-			Kind:      KindDigest,
-			Priority:  Priorities[KindDigest],
-			Payload:   encoded,
-			CreatedAt: pgtype.Timestamptz{Time: now.UTC(), Valid: true},
-		}}
-		if incident {
-			events = append(events, sqlcgen.WriteEventsParams{
-				OrgID:     row.OrgID,
-				ProgramID: row.ProgramID,
-				Kind:      KindRunNeverEnded,
-				Priority:  Priorities[KindRunNeverEnded],
-				Payload:   encoded,
-				CreatedAt: pgtype.Timestamptz{Time: now.UTC(), Valid: true},
-			})
-		}
-		if _, err := q.WriteEvents(ctx, events); err != nil {
+		if _, err := q.WriteEvents(ctx, batch); err != nil {
 			return fmt.Errorf("write the onboarding summary of %s: %w", row.Name, err)
 		}
 

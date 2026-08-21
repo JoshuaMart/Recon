@@ -132,26 +132,23 @@ func (n *Notifier) summarise(
 		return
 	}
 
-	payload, err := jsonPayload(map[string]any{
-		"summary": fmt.Sprintf("%d further %s events on %s in the last %s",
-			held, window.kind, window.name, span.Span),
-		"held":   held,
-		"reason": "window cap",
-		"kind":   window.kind,
-	})
+	batch, err := Batch(uuid.UUID(window.org.Bytes), uuid.UUID(window.program.Bytes), n.now(), []Event{{
+		Kind:     KindDigest,
+		Priority: window.priority,
+		Payload: map[string]any{
+			"summary": fmt.Sprintf("%d further %s events on %s in the last %s",
+				held, window.kind, window.name, span.Span),
+			"held":   held,
+			"reason": "window cap",
+			"kind":   window.kind,
+		},
+	}})
 	if err != nil {
 		n.log.ErrorContext(ctx, "overflow payload failed", "program", window.program, "error", err)
 		return
 	}
 
-	if _, err := q.WriteEvents(ctx, []sqlcgen.WriteEventsParams{{
-		OrgID:     window.org,
-		ProgramID: window.program,
-		Kind:      KindDigest,
-		Priority:  window.priority,
-		Payload:   payload,
-		CreatedAt: stamp(n.now()),
-	}}); err != nil {
+	if _, err := q.WriteEvents(ctx, batch); err != nil {
 		n.log.ErrorContext(ctx, "overflow summary failed", "program", window.program, "error", err)
 		return
 	}
@@ -361,15 +358,6 @@ func field(kind string) string {
 	default:
 		return kind
 	}
-}
-
-// jsonPayload encodes what an event carries.
-func jsonPayload(payload map[string]any) ([]byte, error) {
-	encoded, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("encode payload: %w", err)
-	}
-	return encoded, nil
 }
 
 // bounded narrows a batch size to the column that holds it.
