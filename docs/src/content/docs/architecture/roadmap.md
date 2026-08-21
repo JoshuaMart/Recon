@@ -31,7 +31,7 @@ risk of this project.
 
 - [x] `docker compose up` starts everything in under 60 s on a clean machine
 - [x] A migration can be applied then rolled back without loss
-- [x] CI passes on an empty pull request
+- [ ] CI passes on an empty pull request
 - [x] A backup is restored into an empty database from the configured archive destination, and the content is identical
 - [x] Connected as `asm_app`: `CREATE TABLE` fails, `DROP TABLE` fails on a table the owner created, and reading and writing that table succeeds through the default privileges
 - [x] From the fingerprinter's container, `psql` to the database fails, and the same connection succeeds from the control plane network
@@ -63,6 +63,11 @@ publishes a port onto a host the rendering network shares.
 
 **The environment guard is a linter rule, not a convention**, and it was verified by breaking it: a
 `os.Getenv` outside the configuration package fails the lint with the reason attached.
+
+**The CI assertion stays red, and deliberately.** Every job it declares passes locally in the same form,
+which is not the same claim: the workflow itself has never run on a pull request. Ticking it on local
+equivalence is exactly the falsely-green box that teaches people to stop reading boxes. It turns green on
+the first pull request, which is also when the required checks get their names.
 :::
 
 ## Phase 1: Data model and ingestion
