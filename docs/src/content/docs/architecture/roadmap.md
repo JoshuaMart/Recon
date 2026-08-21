@@ -31,7 +31,7 @@ risk of this project.
 
 - [x] `docker compose up` starts everything in under 60 s on a clean machine
 - [x] A migration can be applied then rolled back without loss
-- [ ] CI passes on an empty pull request
+- [x] CI passes on an empty pull request
 - [x] A backup is restored into an empty database from the configured archive destination, and the content is identical
 - [x] Connected as `asm_app`: `CREATE TABLE` fails, `DROP TABLE` fails on a table the owner created, and reading and writing that table succeeds through the default privileges
 - [x] From the fingerprinter's container, `psql` to the database fails, and the same connection succeeds from the control plane network
@@ -64,25 +64,14 @@ publishes a port onto a host the rendering network shares.
 **The environment guard is a linter rule, not a convention**, and it was verified by breaking it: a
 `os.Getenv` outside the configuration package fails the lint with the reason attached.
 
-**The CI assertion stays red, and deliberately.** Every job it declares passes locally in the same form,
-which is not the same claim: the workflow itself has never run on a pull request. Ticking it on local
-equivalence is exactly the falsely-green box that teaches people to stop reading boxes. It turns green on
-the first pull request, which is also when the required checks get their names.
+**CI was ticked when the workflow ran**, not when its jobs passed locally. Those are two claims, and only
+the second one was true for a while.
 :::
 
 ## Phase 1: Data model and ingestion
 
 **Goal**: freeze the [model](/architecture/data-model/). This is the most irreversible phase of the project.
 
-:::caution[Started with milestone 0's CI assertion red]
-An explicit derogation to [rule 1](#project-rules), taken by Joshua. Every job the workflow declares
-passes locally in the same form; what has not happened is the workflow running on a pull request, which
-needs the branch pushed and nothing else.
-
-The derogation is named and bounded to that one assertion rather than a relaxation of the rule: a rule
-enjambed in silence stops protecting anything, while one written down stays readable. **Milestone 0 does
-not close** until the box is ticked for the right reason.
-:::
 
 - [ ] `org`, `app_user`, `membership`, multi-tenant from the first migration
 - [ ] `program` and `scope_rule` with their validity windows and their `version`
