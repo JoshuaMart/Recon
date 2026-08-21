@@ -50,6 +50,32 @@ the gap is logged, but the classification that sticks is the current one.
 `unknown` is where acquisitions, affiliated domains and shared infrastructure show up. Those are the
 ones worth asking for a scope extension on.
 
+### Scope is evaluated on the host, and derived assets inherit it
+
+A rule names a host. An asset's key does not always look like one: a service is
+`api.target.com:443/tcp` and a URL is `https://api.target.com/v1`. Matching a rule against the key
+would put `api.target.com` in scope and leave every service on it out, which is the same perimeter
+described two ways and only one of them acted on.
+
+So the classification reads the asset's **host**, which is a
+[promoted column filled at creation](/architecture/data-model/#what-the-key-contains-is-filled-at-creation)
+rather than parsed at query time. A service takes the status of its host; a URL takes the status of its
+service.
+
+**One rule goes the other way**, and it is why the inheritance is a default rather than a law: a
+`url_prefix` rule is more specific than a host, so a URL can be excluded while the service carrying it
+stays in scope. A child may be stricter than its parent, never looser.
+
+**What that means when a rule changes.** [Reclassification](#a-rule-that-changes-reclassifies-in-the-same-transaction)
+is a single pass over the program's assets, and the inheritance is what makes it complete: bringing a
+host in scope brings its services and their URLs with it, and taking it out takes them. Without it, a
+newly included host would be probed while the services that are the actual surface stayed frozen, and
+nothing would report the gap.
+
+The other half is the scheduling, which follows the same pass: an asset becoming `in_scope` gets its
+[due dates](/architecture/lifecycle/#63-scheduling-and-backoff), one leaving loses them, and both happen
+in the transaction that writes the rule.
+
 ## 5.4 Program ownership and expiry
 
 A `program` belongs to exactly one organization. Two organizations tracking the same public target

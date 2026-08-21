@@ -138,7 +138,7 @@ service.
 | `fqdn` | `dns`, `tcp` | its own run |
 | `ip` | `tcp` | the hosts that resolve to it |
 | `service` | `tcp`, `http` | its host's run |
-| `url` | `http` | its host's run |
+| `url` | `http` | its service's run, and a render of its own |
 
 An address is never a target of its own, and that is not a workaround: an address only ever enters this
 inventory as the answer to a name, so the name is where the schedule belongs
@@ -164,14 +164,29 @@ would add a latency incompatible with the aggressive backoff of Certificate Tran
 a first tier of one minute, a sweep every five minutes makes it inoperative. Ingestion also already
 knows the `scope_status` in the same transaction, which a sweeper would have to reread.
 
-| Source | First due date |
-|---|---|
-| Certificate Transparency | immediate |
-| Discovery run | `now() + jitter(0 to 15 min)` |
-| Manual entry | immediate |
+| Source | First due date | Scope |
+|---|---|---|
+| Certificate Transparency | immediate | `resolve`, then `full` once it answers |
+| Discovery run | `now() + jitter(0 to 15 min)` | the run already reached it |
+| Manual entry | immediate | **`full`** |
 
 The jitter is necessary: without it, the thousands of assets of one discovery run share a due date and
 come back together forever.
+
+**A hand-entered host is due for `full`, not for `resolve`.** Somebody typed it in to find out what it
+exposes, and a resolution would only report that the name answers. The ladder makes this free to say:
+`full` runs every rung below it, so one run gives the resolution, the open ports and the services behind
+them. That is also the only case where the first run of an asset is the expensive one, and it is the
+right place for it, because a person is waiting.
+
+**A hand-entered URL is a path somebody named**, which is the one case where a path is an identity
+rather than the place a redirect landed. Adding one creates or finds the **service** it belongs to and
+schedules that service, because a URL has no liveness of its own: what answers is the service. The URL
+earns its render once its service has answered, through the ordinary
+[baseline filter](/architecture/verification/#the-baseline-filter), and the renderer is given the URL as
+declared rather than the service root. The distinction is the same one
+[4.3](/architecture/data-model/#the-unit-of-a-web-asset-is-the-service-never-the-path) draws: a scanned
+path is a byproduct, a declared path is an act.
 
 **Only `in_scope` assets are scheduled.** `out_of_scope` and `unknown` are stored without due dates.
 They are kept and displayed, never probed. A [scope reclassification](/architecture/scope/#52-re-evaluated-at-ingestion)

@@ -202,6 +202,11 @@ Five triggers:
 
 1. **First contact**, whatever the HTTP status code, including 403, 401, a challenge or an origin error
    behind a CDN. The browser can get a result the raw client cannot.
+
+   The target is the service, at its root, because a path a scan landed on describes a redirect rather
+   than a surface. The exception is a **declared** URL, which is rendered as it was written: somebody
+   named that path, which is the whole difference between an identity and a byproduct
+   ([6.3](/architecture/lifecycle/#who-fills-the-due-dates)).
 2. **A change detected by the HTTP layer**, in the nominal regime only.
 3. **Periodic refresh**, 21 days by default, modulated by volatility. 7 days when the fingerprinter is
    the only detector.

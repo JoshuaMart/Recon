@@ -95,6 +95,7 @@ the first pull request, which is also when the required checks get their names.
 - [ ] The measured deduplication rate exceeds 90 % on a replayed set
 - [ ] An out of scope asset is stored, never deleted, and marked `out_of_scope`
 - [ ] Changing a `scope_rule` reclassifies history without rescanning
+- [ ] A rule naming a host reclassifies its services and their URLs with it, and a `url_prefix` exclusion leaves the service carrying it in scope
 - [ ] A query carrying a different `org_id` returns **no** row
 - [ ] A report attached to an expired `program` is rejected at ingestion
 - [ ] A report naming a host outside its run's frozen target list is **rejected**, not ignored
@@ -117,11 +118,13 @@ phase testable before discovery exists.
 - [ ] [An open port becomes an asset](/architecture/verification/#an-open-port-becomes-an-asset), with its bound
 - [ ] [Dangling CNAME detection](/architecture/verification/#takeover-candidates) into a structured field
 - [ ] [Dead origin signatures behind a CDN](/architecture/verification/#dead-origin-behind-a-cdn) and `is_cdn` detection
-- [ ] Manual asset entry, under a scope action rather than the ingestion one
+- [ ] Manual asset entry, under a scope action rather than the ingestion one: a host due for `full`, a URL scheduling the service it belongs to
 
 ### Milestone 2
 
 - [ ] A hand entered list of 100 FQDNs produces a correct inventory
+- [ ] A hand entered host produces its open ports and their services on its **first** run, rather than a resolution alone
+- [ ] A hand entered URL earns no render until its service has answered, and is then rendered at the path as declared
 - [ ] An `nxdomain` confirmed 3 times over more than 24 h moves the asset to `INACTIVE`
 - [ ] An `nxdomain` confirmed 3 times in 90 minutes does **not**
 - [ ] A repeated timeout **never** produces an `INACTIVE`
