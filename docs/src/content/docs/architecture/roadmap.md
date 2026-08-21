@@ -327,21 +327,45 @@ internal API by name, and the control side reaches the database.
 
 **Goal**: [FastRecon over a program's apexes](/architecture/discovery/), feeding the loop of phase 2.
 
-- [ ] [Run definition generated from `scope_rule`](/architecture/scope/#51-the-scope-belongs-to-the-control-plane)
-- [ ] [Source credentials](/architecture/discovery/#73-source-credentials) in the run's environment, an empty variable refusing startup
-- [ ] [The curated port list](/architecture/discovery/#74-the-port-list) travelling in the run definition
-- [ ] [Scheduled runs](/architecture/deployment/#98-starting-runs) per program and the console endpoint
-- [ ] Assets entering through the normal path: ingestion, scope, due dates
-- [ ] [Per host source attribution](/architecture/data-model/#44-lineage) feeding lineage
+- [x] [Run definition generated from `scope_rule`](/architecture/scope/#51-the-scope-belongs-to-the-control-plane), apexes and exclusion patterns
+- [x] [Source credentials](/architecture/discovery/#73-source-credentials) named and never carried, so a start call cannot wipe them
+- [x] [The curated port list](/architecture/discovery/#74-the-port-list) travelling in the run definition
+- [x] [Scheduled runs](/architecture/deployment/#98-starting-runs) per program and the console endpoint
+- [x] Assets entering through the normal path: ingestion, scope, due dates
+- [x] [Per host source attribution](/architecture/data-model/#44-lineage) feeding lineage
 
 ### Milestone 4
 
-- [ ] A run killed midway keeps everything already delivered
-- [ ] No out of scope asset receives a due date
-- [ ] Rescanning the same perimeter twice creates **no** observation row on unchanged assets
-- [ ] A run that never completes is marked expired and a replacement is provisioned
-- [ ] [`discovery_path`](/architecture/data-model/#44-lineage) is populated and usable on every asset
-- [ ] A source without a key reports itself, and the run says in one line what it could query
+- [x] A run killed midway keeps everything already delivered
+- [x] No out of scope asset receives a due date
+- [x] Rescanning the same perimeter twice creates **no** observation row on unchanged assets
+- [x] A run that never completes is marked expired and a replacement is provisioned
+- [x] [`discovery_path`](/architecture/data-model/#44-lineage) is populated and usable on every asset
+- [x] A source without a key reports itself, and the run says in one line what it could query
+
+:::note[Measured]
+**The loop closed against the real platform**, which is where two contract errors surfaced that nothing
+in this repository could have caught. `--stages` takes a **scope name** and not a list of stages, so the
+first real run failed on its configuration one second after starting: both sides of that invention lived
+here, so the suite was green. And a start call **replaces** a definition's arguments while **merging**
+its environment, so a flag on the definition beats a variable sent at start, and the deployed one carried
+`-d hackerone.com`. Every run would have scanned that, and nothing would have looked wrong.
+
+**The run said in one line why it found nothing**, which is the assertion above working rather than a
+disappointing result: `1 of 2 sources answered`, with the failing one and its status code stored beside
+the report. Without that accounting an empty inventory and a broken source are the same screen.
+
+**Two boxes were red for a reason a test found rather than a review.** A dead discovery run held its
+programme for a whole discovery interval, because `last_discovery_at` is written at creation and nothing
+cleared it: a run that failed in thirty seconds cost a week of coverage. And a derived service copied its
+host's lineage, so "what did this source find" answered with every service in the inventory rather than
+with the names the source returned.
+
+**One assertion is ticked for the half this repository owns.** A source with no key reporting itself is
+FastRecon's, and it is proven live. An **empty** variable being an error rather than "no key" is also
+FastRecon's, and it was not verified here. What Recon owes is that it names credentials and never carries
+them, which is asserted on the definition it produces.
+:::
 
 ## Phase 5: Diff and notifications
 

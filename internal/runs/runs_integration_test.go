@@ -242,6 +242,10 @@ func TestSelectionReadsTheRungItWasAskedFor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve run: %v", err)
 	}
+	// The flag takes the scanner's own scope name, which is the same value the
+	// run row is constrained to. Anything else is a run that fails on its
+	// configuration a second after it starts, which no test here could catch
+	// because both sides of the invention live in this repository.
 	if arg(resolve.Args, "--stages") != "resolve" {
 		t.Fatalf("the stages are %q", arg(resolve.Args, "--stages"))
 	}
@@ -342,6 +346,9 @@ func TestDiscoveryIsRecordedWhenItIsProvisioned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("discovery: %v", err)
 	}
+	if arg(def.Args, "--stages") != runs.ScopeFull {
+		t.Fatalf("a discovery run walks %q of the ladder", arg(def.Args, "--stages"))
+	}
 	if arg(def.Args, "-d") != "acme.test" {
 		t.Fatalf("the perimeter is %q", arg(def.Args, "-d"))
 	}
@@ -436,3 +443,158 @@ func (h *harness) count(t *testing.T, sql string, args ...any) int {
 	}
 	return n
 }
+
+// A discovery run that never completes is expired and a replacement is
+// provisioned.
+//
+// last_discovery_at is written at creation so the cadence cannot start a second
+// run while the first is in flight. Left there after a run died, it also means
+// the programme waits a whole discovery interval for a replacement: a run that
+// failed in thirty seconds would cost a week of coverage.
+func TestADeadDiscoveryRunIsReplacedRatherThanWaitedOut(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	exec(t, h.pool, `INSERT INTO scope_rule (id, org_id, program_id, kind, matcher, pattern, valid_from)
+		VALUES ($1,$2,$3,'include','apex','acme.test',$4)`,
+		uuid.New(), h.org, h.program, h.clock.now.Add(-time.Hour))
+
+	// Through the cadence, because that is where the interval is read.
+	// Calling Discovery directly would answer a different question: it checks
+	// what is in flight and never what the cadence allows.
+	platform := &recorder{id: "run-01"}
+	scheduler := runs.New(h.sched.Signer(), h.sched.Config(), quiet(),
+		runs.WithClock(h.clock.Now), runs.WithPlatform(platform))
+	cadence := runs.NewCadence(h.pool, scheduler, time.Minute, quiet())
+
+	if started, err := cadence.Once(ctx); err != nil || started != 1 {
+		t.Fatalf("the first run: %d started, %v", started, err)
+	}
+
+	var deadline time.Time
+	if err := h.pool.QueryRow(ctx,
+		`SELECT deadline FROM run WHERE program_id = $1`, h.program).Scan(&deadline); err != nil {
+		t.Fatalf("read the deadline: %v", err)
+	}
+
+	// Nothing ever reports. The deadline passes.
+	h.clock.now = deadline.Add(time.Minute)
+	if _, err := h.sched.Sweep(ctx, h.queries); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	// A whole discovery interval has not passed, and the replacement still
+	// goes out: a run that failed in thirty seconds must not cost a week.
+	started, err := cadence.Once(ctx)
+	if err != nil {
+		t.Fatalf("the replacement: %v", err)
+	}
+	if started != 1 {
+		t.Fatalf("%d replacements went out, and the interval is seven days away", started)
+	}
+
+	// And a run in flight still bounds the cadence to one at a time, which is
+	// the property clearing the slot must not undo.
+	if again, err := cadence.Once(ctx); err != nil || again != 0 {
+		t.Fatalf("a third tick started %d runs while one was in flight, %v", again, err)
+	}
+}
+
+// The cadence provisions and starts, and it is the platform that says what the
+// execution was called.
+func TestTheCadenceStartsWhatItProvisions(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	exec(t, h.pool, `INSERT INTO scope_rule (id, org_id, program_id, kind, matcher, pattern, valid_from)
+		VALUES ($1,$2,$3,'include','apex','acme.test',$4)`,
+		uuid.New(), h.org, h.program, h.clock.now.Add(-time.Hour))
+	// An exclusion travels with the perimeter, as the second safety net in
+	// front of the network.
+	exec(t, h.pool, `INSERT INTO scope_rule (id, org_id, program_id, kind, matcher, pattern, valid_from)
+		VALUES ($1,$2,$3,'exclude','fqdn','vpn.acme.test',$4)`,
+		uuid.New(), h.org, h.program, h.clock.now.Add(-time.Hour))
+
+	platform := &recorder{id: "run-01"}
+	scheduler := runs.New(h.sched.Signer(), h.sched.Config(), quiet(),
+		runs.WithClock(h.clock.Now), runs.WithPlatform(platform))
+
+	started, err := runs.NewCadence(h.pool, scheduler, time.Minute, quiet()).Once(ctx)
+	if err != nil {
+		t.Fatalf("cadence: %v", err)
+	}
+	if started != 1 {
+		t.Fatalf("%d runs went out", started)
+	}
+	if platform.calls != 1 {
+		t.Fatalf("the platform was called %d times", platform.calls)
+	}
+	if arg(platform.args, "--exclude") != "vpn.acme.test" {
+		t.Fatalf("the exclusions did not travel: %v", platform.args)
+	}
+
+	var external string
+	if err := h.pool.QueryRow(ctx,
+		`SELECT external_id FROM run WHERE program_id = $1 AND kind = 'discovery'`,
+		h.program).Scan(&external); err != nil {
+		t.Fatalf("read the external id: %v", err)
+	}
+	if external != "run-01" {
+		t.Fatalf("the platform's name for the run is %q, and without it its logs are unfindable", external)
+	}
+
+	// A second tick starts nothing: the run is in flight.
+	again, err := runs.NewCadence(h.pool, scheduler, time.Minute, quiet()).Once(ctx)
+	if err != nil {
+		t.Fatalf("cadence: %v", err)
+	}
+	if again != 0 || platform.calls != 1 {
+		t.Fatalf("a second tick started %d runs, %d platform calls", again, platform.calls)
+	}
+}
+
+// A platform that refuses leaves a row the deadline sweeper owns, not nothing.
+func TestAPlatformRefusalLeavesTheSweeperSomethingToOwn(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	exec(t, h.pool, `INSERT INTO scope_rule (id, org_id, program_id, kind, matcher, pattern, valid_from)
+		VALUES ($1,$2,$3,'include','apex','acme.test',$4)`,
+		uuid.New(), h.org, h.program, h.clock.now.Add(-time.Hour))
+
+	platform := &recorder{err: errors.New("quota exceeded")}
+	scheduler := runs.New(h.sched.Signer(), h.sched.Config(), quiet(),
+		runs.WithClock(h.clock.Now), runs.WithPlatform(platform))
+
+	started, err := runs.NewCadence(h.pool, scheduler, time.Minute, quiet()).Once(ctx)
+	if err != nil {
+		t.Fatalf("cadence: %v", err)
+	}
+	if started != 0 {
+		t.Fatalf("%d runs were reported started against a platform that refused", started)
+	}
+
+	var state string
+	if err := h.pool.QueryRow(ctx,
+		`SELECT state FROM run WHERE program_id = $1`, h.program).Scan(&state); err != nil {
+		t.Fatalf("read the run: %v", err)
+	}
+	if state != "pending" {
+		t.Fatalf("the run is %q, and a refusal has to leave the sweeper something to expire", state)
+	}
+}
+
+// recorder stands in for a platform.
+type recorder struct {
+	id    string
+	err   error
+	calls int
+	args  []string
+}
+
+func (r *recorder) Name() string { return "recorder" }
+
+func (r *recorder) Start(_ context.Context, def *runs.Definition) (string, error) {
+	r.calls++
+	r.args = def.Args
+	return r.id, r.err
+}
+
+func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }

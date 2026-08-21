@@ -18,21 +18,42 @@ arrives in its definition, and nothing it holds opens the inventory ([P6](/archi
 | Where to post the report, and with what header | the run definition |
 | Source API keys | the runtime environment, never the definition ([7.3](/architecture/discovery/#73-source-credentials)) |
 
-A serverless job definition offers environment variables, which is exactly what FastRecon is
-configurable through:
+A start call overrides the definition **for one run**, and the two halves of that override behave
+differently. This was measured against the platform rather than assumed, and it decides the shape of
+everything below:
+
+| | |
+|---|---|
+| `args` | **replaced** wholesale by what the start call sends |
+| `environment_variables` | **merged** into what the definition already holds |
+
+The merge is what the design needs: the definition keeps the source API keys
+([7.3](/architecture/discovery/#73-source-credentials)) and the control plane sends only what it owns.
+The replacement is the trap. **A flag on the definition beats a variable sent at start**, so a definition
+carrying `-d hackerone.com` makes every run scan that, whatever the environment says, and nothing looks
+wrong. So the whole invocation travels as arguments:
 
 ```
-FASTRECON_TARGETS_URL=https://recon.example/runs/01M0GH.../targets?token=<targets token>
-FASTRECON_STAGES=resolve
-FASTRECON_PORTS=80,443,8080,...
-FASTRECON_SCAN_RATE=10
-FASTRECON_WEBHOOK_URL=https://recon.example/reports
-FASTRECON_WEBHOOK_HEADER=Authorization: Bearer <run token>
-FASTRECON_TIMEOUT=30m
+--stages resolve
+--targets-url https://recon.example/runs/01M0GH.../targets
+--targets-header "Authorization: Bearer <targets token>"
+--ports 80,443,8080,...
+--scan-rate 10
+--webhook-url https://recon.example/reports
+--webhook-header "Authorization: Bearer <run token>"
+--timeout 30m
 ```
 
-The target list is served as plain text, one canonical host per line, because the consumer is a scanner
-reading a target file and the format has to be one it already accepts.
+**`--stages` takes a scope name**, not a list of stages: `enum`, `resolve`, `ports` or `full`, each rung
+running the ones below it. They are the same four values `run.scope` is constrained to, so the column and
+the flag cannot drift apart. Inventing a stage list there is a run that fails on its configuration a
+second after it starts, and it is invisible to a test suite where both sides of the invention live in the
+same repository.
+
+**Neither credential goes in a URL.** The target list is fetched with the signature in a header, which is
+what the flag exists for: a token in a query string is a token in every access log, proxy log and error
+message that ever prints it, and those outlive the run by a long way. The list itself is plain text, one
+canonical host per line, because the consumer is a scanner reading a target file.
 
 **Two signed values, no table.** The targets URL and the report token are HMACs over
 `(run_id, purpose, expiry)`, computed with a server key. Nothing to store, nothing to revoke, nothing
@@ -314,6 +335,10 @@ retrying, which a platform that sees only "non-zero" cannot single out. Retrying
 whose report was already delivered. Recon's retry is the due date, which is the same mechanism as everywhere
 else: nothing moved, so the next tick reselects.
 
+**The run is committed before anything is started**, and that order is the whole of the failure story.
+Starting inside the transaction would leave an execution running with a valid credential against a run row
+that was rolled back.
+
 **When the platform refuses**, on a quota or an outage, the run row stays `pending` and the deadline sweeper
 expires it. The signed token and the frozen target list expire with it, and the due dates were never moved,
 so the next tick starts a fresh run over the same assets. Nothing has to be repaired, which is the property
@@ -355,7 +380,12 @@ since `last_discovery_at` is written when the run is created rather than when it
 concurrency to one discovery run per program.
 
 `last_discovery_at` is written **at creation**, not at completion. A run that dies on the way must not be
-restarted by the cadence: the deadline sweeper already handles it, and confusing the two would start two.
+restarted by the cadence while it is still in flight, and confusing the two would start two.
+
+**The sweeper clears it when it expires a discovery run**, which is what actually provisions the
+replacement. Left set, the condition above would hold a programme for a whole discovery interval after a
+run that failed in thirty seconds: a week of coverage lost to a configuration error. Clearing it cannot
+double-start, because by then there is no run in flight for the other condition to see.
 
 **Console endpoint**: `POST /programs/{id}/runs`, needed to re-run after a scope change, independently of
 the cadence.

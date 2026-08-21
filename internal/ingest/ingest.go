@@ -79,7 +79,21 @@ type Summary struct {
 	// one says so in its own summary rather than only in a table nobody reads
 	// until an alert fires.
 	Takeovers int
-	Unknown   map[string]int
+	// Sources is the per source accounting the scanner reported, kept because
+	// the failure it describes does not look like one. Without a credential a
+	// keyed source disables itself, the run starts, finishes correctly, and
+	// simply finds less, and nobody notices while looking at an inventory they
+	// have never seen otherwise.
+	Sources []SourceReport `json:"sources,omitempty"`
+	Unknown map[string]int
+}
+
+// SourceReport is one enumeration source and how it went.
+type SourceReport struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Found  int    `json:"found"`
+	Error  string `json:"error,omitempty"`
 }
 
 // Ingestor writes reports into the inventory.
@@ -204,6 +218,8 @@ func (i *Ingestor) Report(ctx context.Context, q *sqlcgen.Queries, run Run, set 
 		}
 	}
 
+	summary.Sources = accounting(report.Sources)
+
 	// A declared path earns its render once the service it belongs to has
 	// answered. One statement for the whole report rather than one per
 	// service: it reads a state the observations above have already written.
@@ -267,7 +283,16 @@ func (i *Ingestor) writeAsset(
 	target := scope.Target{Key: key, Addresses: addresses(host.Addresses)}
 	status := set.Classify(target)
 
-	path, err := lineage(run, host)
+	// A derived service was not returned by an enumeration source: it was
+	// implied by a port its host was found to have open. Copying the host's
+	// step would attribute it to whichever source returned the name, and a
+	// question like "what did this source actually find" would answer with
+	// every service in the inventory.
+	step := lineage(run, host)
+	if key.Kind == normalize.KindService {
+		step = derived(run, key)
+	}
+	path, err := json.Marshal([]any{step})
 	if err != nil {
 		return nil, err
 	}
@@ -672,6 +697,53 @@ func qualify(outcome string, report Report) string {
 	return outcome
 }
 
+// accounting carries the scanner's source report into the run's summary.
+//
+// Every source appears whether it succeeded or not, and a keyed one with no key
+// says so rather than being silently dropped. That distinction is the whole
+// point: a run that queried two sources out of five is a run that found less,
+// and the only place that is visible is here.
+func accounting(sources []Source) []SourceReport {
+	if len(sources) == 0 {
+		return nil
+	}
+	out := make([]SourceReport, 0, len(sources))
+	for _, source := range sources {
+		out = append(out, SourceReport{
+			Name:   source.Name,
+			Status: source.Status,
+			Found:  source.Found,
+			Error:  source.Error,
+		})
+	}
+	return out
+}
+
+// Queried summarises the accounting in one line.
+//
+// It is a sentence rather than a table because the question it answers is asked
+// while looking at a disappointing inventory: how much of what could have been
+// queried actually was.
+func (s Summary) Queried() string {
+	if len(s.Sources) == 0 {
+		return ""
+	}
+	var answered, keyless int
+	for _, source := range s.Sources {
+		switch source.Status {
+		case "ok":
+			answered++
+		case "skipped_no_key":
+			keyless++
+		}
+	}
+	line := fmt.Sprintf("%d of %d sources answered", answered, len(s.Sources))
+	if keyless > 0 {
+		line += fmt.Sprintf(", %d had no key", keyless)
+	}
+	return line
+}
+
 func discoverySource(run Run, host Host) string {
 	if len(host.Sources) > 0 {
 		return "fastrecon:" + host.Sources[0]
@@ -684,7 +756,7 @@ func discoverySource(run Run, host Host) string {
 
 // lineage records why an asset is in the inventory, which matters for
 // debugging, for trust, and for justifying a scan to whoever owns the target.
-func lineage(run Run, host Host) ([]byte, error) {
+func lineage(run Run, host Host) map[string]any {
 	step := map[string]any{"step": "enumerated", "run": run.ID.String()}
 	if len(host.Sources) > 0 {
 		step["sources"] = anySlice(host.Sources)
@@ -692,7 +764,17 @@ func lineage(run Run, host Host) ([]byte, error) {
 	if len(host.Addresses) > 0 {
 		step["addresses"] = anySlice(host.Addresses)
 	}
-	return json.Marshal([]any{step})
+	return step
+}
+
+// derived records the port that implied a service, and the run that found it.
+func derived(run Run, key normalize.Key) map[string]any {
+	return map[string]any{
+		"step": "derived",
+		"run":  run.ID.String(),
+		"host": key.Host,
+		"port": key.Port,
+	}
 }
 
 func addresses(raw []string) []netip.Addr {

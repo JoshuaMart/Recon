@@ -69,13 +69,30 @@ SELECT id, kind, scope, state, deadline, created_at, started_at, target_count
 -- expiring it frees its targets and makes the failure visible.
 --
 -- name: ExpireRuns :many
-UPDATE run SET
-    state       = 'expired',
-    finished_at = @at::timestamptz,
-    error       = COALESCE(error, 'the deadline passed and no report was delivered')
- WHERE state IN ('pending', 'running')
-   AND deadline <= @at::timestamptz
-RETURNING id, org_id, program_id, kind, scope, started_at, target_count;
+WITH expired AS (
+    UPDATE run SET
+        state       = 'expired',
+        finished_at = @at::timestamptz,
+        error       = COALESCE(error, 'the deadline passed and no report was delivered')
+     WHERE state IN ('pending', 'running')
+       AND deadline <= @at::timestamptz
+    RETURNING id, org_id, program_id, kind, scope, started_at, target_count
+),
+-- A discovery run that delivered nothing gives its cadence slot back.
+--
+-- last_discovery_at is written at creation so that the cadence cannot start a
+-- second run while the first is in flight. Left there after a run died, it also
+-- means the programme waits a whole discovery interval for a replacement: a run
+-- that failed in thirty seconds would cost a week of coverage. Clearing it here
+-- is what makes the next tick provision one, and it cannot double-start,
+-- because there is no longer a run in flight for the condition to see.
+replaced AS (
+    UPDATE program p SET last_discovery_at = NULL
+      FROM expired e
+     WHERE p.id = e.program_id AND e.kind = 'discovery'
+    RETURNING p.id
+)
+SELECT id, org_id, program_id, kind, scope, started_at, target_count FROM expired;
 
 -- MarkRunRunning records that a scanner opened the run.
 --

@@ -167,6 +167,11 @@ func New(signer *auth.Signer, cfg config.Verification, log *slog.Logger, opts ..
 	return scheduler
 }
 
+// Signer and Config are what a second scheduler over the same deployment is
+// built from, which is what a test that swaps the platform needs.
+func (s *Scheduler) Signer() *auth.Signer        { return s.signer }
+func (s *Scheduler) Config() config.Verification { return s.cfg }
+
 // Cadence is what the ingestor reschedules with, so both read one setting.
 func (s *Scheduler) Cadence() lifecycle.Cadence {
 	return lifecycle.Cadence{
@@ -244,7 +249,7 @@ func (s *Scheduler) Verification(
 	// the flag exists for: a credential in a query string ends up in every
 	// access log, proxy log and error message that ever prints the URL.
 	def.Args = append(def.Args,
-		"--stages", stagesFor(rung),
+		"--stages", rung,
 		"--targets-url", s.targetsURL(def.RunID),
 		"--targets-header", "Authorization: Bearer "+s.mint(auth.PurposeTargets, def.RunID, def.Deadline),
 	)
@@ -280,11 +285,11 @@ func (s *Scheduler) Discovery(
 		return nil, fmt.Errorf("read exclusions: %w", err)
 	}
 
-	def, err := s.create(ctx, q, org, program, KindDiscovery, "enum", 0)
+	def, err := s.create(ctx, q, org, program, KindDiscovery, ScopeFull, 0)
 	if err != nil {
 		return nil, err
 	}
-	def.Args = append(def.Args, "--stages", stagesFor("enum"), "-d", strings.Join(apexes, ","))
+	def.Args = append(def.Args, "--stages", def.Scope, "-d", strings.Join(apexes, ","))
 	// The exclusion patterns travel with the perimeter. A rule may have changed
 	// between a run being defined and a run starting, and they are the second
 	// safety net in front of the network rather than a duplicate of the scope.
@@ -446,22 +451,19 @@ func (s *Scheduler) targetsURL(run uuid.UUID) string {
 	return fmt.Sprintf("%s/runs/%s/targets", strings.TrimSuffix(s.cfg.PublicURL, "/"), run)
 }
 
-// stagesFor maps a rung onto the ladder the scanner runs.
+// Scopes a run may be given, and they are the scanner's own names.
 //
-// An asset due for full does not need a resolve run: full runs every rung below
-// it. That is what makes a hand entered host cheap to satisfy in one pass, and
-// it is the reason the ladder is the cost knob rather than a cadence per probe
-// type.
-func stagesFor(scope string) string {
-	switch scope {
-	case lifecycle.RungResolve:
-		return "resolve"
-	case "enum":
-		return "enumerate,exclude,resolve,portscan,httpprobe"
-	default:
-		return "resolve,portscan,httpprobe"
-	}
-}
+// The ladder is a scope rather than a list of stages, and each rung runs the
+// ones below it. That is what makes a hand entered host cheap to satisfy in one
+// pass, and it is why the ladder is the cost knob rather than a cadence per
+// probe type. These are the same four values the run row is constrained to, so
+// the column and the flag cannot drift apart.
+const (
+	// ScopeEnum is a passive pass: enumeration and nothing else.
+	ScopeEnum = "enum"
+	// ScopeFull walks every rung, and it is what a discovery run does.
+	ScopeFull = "full"
+)
 
 func authorized(p sqlcgen.ProgramForSchedulingRow, now time.Time) (string, bool) {
 	if p.State != "active" {

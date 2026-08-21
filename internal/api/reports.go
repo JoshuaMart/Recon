@@ -182,7 +182,8 @@ func (h *Reports) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.log.InfoContext(ctx, "report ingested",
-		"run", runID, "hosts", summary.Hosts, "assets", summary.Assets,
+		"run", runID, "sources", summary.Queried(),
+		"hosts", summary.Hosts, "assets", summary.Assets,
 		"created", summary.Created, "observations", summary.Observations,
 		"deduplicated", summary.Deduplicated, "rejected", summary.Rejected,
 		"complete", report.Run.Completed, "late", late, "degraded", report.Run.Degraded)

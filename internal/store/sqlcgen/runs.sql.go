@@ -99,13 +99,22 @@ func (q *Queries) ExclusionsForProgram(ctx context.Context, arg ExclusionsForPro
 }
 
 const expireRuns = `-- name: ExpireRuns :many
-UPDATE run SET
-    state       = 'expired',
-    finished_at = $1::timestamptz,
-    error       = COALESCE(error, 'the deadline passed and no report was delivered')
- WHERE state IN ('pending', 'running')
-   AND deadline <= $1::timestamptz
-RETURNING id, org_id, program_id, kind, scope, started_at, target_count
+WITH expired AS (
+    UPDATE run SET
+        state       = 'expired',
+        finished_at = $1::timestamptz,
+        error       = COALESCE(error, 'the deadline passed and no report was delivered')
+     WHERE state IN ('pending', 'running')
+       AND deadline <= $1::timestamptz
+    RETURNING id, org_id, program_id, kind, scope, started_at, target_count
+),
+replaced AS (
+    UPDATE program p SET last_discovery_at = NULL
+      FROM expired e
+     WHERE p.id = e.program_id AND e.kind = 'discovery'
+    RETURNING p.id
+)
+SELECT id, org_id, program_id, kind, scope, started_at, target_count FROM expired
 `
 
 type ExpireRunsParams struct {
@@ -127,6 +136,15 @@ type ExpireRunsRow struct {
 // It does not have to repair anything. Due dates are moved only when a report
 // is ingested, so an abandoned run leaves the inventory exactly as it found it;
 // expiring it frees its targets and makes the failure visible.
+//
+// A discovery run that delivered nothing gives its cadence slot back.
+//
+// last_discovery_at is written at creation so that the cadence cannot start a
+// second run while the first is in flight. Left there after a run died, it also
+// means the programme waits a whole discovery interval for a replacement: a run
+// that failed in thirty seconds would cost a week of coverage. Clearing it here
+// is what makes the next tick provision one, and it cannot double-start,
+// because there is no longer a run in flight for the condition to see.
 func (q *Queries) ExpireRuns(ctx context.Context, arg ExpireRunsParams) ([]ExpireRunsRow, error) {
 	rows, err := q.db.Query(ctx, expireRuns, arg.At)
 	if err != nil {
