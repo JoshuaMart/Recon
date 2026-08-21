@@ -137,12 +137,15 @@ func New(signer *auth.Signer, cfg config.Verification, log *slog.Logger, opts ..
 // Cadence is what the ingestor reschedules with, so both read one setting.
 func (s *Scheduler) Cadence() lifecycle.Cadence {
 	return lifecycle.Cadence{
-		Resolve:     s.cfg.Resolve,
-		Full:        s.cfg.Full,
-		Fingerprint: s.cfg.Fingerprint,
-		Inactive:    s.cfg.Inactive,
-		Jitter:      s.cfg.Jitter,
-		FullFloor:   s.cfg.FullFloor,
+		Resolve:        s.cfg.Resolve,
+		Full:           s.cfg.Full,
+		Fingerprint:    s.cfg.Fingerprint,
+		Inactive:       s.cfg.Inactive,
+		Jitter:         s.cfg.Jitter,
+		FullFloor:      s.cfg.FullFloor,
+		RenderSole:     s.cfg.RenderSole,
+		RenderRecovery: s.cfg.RenderRecovery,
+		RenderBlind:    s.cfg.RenderBlind,
 	}
 }
 

@@ -71,8 +71,21 @@ type Cadence struct {
 	// Full is a hundred connections per host plus an HTTP probe, by far the
 	// most expensive rung.
 	Full time.Duration
-	// Fingerprint is a browser, and it is per service rather than per host.
+	// Fingerprint is the nominal render cadence, and it is per service rather
+	// than per host. Modulating it by volatility is deliberately left out: the
+	// tiers need weeks of real data, and fixing them on a few hundred assets
+	// would produce invented thresholds that later read as measurements.
 	Fingerprint time.Duration
+	// RenderSole is the cadence when the renderer is the only detector left,
+	// which is the common shape of a mitigation aimed at a raw client.
+	RenderSole time.Duration
+	// RenderRecovery is the cadence when the renderer is the one being turned
+	// away. It is a recovery attempt rather than a measurement, so it is rare.
+	RenderRecovery time.Duration
+	// RenderBlind is the cadence when neither observer gets through. It stays
+	// short because the asset is unmeasurable rather than dead, and something
+	// has to keep asking.
+	RenderBlind time.Duration
 	// Inactive is the low rate a confirmed death is still watched at. An
 	// inventory that stops looking at what died never notices it come back.
 	Inactive time.Duration
@@ -96,12 +109,15 @@ type Cadence struct {
 // DefaultCadence is what a deployment inherits when it says nothing.
 func DefaultCadence() Cadence {
 	return Cadence{
-		Resolve:     24 * time.Hour,
-		Full:        72 * time.Hour,
-		Fingerprint: 21 * 24 * time.Hour,
-		Inactive:    7 * 24 * time.Hour,
-		Jitter:      15 * time.Minute,
-		FullFloor:   6 * time.Hour,
+		Resolve:        24 * time.Hour,
+		Full:           72 * time.Hour,
+		Fingerprint:    21 * 24 * time.Hour,
+		RenderSole:     7 * 24 * time.Hour,
+		RenderRecovery: 30 * 24 * time.Hour,
+		RenderBlind:    7 * 24 * time.Hour,
+		Inactive:       7 * 24 * time.Hour,
+		Jitter:         15 * time.Minute,
+		FullFloor:      6 * time.Hour,
 	}
 }
 

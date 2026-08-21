@@ -153,3 +153,45 @@ func TestTheScannerIsNotAService(t *testing.T) {
 		}
 	}
 }
+
+// The rendering service holds no credential, and that is checked rather than
+// intended.
+//
+// It executes JavaScript controlled by the target, so anything it holds is
+// something a page it renders can try to reach. Everything it needs arrives in
+// the scan request, which is what makes "holds nothing" a shape rather than a
+// promise: there is no variable to leak because there is no variable.
+func TestTheRenderingSideHoldsNoCredential(t *testing.T) {
+	parsed := load(t)
+
+	// Names that would carry one. Matched on the name rather than the value,
+	// because the value is an interpolation at this point and reading it here
+	// would test the shell rather than the file.
+	secretish := []string{"password", "secret", "token", "key", "url", "dsn", "credential"}
+
+	for _, name := range isolated {
+		service, ok := parsed.Services[name]
+		if !ok {
+			t.Fatalf("%s is not in the compose file", name)
+		}
+		for variable := range service.Environment {
+			lower := strings.ToLower(variable)
+			for _, needle := range secretish {
+				if strings.Contains(lower, needle) {
+					t.Errorf("%s carries %s, and everything it needs arrives in the request", name, variable)
+				}
+			}
+		}
+	}
+
+	// And the file it is given is configuration rather than a secret store.
+	config, err := os.ReadFile("fingerprinter.yml")
+	if err != nil {
+		t.Fatalf("read the rendering config: %v", err)
+	}
+	for _, needle := range []string{"password:", "secret:", "token:", "api_key:"} {
+		if strings.Contains(strings.ToLower(string(config)), needle) {
+			t.Errorf("the rendering config carries %q", needle)
+		}
+	}
+}

@@ -565,7 +565,8 @@ WITH input AS (
 ),
 previous AS (
     SELECT a.id, a.scope_status, a.discovery_source, c.lifecycle, c.backoff_tier,
-           c.http_streak, c.fingerprint_streak, c.first_seen
+           c.http_streak, c.fingerprint_streak, c.http_reachable, c.fingerprint_reachable,
+           c.first_seen
       FROM asset a
       LEFT JOIN asset_current c ON c.asset_id = a.id
       JOIN input i ON a.program_id = i.program_id AND a.kind = i.kind AND a.key = i.key
@@ -661,6 +662,8 @@ SELECT
     p.backoff_tier     AS previous_backoff_tier,
     p.http_streak      AS previous_http_streak,
     p.fingerprint_streak AS previous_fingerprint_streak,
+    p.http_reachable   AS previous_http_reachable,
+    p.fingerprint_reachable AS previous_fingerprint_reachable,
     p.first_seen       AS previous_first_seen,
     l.layers           AS previous_layers
   FROM written w
@@ -695,16 +698,18 @@ type UpsertAssetAndProjectionParams struct {
 }
 
 type UpsertAssetAndProjectionRow struct {
-	AssetID                   pgtype.UUID
-	Created                   bool
-	PreviousScopeStatus       *string
-	PreviousLifecycle         *string
-	PreviousDiscoverySource   *string
-	PreviousBackoffTier       *int32
-	PreviousHttpStreak        *int32
-	PreviousFingerprintStreak *int32
-	PreviousFirstSeen         pgtype.Timestamptz
-	PreviousLayers            []byte
+	AssetID                      pgtype.UUID
+	Created                      bool
+	PreviousScopeStatus          *string
+	PreviousLifecycle            *string
+	PreviousDiscoverySource      *string
+	PreviousBackoffTier          *int32
+	PreviousHttpStreak           *int32
+	PreviousFingerprintStreak    *int32
+	PreviousHttpReachable        *bool
+	PreviousFingerprintReachable *bool
+	PreviousFirstSeen            pgtype.Timestamptz
+	PreviousLayers               []byte
 }
 
 // Ingestion writes. The budget is a few round trips per observation, so what
@@ -763,6 +768,8 @@ func (q *Queries) UpsertAssetAndProjection(ctx context.Context, arg UpsertAssetA
 		&i.PreviousBackoffTier,
 		&i.PreviousHttpStreak,
 		&i.PreviousFingerprintStreak,
+		&i.PreviousHttpReachable,
+		&i.PreviousFingerprintReachable,
 		&i.PreviousFirstSeen,
 		&i.PreviousLayers,
 	)
@@ -805,12 +812,18 @@ WITH input AS (
         -- layer that says nothing about an observer's reach.
         $26::int   AS http_streak,
         $27::boolean AS http_reachable,
-        $28::timestamptz AS next_fingerprint_at,
-        $29::smallint   AS fingerprint_priority,
+        $28::int AS fingerprint_streak,
+        $29::boolean AS fingerprint_reachable,
+        -- Follows the render and never the observation. A failure moving it
+        -- would make a list say "rendered five minutes ago, no cookies" about
+        -- an asset no browser ever obtained a page from.
+        $30::timestamptz AS last_fingerprint_at,
+        $31::timestamptz AS next_fingerprint_at,
+        $32::smallint   AS fingerprint_priority,
         -- The finding without its date, so that a pass which re-confirms it
         -- compares equal and keeps the original.
-        $30::jsonb    AS takeover,
-        $31::text          AS takeover_kind
+        $33::jsonb    AS takeover,
+        $34::text          AS takeover_kind
 ),
 head AS (
     SELECT o.id, o.observed_at, o.outcome, o.data, o.last_producer_version
@@ -891,6 +904,9 @@ projected AS (
 
         http_streak    = COALESCE(i.http_streak, c.http_streak),
         http_reachable = COALESCE(i.http_reachable, c.http_reachable),
+        fingerprint_streak    = COALESCE(i.fingerprint_streak, c.fingerprint_streak),
+        fingerprint_reachable = COALESCE(i.fingerprint_reachable, c.fingerprint_reachable),
+        last_fingerprint_at   = COALESCE(i.last_fingerprint_at, c.last_fingerprint_at),
 
         -- A service earns its render once it has answered. The date is only
         -- ever brought forward, so a baseline already due is not pushed back
@@ -946,37 +962,40 @@ SELECT
 `
 
 type WriteObservationParams struct {
-	OrgID               pgtype.UUID
-	AssetID             pgtype.UUID
-	ObservedAt          pgtype.Timestamptz
-	RunID               pgtype.UUID
-	Source              string
-	Layer               string
-	Outcome             string
-	ProducerVersion     *string
-	Data                []byte
-	LayerState          string
-	Informative         int32
-	NonInformative      int32
-	FirstFailureAt      pgtype.Timestamptz
-	LastOkAt            pgtype.Timestamptz
-	Lifecycle           string
-	Promote             bool
-	StatusCode          *int32
-	FinalUrl            *string
-	Title               *string
-	Server              *string
-	Technologies        []string
-	IsCdn               *bool
-	CdnProvider         *string
-	WafDetected         *bool
-	WafVendor           *string
-	HttpStreak          *int32
-	HttpReachable       *bool
-	NextFingerprintAt   pgtype.Timestamptz
-	FingerprintPriority *int16
-	Takeover            []byte
-	TakeoverKind        string
+	OrgID                pgtype.UUID
+	AssetID              pgtype.UUID
+	ObservedAt           pgtype.Timestamptz
+	RunID                pgtype.UUID
+	Source               string
+	Layer                string
+	Outcome              string
+	ProducerVersion      *string
+	Data                 []byte
+	LayerState           string
+	Informative          int32
+	NonInformative       int32
+	FirstFailureAt       pgtype.Timestamptz
+	LastOkAt             pgtype.Timestamptz
+	Lifecycle            string
+	Promote              bool
+	StatusCode           *int32
+	FinalUrl             *string
+	Title                *string
+	Server               *string
+	Technologies         []string
+	IsCdn                *bool
+	CdnProvider          *string
+	WafDetected          *bool
+	WafVendor            *string
+	HttpStreak           *int32
+	HttpReachable        *bool
+	FingerprintStreak    *int32
+	FingerprintReachable *bool
+	LastFingerprintAt    pgtype.Timestamptz
+	NextFingerprintAt    pgtype.Timestamptz
+	FingerprintPriority  *int16
+	Takeover             []byte
+	TakeoverKind         string
 }
 
 type WriteObservationRow struct {
@@ -1034,6 +1053,9 @@ func (q *Queries) WriteObservation(ctx context.Context, arg WriteObservationPara
 		arg.WafVendor,
 		arg.HttpStreak,
 		arg.HttpReachable,
+		arg.FingerprintStreak,
+		arg.FingerprintReachable,
+		arg.LastFingerprintAt,
 		arg.NextFingerprintAt,
 		arg.FingerprintPriority,
 		arg.Takeover,

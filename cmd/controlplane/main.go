@@ -25,9 +25,11 @@ import (
 	"github.com/JoshuaMart/recon/internal/auth"
 	"github.com/JoshuaMart/recon/internal/config"
 	"github.com/JoshuaMart/recon/internal/enrich"
+	"github.com/JoshuaMart/recon/internal/fingerprint"
 	"github.com/JoshuaMart/recon/internal/ingest"
 	"github.com/JoshuaMart/recon/internal/maintenance"
 	"github.com/JoshuaMart/recon/internal/obs"
+	"github.com/JoshuaMart/recon/internal/render"
 	"github.com/JoshuaMart/recon/internal/runs"
 	"github.com/JoshuaMart/recon/internal/store"
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
@@ -94,9 +96,27 @@ func run() error {
 	// later tick.
 	go runs.NewSweeper(scheduler, sqlcgen.New(pool), cfg.Verification.SweepInterval, log).Run(ctx)
 
+	// The browser loop, and the one thing here that is optional. A deployment
+	// with no rendering service is a deployment that only probes: the assets
+	// keep their due dates and nothing pretends to have looked at them, which
+	// is the honest shape rather than a loop failing every minute.
+	if cfg.Render.URL != "" {
+		budget := render.NewBudget(cfg.Render.Cost, nil)
+		client := fingerprint.New(cfg.Render.URL, cfg.Render.Timeout, nil)
+		pass := render.New(pool, client, ingestor, budget, render.Options{
+			Batch:             cfg.Render.Batch,
+			Concurrency:       cfg.Render.Concurrency,
+			UnobservableAlert: cfg.Render.UnobservableAlert,
+		}, log)
+		go render.NewLoop(pass, cfg.Render.Interval).Run(ctx)
+		log.InfoContext(ctx, "rendering", "service", cfg.Render.URL, "cost", budget.Cost())
+	} else {
+		log.WarnContext(ctx, "no rendering service configured, nothing will be rendered")
+	}
+
 	srv := &http.Server{
 		Addr:              cfg.HTTP.Addr,
-		Handler:           routes(pool, signer, scheduler, ingestor, log),
+		Handler:           routes(cfg, pool, signer, scheduler, ingestor, log),
 		ReadHeaderTimeout: cfg.HTTP.ReadTimeout,
 	}
 
@@ -154,8 +174,8 @@ func probe() error {
 }
 
 func routes(
-	pool *pgxpool.Pool, signer *auth.Signer, scheduler *runs.Scheduler,
-	ingestor *ingest.Ingestor, log *slog.Logger,
+	cfg *config.Config, pool *pgxpool.Pool, signer *auth.Signer,
+	scheduler *runs.Scheduler, ingestor *ingest.Ingestor, log *slog.Logger,
 ) http.Handler {
 	mux := http.NewServeMux()
 
@@ -174,6 +194,14 @@ func routes(
 	// Entering an asset by hand is an assertion about the perimeter, which is
 	// a different privilege from writing what a scanner found.
 	mux.Handle("POST /programs/{program}/assets", guard.Require(auth.ActionManageScope, programs.EnterAssets))
+
+	// The two render triggers that are API entry points. They hold manage_jobs
+	// rather than ingest: something holding ingest could otherwise schedule
+	// renders of its choosing and spend a programme's budget on targets it
+	// picked.
+	renders := api.NewRenders(pool, cfg.Render.ReplanSpread, log)
+	mux.Handle("POST /assets/{asset}/render", guard.Require(auth.ActionManageJobs, renders.Request))
+	mux.Handle("POST /renders/replan", guard.Require(auth.ActionManageJobs, renders.Replan))
 
 	// Liveness. It touches nothing, because a probe that queries the database
 	// turns a slow database into a restarted process.

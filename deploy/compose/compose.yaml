@@ -155,6 +155,17 @@ services:
 
   controlplane:
     networks: [control]
+    # The control plane calls the rendering service and the rendering service
+    # never calls back. A bridge cannot express that: joining `scan` would let
+    # the browser side resolve `postgres` and `controlplane` by name, which is
+    # the one thing the split exists to prevent. So the call goes out through
+    # the host gateway to the port the renderer publishes on loopback, which is
+    # the path verify-isolation.sh already names rather than claims away.
+    #
+    # In production the two are a plain URL and a firewall rule, and this line
+    # disappears with the bridge.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     build:
       context: ../..
       dockerfile: deploy/compose/Dockerfile
@@ -182,6 +193,7 @@ services:
       # nowhere would surface as a scanner unable to fetch its targets rather
       # than as a missing setting.
       RECON_VERIFICATION__PUBLIC_URL: ${PUBLIC_URL:-http://controlplane:8080}
+      RECON_RENDER__URL: ${RENDER_URL:-http://host.docker.internal:3001}
     volumes:
       - ${GEOIP_DIR:-../../var/geoip}:/geoip:ro
     ports:

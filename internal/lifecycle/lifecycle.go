@@ -146,7 +146,7 @@ func Revived(current, outcome string) bool {
 	return current == Archived && outcome == OutcomeOK
 }
 
-// Decide reads the asset's state off its layers.
+// Decide reads the asset's state off its layers and its observers.
 //
 // The most severe layer wins, and that rule is what the CDN case forces. On a
 // fronted asset whose origin is dead, dns resolves and tcp connects because the
@@ -156,7 +156,7 @@ func Revived(current, outcome string) bool {
 //
 // The counterpart holds: a success on the failing layer resets its counters, so
 // the asset returns to active in a single probe.
-func Decide(current string, layers ...Counters) string {
+func Decide(current string, reach Reach, layers ...Counters) string {
 	worst := ""
 	for _, layer := range layers {
 		if !layer.Measured() {
@@ -182,9 +182,22 @@ func Decide(current string, layers ...Counters) string {
 		return Archived
 	}
 
-	switch worst {
-	case LayerDead:
+	// A death that was observed is not a silence, so it wins. An edge reporting
+	// that its origin is gone is an informative failure even though the probe
+	// learned nothing about the service, and such an asset must end inactive
+	// even if the renderer fails at the same moment.
+	if worst == LayerDead {
 		return Inactive
+	}
+
+	// Neither observer gets a result. The asset is neither alive nor dead:
+	// nothing can be said, and it never passes through flapping on the way,
+	// because it is not an unstable asset but an unmeasurable one.
+	if reach.Unobservable() {
+		return Unobservable
+	}
+
+	switch worst {
 	case LayerFailing:
 		return Flapping
 	case LayerHealthy:

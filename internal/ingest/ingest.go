@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/JoshuaMart/recon/internal/enrich"
+	"github.com/JoshuaMart/recon/internal/fingerprint"
 	"github.com/JoshuaMart/recon/internal/lifecycle"
 	"github.com/JoshuaMart/recon/internal/normalize"
 	"github.com/JoshuaMart/recon/internal/scope"
@@ -444,6 +445,12 @@ func (i *Ingestor) writeServices(
 			continue
 		}
 
+		// The scheme is what answered on the port, and it is what a render is
+		// pointed at later. Deriving it from the port number would be a guess
+		// about every application that speaks TLS somewhere unusual.
+		if port.HTTP != nil {
+			key.Scheme = port.HTTP.Scheme
+		}
 		service, err := i.writeAsset(ctx, q, run, set, key, reported, &host.id)
 		if err != nil {
 			return err
@@ -452,6 +459,21 @@ func (i *Ingestor) writeServices(
 		summary.Derived++
 		if service.created {
 			summary.Created++
+		}
+
+		// A service earns its first render on transport reachability and
+		// nothing else. It is deliberately not a filter on the outcome: an
+		// origin error behind a CDN is an informative failure counted as proof
+		// of death, and it still deserves a baseline, because an edge
+		// answering for a dead origin is a page with something to read.
+		//
+		// What it does read is the instrument. Chrome answers ERR_UNSAFE_PORT
+		// on its own restricted list, so the failure is certain before the
+		// call, and a certain failure is not a measurement.
+		if fingerprint.Renderable(port.Port) {
+			if err := i.earnBaseline(ctx, q, service); err != nil {
+				return err
+			}
 		}
 
 		// A derived service stays a candidate until something addresses the
@@ -533,11 +555,6 @@ func (i *Ingestor) writeService(
 		columns.WAFVendor = text(verdict.Vendor)
 	}
 
-	// The service answered, so its baseline is earned. It enters at the low
-	// priority: a first render of something nobody has looked at yet must not
-	// queue ahead of a change somebody is waiting on.
-	baseline := i.now()
-
 	return i.apply(ctx, q, run, report, service, observation{
 		layer:        normalize.LayerHTTP,
 		outcome:      outcome,
@@ -547,8 +564,27 @@ func (i *Ingestor) writeService(
 		usable:       &usable,
 		takeover:     takeover,
 		takeoverKind: signals.KindUnclaimedService,
-		fingerprint:  &baseline,
 	}, summary)
+}
+
+// earnBaseline gives a service its first render date.
+//
+// It applies only where there is none, so a service already queued keeps its
+// place and a baseline is not re-armed on every pass over the same port.
+//
+// A baseline is due when it is earned. It does not inherit the discovery
+// jitter: that spread exists for the first probe of a freshly discovered asset,
+// and this line is created later, once an observation has proved the target
+// worth rendering. The herd has already been spread once.
+func (i *Ingestor) earnBaseline(ctx context.Context, q *sqlcgen.Queries, service *state) error {
+	if err := q.EarnBaseline(ctx, sqlcgen.EarnBaselineParams{
+		AssetID:  uuidTo(service.id),
+		At:       stamp(i.now()),
+		Priority: lifecycle.PriorityBaseline,
+	}); err != nil {
+		return fmt.Errorf("earn a baseline for %s: %w", service.id, err)
+	}
+	return nil
 }
 
 // tcpOutcome reads what the port sweep proved, and it is empty when the sweep

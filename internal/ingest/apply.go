@@ -27,7 +27,11 @@ type state struct {
 	created   bool
 	lifecycle string
 	tier      int
-	streak    int
+	// reach is what each observer has managed, and regime is what the
+	// projection has settled on. They are two different questions: the first
+	// moves on every observation, the second only after three concordant ones.
+	reach     lifecycle.Reach
+	regime    lifecycle.Regime
 	firstSeen time.Time
 	layers    map[normalize.Layer]lifecycle.Counters
 }
@@ -56,7 +60,14 @@ func newState(row sqlcgen.UpsertAssetAndProjectionRow, kind normalize.Kind) (*st
 		st.tier = int(*row.PreviousBackoffTier)
 	}
 	if row.PreviousHttpStreak != nil {
-		st.streak = int(*row.PreviousHttpStreak)
+		st.reach.HTTP = int(*row.PreviousHttpStreak)
+	}
+	if row.PreviousFingerprintStreak != nil {
+		st.reach.Fingerprint = int(*row.PreviousFingerprintStreak)
+	}
+	st.regime = lifecycle.Regime{
+		HTTP:        row.PreviousHttpReachable,
+		Fingerprint: row.PreviousFingerprintReachable,
 	}
 	if row.PreviousFirstSeen.Valid {
 		st.firstSeen = row.PreviousFirstSeen.Time
@@ -108,8 +119,34 @@ func (s *state) decide(layer normalize.Layer, outcome string, at time.Time) (lif
 	if lifecycle.Revived(current, outcome) {
 		current = ""
 	}
-	s.lifecycle = lifecycle.Decide(current, all...)
+	s.lifecycle = lifecycle.Decide(current, s.reach, all...)
 	return counters, s.lifecycle
+}
+
+// observe folds one usable reading into the observer's counter.
+//
+// The streak is updated before the state is decided, which is what makes
+// leaving unobservable read the current observation rather than the column: one
+// probe getting through crosses the counter back over zero in the same pass.
+func (s *state) observe(layer normalize.Layer, usable bool) (int32, *bool) {
+	var streak *int
+	var settled **bool
+	switch layer {
+	case normalize.LayerHTTP:
+		streak, settled = &s.reach.HTTP, &s.regime.HTTP
+	case normalize.LayerFingerprint:
+		streak, settled = &s.reach.Fingerprint, &s.regime.Fingerprint
+	default:
+		return 0, nil
+	}
+
+	*streak = nextStreak(*streak, usable)
+	if *streak >= lifecycle.ReachThreshold || *streak <= -lifecycle.ReachThreshold {
+		flipped := *streak > 0
+		*settled = &flipped
+		return counter(*streak), &flipped
+	}
+	return counter(*streak), nil
 }
 
 // observation is one thing to write about one asset.
@@ -134,10 +171,11 @@ type observation struct {
 	// finding be cleared by the layer that produced it and by no other.
 	takeoverKind string
 
-	// fingerprint is when this asset earned a render. Set once a service has
-	// answered, because a URL has no liveness of its own: what answers is the
-	// service.
-	fingerprint *time.Time
+	// rendered is when a browser actually obtained a page. Distinct from the
+	// observation's own instant on purpose: a render that got nothing is still
+	// an observation, and moving the render timestamp on one would make a list
+	// claim a page nobody ever saw.
+	rendered *time.Time
 }
 
 // promoted is what the search API filters on.
@@ -175,13 +213,25 @@ func (i *Ingestor) apply(
 
 	at := i.now()
 	outcome := qualify(obs.outcome, report)
+
+	// The observer's counter moves before the state is decided, and the order
+	// is the rule rather than an implementation detail. Both entering and
+	// leaving unobservable read the current observation: a pass that decided
+	// first would enter the state one observation late and leave it one late
+	// too, which is two rounds on a threshold of three.
+	var streak *int32
+	var reachable *bool
+	if obs.usable != nil {
+		value, flag := st.observe(obs.layer, *obs.usable)
+		streak, reachable = &value, flag
+	}
+
 	counters, decided := st.decide(obs.layer, outcome, at)
 
 	params := sqlcgen.WriteObservationParams{
 		OrgID:          uuidTo(run.OrgID),
 		AssetID:        uuidTo(st.id),
 		ObservedAt:     stamp(at),
-		RunID:          uuidTo(run.ID),
 		Source:         "fastrecon",
 		Layer:          string(obs.layer),
 		Outcome:        outcome,
@@ -192,6 +242,11 @@ func (i *Ingestor) apply(
 		Lifecycle:      decided,
 		Promote:        obs.promote,
 		TakeoverKind:   obs.takeoverKind,
+	}
+	// Null rather than a zero uuid on a render, which belongs to no run: a
+	// column that looks populated and names nothing is worse than an empty one.
+	if run.ID != uuid.Nil {
+		params.RunID = uuidTo(run.ID)
 	}
 	if !counters.FirstFailureAt.IsZero() {
 		params.FirstFailureAt = stamp(counters.FirstFailureAt)
@@ -216,19 +271,18 @@ func (i *Ingestor) apply(
 
 	// The signed counter, and the flag it flips. Three concordant results are
 	// needed in both directions, so a single bad pass never moves the regime.
-	if obs.usable != nil {
-		st.streak = nextStreak(st.streak, *obs.usable)
-		streak := counter(st.streak)
-		params.HttpStreak = &streak
-		if st.streak >= reachThreshold || st.streak <= -reachThreshold {
-			reachable := st.streak > 0
-			params.HttpReachable = &reachable
+	if streak != nil {
+		switch obs.layer {
+		case normalize.LayerHTTP:
+			params.HttpStreak, params.HttpReachable = streak, reachable
+		case normalize.LayerFingerprint:
+			params.FingerprintStreak, params.FingerprintReachable = streak, reachable
 		}
 	}
-	if obs.fingerprint != nil {
-		params.NextFingerprintAt = stamp(*obs.fingerprint)
-		priority := lifecycle.PriorityBaseline
-		params.FingerprintPriority = &priority
+	// The timestamp follows the render, not the observation. It moves when the
+	// payload carries a final hop, which is when a browser obtained a page.
+	if obs.rendered != nil {
+		params.LastFingerprintAt = stamp(*obs.rendered)
 	}
 	if obs.takeover != nil {
 		finding, err := json.Marshal(obs.takeover)
@@ -252,6 +306,26 @@ func (i *Ingestor) apply(
 	summary.Observations++
 	if row.Deduplicated {
 		summary.Deduplicated++
+		return nil
+	}
+
+	// A change the HTTP layer detected buys a render, and only in the nominal
+	// regime. When the raw client is the one being turned away, the probe keeps
+	// running for reachability and for TLS, but what it sees of a target
+	// refusing it is not a change worth a browser.
+	//
+	// A first observation is a first contact rather than a change, and it has
+	// its own trigger with its own filter and its own queue. Promoting it here
+	// would put every service of a fresh perimeter into the queue that exists
+	// to stay short.
+	if obs.layer == normalize.LayerHTTP && st.regime.Detector() && row.PreviousData != nil {
+		if err := q.PromoteRender(ctx, sqlcgen.PromoteRenderParams{
+			AssetID:  uuidTo(st.id),
+			At:       stamp(at),
+			Priority: lifecycle.PriorityChange,
+		}); err != nil {
+			return fmt.Errorf("promote render of %s: %w", st.id, err)
+		}
 	}
 	return nil
 }
@@ -271,10 +345,6 @@ func counter(n int) int32 {
 		return int32(n)
 	}
 }
-
-// reachThreshold is how many concordant results a regime change takes, in both
-// directions, so that a transient failure absorbs instead of flipping.
-const reachThreshold = 3
 
 // nextStreak walks the signed counter. It crosses zero rather than
 // decrementing, so one success after four failures reads as one success.

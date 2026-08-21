@@ -48,7 +48,8 @@ WITH input AS (
 ),
 previous AS (
     SELECT a.id, a.scope_status, a.discovery_source, c.lifecycle, c.backoff_tier,
-           c.http_streak, c.fingerprint_streak, c.first_seen
+           c.http_streak, c.fingerprint_streak, c.http_reachable, c.fingerprint_reachable,
+           c.first_seen
       FROM asset a
       LEFT JOIN asset_current c ON c.asset_id = a.id
       JOIN input i ON a.program_id = i.program_id AND a.kind = i.kind AND a.key = i.key
@@ -154,6 +155,8 @@ SELECT
     p.backoff_tier     AS previous_backoff_tier,
     p.http_streak      AS previous_http_streak,
     p.fingerprint_streak AS previous_fingerprint_streak,
+    p.http_reachable   AS previous_http_reachable,
+    p.fingerprint_reachable AS previous_fingerprint_reachable,
     p.first_seen       AS previous_first_seen,
     l.layers           AS previous_layers
   FROM written w
@@ -217,6 +220,12 @@ WITH input AS (
         -- layer that says nothing about an observer's reach.
         sqlc.narg(http_streak)::int   AS http_streak,
         sqlc.narg(http_reachable)::boolean AS http_reachable,
+        sqlc.narg(fingerprint_streak)::int AS fingerprint_streak,
+        sqlc.narg(fingerprint_reachable)::boolean AS fingerprint_reachable,
+        -- Follows the render and never the observation. A failure moving it
+        -- would make a list say "rendered five minutes ago, no cookies" about
+        -- an asset no browser ever obtained a page from.
+        sqlc.narg(last_fingerprint_at)::timestamptz AS last_fingerprint_at,
         sqlc.narg(next_fingerprint_at)::timestamptz AS next_fingerprint_at,
         sqlc.narg(fingerprint_priority)::smallint   AS fingerprint_priority,
         -- The finding without its date, so that a pass which re-confirms it
@@ -303,6 +312,9 @@ projected AS (
 
         http_streak    = COALESCE(i.http_streak, c.http_streak),
         http_reachable = COALESCE(i.http_reachable, c.http_reachable),
+        fingerprint_streak    = COALESCE(i.fingerprint_streak, c.fingerprint_streak),
+        fingerprint_reachable = COALESCE(i.fingerprint_reachable, c.fingerprint_reachable),
+        last_fingerprint_at   = COALESCE(i.last_fingerprint_at, c.last_fingerprint_at),
 
         -- A service earns its render once it has answered. The date is only
         -- ever brought forward, so a baseline already due is not pushed back

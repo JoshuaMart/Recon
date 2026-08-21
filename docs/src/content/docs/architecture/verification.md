@@ -244,8 +244,10 @@ Five triggers:
    named that path, which is the whole difference between an identity and a byproduct
    ([6.3](/architecture/lifecycle/#who-fills-the-due-dates)).
 2. **A change detected by the HTTP layer**, in the nominal regime only.
-3. **Periodic refresh**, 21 days by default, modulated by volatility. 7 days when the fingerprinter is
-   the only detector.
+3. **Periodic refresh**, at the cadence of the asset's [regime](#86-reachability-per-observer): 21 days
+   nominally, 7 when the fingerprinter is the only detector, 30 when it is the one being turned away,
+   7 when neither observer gets through. Modulating the nominal figure by volatility is
+   [deferred](/architecture/roadmap/#post-v1), for lack of measurement rather than lack of code.
 4. **A manual request** from the console.
 5. **A major update of the service** ([8.7](#87-dating-the-instrument)).
 
@@ -279,6 +281,10 @@ The blocked port line is a fact about the instrument, not a hypothesis about the
 measurement, and it would push an SSH service toward `unobservable`, a state that qualifies what is
 unknown rather than what is not the web. The list is **Chromium's own**, not a hand written list of
 "non web" ports, which would be the hypothesis.
+
+The rest of the table needs no code of its own: a service exists because a port was found open, so an
+`nxdomain` and a host refusing everything cannot produce one. What is left to read is the port, and the
+list is Chromium's own.
 
 **The consequence is assumed**: on these assets `fingerprint_reachable` stays undefined. That is
 correct. `unobservable` qualifies assets whose state is unknown, not ones whose target explicitly
@@ -375,6 +381,13 @@ The service executes JavaScript controlled by the target. It must never sit next
 
 Without these, a headless browser rendering arbitrary pages is an SSRF engine adjacent to the database.
 
+**The guard lives in the service, and as of 21 August 2026 it does not exist there.** Measured against
+the running image, the service navigates to `169.254.169.254`, to loopback and to RFC1918: what it
+returns are Chrome's own errors from after the request went out. The control plane refuses to submit such
+a target, which puts the check on the caller, and that is a convention rather than a property. Until the
+service refuses on its own the line below is a design statement rather than a fact, and
+[milestone 3](/architecture/roadmap/#the-two-red-lines-of-phase-3) says so rather than ticking it.
+
 **Isolation is a property of the application before it is one of the network.** These controls are
 implemented **in the service**, with the network as the second line. They stay true whatever surrounds
 the service, and they can therefore be exercised locally. The service refuses resolution toward an
@@ -414,10 +427,14 @@ fingerprint_reachable  boolean   -- a usable render was obtained
 
 | HTTP | Fingerprint | Reading | Detector | Cadence |
 |---|---|---|---|---|
-| ✓ | ✓ | nominal | HTTP layer | 21 d, modulated by volatility |
+| ✓ | ✓ | nominal | HTTP layer | 21 d |
 | ✗ | ✓ | mitigation aimed at the raw client, the common case | fingerprinter | 7 d fixed |
 | ✓ | ✗ | mitigation aimed at the browser, or a failing service | HTTP layer | 30 d, with recovery attempts |
 | ✗ | ✗ | **unobservable** | none | 7 d, alert |
+
+**Undefined is not false.** A column is null until its observer has agreed three times running, and an
+asset whose observers have not settled has no regime: it renders on the nominal cadence. Reading a null
+as a failure would put every freshly rendered service on the alert line.
 
 Transitions need **three consecutive concordant results**, in both directions, to absorb transient
 failures. They rest on two **signed** counters on `asset_current`, positive for consecutive successes and

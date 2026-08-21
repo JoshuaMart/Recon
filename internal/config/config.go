@@ -65,6 +65,41 @@ type Config struct {
 
 	Maintenance  Maintenance  `koanf:"maintenance"`
 	Verification Verification `koanf:"verification"`
+	Render       Render       `koanf:"render"`
+}
+
+// Render is the browser side of verification.
+//
+// It is a separate block from verification because it answers to a different
+// unit: a probe is milliseconds and a render is seconds and several hundred
+// megabytes, so the two cannot share a batch size or a cadence without one of
+// them being wrong.
+type Render struct {
+	// URL is where the rendering service listens. Empty turns the loop off,
+	// which is the one honest way to run without a browser: the assets keep
+	// their due dates and nothing pretends to have looked.
+	URL     string        `koanf:"url"`
+	Timeout time.Duration `koanf:"timeout"`
+	// Interval is how often the pass runs.
+	Interval time.Duration `koanf:"interval"`
+	Batch    int           `koanf:"batch"`
+	// Concurrency is set above where the budget binds rather than at it, so
+	// the thing throttling a programme is its published rate limit and not a
+	// number nobody calibrated.
+	Concurrency int `koanf:"concurrency"`
+	// Cost is what one render is charged against a programme's rate limit. A
+	// browser fetches a page and then everything the page pulls, so billing it
+	// as one request would make the most expensive thing in the system the
+	// cheapest on the counter.
+	Cost int `koanf:"cost"`
+	// UnobservableAlert is the share of a programme's inventory that turns a
+	// mass tip into an alert. A mass tip says something about the observer
+	// rather than about the targets.
+	UnobservableAlert float64 `koanf:"unobservable_alert"`
+	// ReplanSpread is how long a forced refresh after a service update is
+	// spread over. It exists to restore baseline consistency without a mass
+	// alert, and doing that in an hour would be the mass alert.
+	ReplanSpread time.Duration `koanf:"replan_spread"`
 }
 
 // Verification is the loop that keeps the inventory honest, and the shape of
@@ -80,6 +115,13 @@ type Verification struct {
 	Fingerprint time.Duration `koanf:"fingerprint"`
 	Inactive    time.Duration `koanf:"inactive"`
 	Jitter      time.Duration `koanf:"jitter"`
+	// RenderSole, RenderRecovery and RenderBlind are the cadences of the three
+	// regimes that are not the nominal one. They are separate values because
+	// each answers a different question: who is still detecting, and is a
+	// render a measurement or a recovery attempt.
+	RenderSole     time.Duration `koanf:"render_sole"`
+	RenderRecovery time.Duration `koanf:"render_recovery"`
+	RenderBlind    time.Duration `koanf:"render_blind"`
 	// FullFloor is how often a failing asset's port sweep may run at its
 	// fastest. A backoff curve is written for the cheap rung, and applying it
 	// unchanged to the expensive one turns a confirmation into a flood.
@@ -192,17 +234,29 @@ func Defaults() Config {
 			ConnectTimeout: 5 * time.Second,
 		},
 		Maintenance: Maintenance{Interval: time.Hour},
+		Render: Render{
+			Timeout:           2 * time.Minute,
+			Interval:          time.Minute,
+			Batch:             200,
+			Concurrency:       8,
+			Cost:              30,
+			UnobservableAlert: 0.2,
+			ReplanSpread:      3 * 24 * time.Hour,
+		},
 		Verification: Verification{
-			Resolve:       24 * time.Hour,
-			Full:          72 * time.Hour,
-			Fingerprint:   21 * 24 * time.Hour,
-			Inactive:      7 * 24 * time.Hour,
-			Jitter:        15 * time.Minute,
-			FullFloor:     6 * time.Hour,
-			BatchSize:     500,
-			Timeout:       30 * time.Minute,
-			Grace:         10 * time.Minute,
-			SweepInterval: time.Minute,
+			Resolve:        24 * time.Hour,
+			Full:           72 * time.Hour,
+			Fingerprint:    21 * 24 * time.Hour,
+			RenderSole:     7 * 24 * time.Hour,
+			RenderRecovery: 30 * 24 * time.Hour,
+			RenderBlind:    7 * 24 * time.Hour,
+			Inactive:       7 * 24 * time.Hour,
+			Jitter:         15 * time.Minute,
+			FullFloor:      6 * time.Hour,
+			BatchSize:      500,
+			Timeout:        30 * time.Minute,
+			Grace:          10 * time.Minute,
+			SweepInterval:  time.Minute,
 			// Not nmap's top 100, which orders ports by how often they are
 			// open across the whole internet and therefore leads with mail and
 			// printing. The criterion here is that a port earns its place if
@@ -385,7 +439,10 @@ func (c *Config) Validate(role Role) error {
 			"resolve": c.Verification.Resolve, "full": c.Verification.Full,
 			"fingerprint": c.Verification.Fingerprint, "inactive": c.Verification.Inactive,
 			"timeout": c.Verification.Timeout, "sweep_interval": c.Verification.SweepInterval,
-			"full_floor": c.Verification.FullFloor,
+			"full_floor":      c.Verification.FullFloor,
+			"render_sole":     c.Verification.RenderSole,
+			"render_recovery": c.Verification.RenderRecovery,
+			"render_blind":    c.Verification.RenderBlind,
 		} {
 			if value <= 0 {
 				fail("verification.%s must be positive, got %s", name, value)
@@ -405,6 +462,20 @@ func (c *Config) Validate(role Role) error {
 		// this cannot be derived from the listen address. Without it a run
 		// definition names nowhere, and the failure would surface as a scanner
 		// that cannot fetch its targets rather than as a missing setting.
+		for name, value := range map[string]time.Duration{
+			"timeout": c.Render.Timeout, "interval": c.Render.Interval,
+			"replan_spread": c.Render.ReplanSpread,
+		} {
+			if value <= 0 {
+				fail("render.%s must be positive, got %s", name, value)
+			}
+		}
+		if c.Render.Batch <= 0 || c.Render.Concurrency <= 0 || c.Render.Cost <= 0 {
+			fail("render.batch, render.concurrency and render.cost must all be positive")
+		}
+		if c.Render.UnobservableAlert <= 0 || c.Render.UnobservableAlert > 1 {
+			fail("render.unobservable_alert must be a share in (0, 1], got %v", c.Render.UnobservableAlert)
+		}
 		if c.Verification.PublicURL == "" {
 			fail("verification.public_url is required: it is where a run fetches its " +
 				"target list and posts its report")

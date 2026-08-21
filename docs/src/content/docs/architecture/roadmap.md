@@ -211,29 +211,85 @@ curve was right and the caller was not.
 **Goal**: [baseline, reachability, and death behind a CDN](/architecture/verification/#82-the-fingerprinter).
 Inseparable from phase 2 in use.
 
-- [ ] The service deployed on an [isolated network](/architecture/verification/#85-network-isolation), two Docker networks locally
-- [ ] No route to PostgreSQL and none to the internal API, **verified rather than assumed**, with a positive control
-- [ ] The service holds **no credential**
+- [x] The service deployed on an [isolated network](/architecture/verification/#85-network-isolation), two Docker networks locally
+- [x] No route to PostgreSQL and none to the internal API, **verified rather than assumed**, with a positive control
+- [x] The service holds **no credential**
 - [ ] SSRF guards: internal ranges refused before the request and at every redirect hop
-- [ ] `POST /scan` from the control plane, with a render costing more than one against the budget
-- [ ] `high` and `low` queues, a baseline entering low
-- [ ] [The five triggers](/architecture/verification/#83-when-a-render-happens) and the baseline filter
-- [ ] [Reachability per observer](/architecture/verification/#86-reachability-per-observer), signed counters, the four regimes
-- [ ] The [`unobservable`](/architecture/lifecycle/#64-qualifying-a-failure) state and the per program threshold alert
-- [ ] [`producer_version` and `last_producer_version`](/architecture/verification/#87-dating-the-instrument)
-- [ ] [Periodic cadence modulated by volatility](/architecture/verification/#cadence-of-the-periodic-render)
+- [x] `POST /scan` from the control plane, with a render costing more than one against the budget
+- [x] `high` and `low` queues, a baseline entering low
+- [x] [The five triggers](/architecture/verification/#83-when-a-render-happens) and the baseline filter
+- [x] [Reachability per observer](/architecture/verification/#86-reachability-per-observer), signed counters, the four regimes
+- [x] The [`unobservable`](/architecture/lifecycle/#64-qualifying-a-failure) state and the per program threshold alert
+- [x] [`producer_version` and `last_producer_version`](/architecture/verification/#87-dating-the-instrument)
+- [x] Periodic cadence **per regime**, four values rather than one ([corrected](#the-two-red-lines-of-phase-3))
 
 ### Milestone 3
 
-- [ ] From the service's container, `psql` to the database **fails**, and the same connection **succeeds** from the control plane network
+- [x] From the service's container, `psql` to the database **fails**, and the same connection **succeeds** from the control plane network
 - [ ] A request toward `169.254.169.254` is refused, and so is a redirect hop toward an internal range
-- [ ] An asset whose two probes fail 3 times becomes `unobservable`, **not** `INACTIVE`
-- [ ] An asset at 403 on the HTTP layer and 200 on the render flips to the protected regime
-- [ ] A dead origin behind a CDN is detected as dead, including when the render fails at the same moment
-- [ ] No screenshot is present in PostgreSQL
-- [ ] A render that produces no chain writes an observation, and the asset's counters move
-- [ ] `last_fingerprint_at` does not move on a render that obtained no page
-- [ ] A pass over 500 assets does not exceed the program's rate limit
+- [x] An asset whose two probes fail 3 times becomes `unobservable`, **not** `INACTIVE`
+- [x] An asset at 403 on the HTTP layer and 200 on the render flips to the protected regime
+- [x] A dead origin behind a CDN is detected as dead, including when the render fails at the same moment
+- [x] No screenshot is present in PostgreSQL
+- [x] A render that produces no chain writes an observation, and the asset's counters move
+- [x] `last_fingerprint_at` does not move on a render that obtained no page
+- [x] A pass over 500 assets does not exceed the program's rate limit
+
+### The two red lines of phase 3
+
+:::caution[Phase 3 is not closed, and phase 4 does not start]
+**The SSRF guard is not implemented, and it is not implemented here.** Measured against the running
+image on 21 August 2026, the rendering service navigates to `169.254.169.254`, to `127.0.0.1` and to
+`10.0.0.0/8`: the errors it returns are Chrome reporting what happened *after* it sent the request. On a
+host where the metadata service actually answers, the same call returns instance credentials. A headless
+browser that renders attacker controlled pages and will follow a URL to a link local address is the worst
+thing this component can be, and the second half, re-checking at every redirect hop, is the one that
+actually gets exploited.
+
+The control plane refuses to submit such a target, so the guard exists on the caller and is exercised by
+two processes that fail differently. That does not close the line: a check on the caller is a convention
+where a check on the service is a property, and the service is not only ever called by this. **The
+request has been written and transmitted.**
+
+**The cadence item was corrected rather than met.** It read "periodic cadence modulated by volatility",
+and this document's own post-v1 list defers volatility with an argument this phase does not overturn: the
+tiers need weeks of real data, and fixing them on a few hundred assets produces invented thresholds that
+later read as measurements. What phase 3 owes is a cadence per **regime**, which is the table of
+[8.6](/architecture/verification/#86-reachability-per-observer) and is four values rather than one. That
+is built and asserted. Volatility stays where it was already written down.
+:::
+
+:::note[Measured]
+**The render path holds no state between two ticks**, and that is what makes it need no recovery
+mechanism. The queue is a predicate re-evaluated every pass, a render has no lease, and the due date is
+the queue. A saturated service is asserted to touch nothing at all: no observation, no counter, no
+timestamp, and no due date moved, so everything it refused is still due on the next tick by the same
+ordering that put it there.
+
+**The order of two lines turned out to be the rule.** The observer's counter has to move *before* the
+state is decided. A pass that decided first entered `unobservable` one observation late and left it one
+late too, which is two rounds on a threshold of three, and it is exactly the mistake
+[6.4](/architecture/lifecycle/#64-qualifying-a-failure) warns about when it says leaving that state reads
+the current observation rather than the column.
+
+**A first contact is not a change.** Trigger 2 fires on a diff the HTTP layer detected, and wiring it to
+"an observation was inserted" put every service of a fresh perimeter into the `high` queue, which exists
+to stay short. It fires only where there was a previous state to differ from.
+
+**A baseline is armed once**, by a statement that applies only where there is no render date. Routing it
+through the promote path left it at whatever the column defaults to, which is the urgent priority: the
+low queue would have been empty and the high queue would have held the whole inventory.
+
+**Verified end to end against the real service**, not a fake: one due service, one pass, one page
+obtained, the observation written with its chain and its producer version, no screenshot anywhere in the
+database, and the next render three weeks out.
+
+**The local topology cannot express "calls but is not called by".** Joining the control plane to the
+scan network would let the browser side resolve `postgres` and `controlplane` by name, so the call goes
+out through the host gateway instead, which is the path the isolation script already names rather than
+claims away. Both directions still check out: the scan side reaches neither the database nor the
+internal API by name, and the control side reaches the database.
+:::
 
 ## Phase 4: Discovery
 
