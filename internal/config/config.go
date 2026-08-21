@@ -55,6 +55,7 @@ type Config struct {
 	Log      Log      `koanf:"log"`
 	HTTP     HTTP     `koanf:"http"`
 	Database Database `koanf:"database"`
+	Enrich   Enrich   `koanf:"enrich"`
 }
 
 // Log controls what the process writes to stderr. Everything is structured and
@@ -89,6 +90,17 @@ type Database struct {
 
 	MaxConns       int32         `koanf:"max_conns"`
 	ConnectTimeout time.Duration `koanf:"connect_timeout"`
+}
+
+// Enrich points at the Geo-IP databases.
+//
+// Both paths are optional and a deployment with neither is a normal
+// deployment. What matters is that the difference is visible: the console
+// cannot tell "not configured" from "configured with no match" by looking at
+// the data, since both leave an asset without an operator.
+type Enrich struct {
+	CityDatabase string `koanf:"city_database"`
+	ASNDatabase  string `koanf:"asn_database"`
 }
 
 // Defaults are the values a deployment inherits when it says nothing. They
