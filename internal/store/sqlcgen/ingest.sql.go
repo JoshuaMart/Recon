@@ -7,9 +7,33 @@ package sqlcgen
 
 import (
 	"context"
+	"net/netip"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const addRunTarget = `-- name: AddRunTarget :exec
+INSERT INTO run_target (run_id, asset_id, org_id, key)
+VALUES ($1::uuid, $2::uuid, $3::uuid, $4::text)
+ON CONFLICT (run_id, asset_id) DO NOTHING
+`
+
+type AddRunTargetParams struct {
+	RunID   pgtype.UUID
+	AssetID pgtype.UUID
+	OrgID   pgtype.UUID
+	Key     string
+}
+
+func (q *Queries) AddRunTarget(ctx context.Context, arg AddRunTargetParams) error {
+	_, err := q.db.Exec(ctx, addRunTarget,
+		arg.RunID,
+		arg.AssetID,
+		arg.OrgID,
+		arg.Key,
+	)
+	return err
+}
 
 const applyScopeStatus = `-- name: ApplyScopeStatus :exec
 WITH updated AS (
@@ -52,6 +76,53 @@ func (q *Queries) ApplyScopeStatus(ctx context.Context, arg ApplyScopeStatusPara
 	return err
 }
 
+const clearGenericPivots = `-- name: ClearGenericPivots :exec
+DELETE FROM generic_pivot_value
+`
+
+// ReplaceGenericPivots is the whole of the seed's write.
+//
+// Replacement rather than merge: a merge would let an entry added outside the
+// repository survive every deployment, and the divergence would be invisible.
+func (q *Queries) ClearGenericPivots(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, clearGenericPivots)
+	return err
+}
+
+const closeRun = `-- name: CloseRun :exec
+UPDATE run SET
+    state       = $1::text,
+    started_at  = COALESCE(started_at, $2::timestamptz),
+    finished_at = $2::timestamptz,
+    summary     = $3::jsonb,
+    error       = $4::text
+ WHERE id = $5::uuid
+`
+
+type CloseRunParams struct {
+	State   string
+	At      pgtype.Timestamptz
+	Summary []byte
+	Error   *string
+	RunID   pgtype.UUID
+}
+
+// CloseRun records what a run did.
+//
+// started_at is written by the first report and never moved afterwards: it is
+// the only thing that separates a run something actually opened from one whose
+// provisioning failed, and those two call for opposite actions.
+func (q *Queries) CloseRun(ctx context.Context, arg CloseRunParams) error {
+	_, err := q.db.Exec(ctx, closeRun,
+		arg.State,
+		arg.At,
+		arg.Summary,
+		arg.Error,
+		arg.RunID,
+	)
+	return err
+}
+
 const countObservations = `-- name: CountObservations :one
 SELECT count(*) FROM observation WHERE org_id = $1::uuid
 `
@@ -66,6 +137,69 @@ func (q *Queries) CountObservations(ctx context.Context, arg CountObservationsPa
 	var count int64
 	err := row.Scan(&count)
 	return count, err
+}
+
+const createRun = `-- name: CreateRun :exec
+INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline, target_count)
+VALUES ($1::uuid, $2::uuid, $3::uuid, $4::text, $5::text,
+        'pending', $6::timestamptz, $7::int)
+`
+
+type CreateRunParams struct {
+	ID          pgtype.UUID
+	OrgID       pgtype.UUID
+	ProgramID   pgtype.UUID
+	Kind        string
+	Scope       string
+	Deadline    pgtype.Timestamptz
+	TargetCount *int32
+}
+
+func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) error {
+	_, err := q.db.Exec(ctx, createRun,
+		arg.ID,
+		arg.OrgID,
+		arg.ProgramID,
+		arg.Kind,
+		arg.Scope,
+		arg.Deadline,
+		arg.TargetCount,
+	)
+	return err
+}
+
+const ensurePartitions = `-- name: EnsurePartitions :one
+SELECT ensure_monthly_partitions(to_regclass($1::text), $2::int)
+`
+
+type EnsurePartitionsParams struct {
+	Target      string
+	MonthsAhead int32
+}
+
+// EnsurePartitions creates this month's partition and the next ones.
+func (q *Queries) EnsurePartitions(ctx context.Context, arg EnsurePartitionsParams) (int32, error) {
+	row := q.db.QueryRow(ctx, ensurePartitions, arg.Target, arg.MonthsAhead)
+	var ensure_monthly_partitions int32
+	err := row.Scan(&ensure_monthly_partitions)
+	return ensure_monthly_partitions, err
+}
+
+const insertGenericPivot = `-- name: InsertGenericPivot :exec
+INSERT INTO generic_pivot_value (pivot_type, pattern, note)
+VALUES ($1::text, $2::text, $3::text)
+ON CONFLICT (pivot_type, pattern) DO UPDATE SET note = EXCLUDED.note
+`
+
+type InsertGenericPivotParams struct {
+	PivotType string
+	Pattern   string
+	Note      *string
+}
+
+func (q *Queries) InsertGenericPivot(ctx context.Context, arg InsertGenericPivotParams) error {
+	_, err := q.db.Exec(ctx, insertGenericPivot, arg.PivotType, arg.Pattern, arg.Note)
+	return err
 }
 
 const listProgramAssets = `-- name: ListProgramAssets :many
@@ -107,6 +241,34 @@ func (q *Queries) ListProgramAssets(ctx context.Context, arg ListProgramAssetsPa
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRunTargets = `-- name: ListRunTargets :many
+SELECT key FROM run_target WHERE run_id = $1::uuid
+`
+
+type ListRunTargetsParams struct {
+	RunID pgtype.UUID
+}
+
+func (q *Queries) ListRunTargets(ctx context.Context, arg ListRunTargetsParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listRunTargets, arg.RunID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		items = append(items, key)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -201,6 +363,54 @@ func (q *Queries) ProgramForRun(ctx context.Context, arg ProgramForRunParams) (P
 	return i, err
 }
 
+const runForIngest = `-- name: RunForIngest :one
+SELECT r.id, r.org_id, r.program_id, r.kind, r.scope, r.state, r.deadline,
+       p.state AS program_state, p.authorized_from, p.authorized_to
+  FROM run r
+  JOIN program p ON p.id = r.program_id
+ WHERE r.id = $1::uuid
+`
+
+type RunForIngestParams struct {
+	RunID pgtype.UUID
+}
+
+type RunForIngestRow struct {
+	ID             pgtype.UUID
+	OrgID          pgtype.UUID
+	ProgramID      pgtype.UUID
+	Kind           string
+	Scope          string
+	State          string
+	Deadline       pgtype.Timestamptz
+	ProgramState   string
+	AuthorizedFrom pgtype.Timestamptz
+	AuthorizedTo   pgtype.Timestamptz
+}
+
+// RunForIngest reads everything an ingestion checks before writing anything.
+//
+// The authorization window comes back with the run rather than in a second
+// query: a run that started before an expiry must not write after it, and the
+// check is worth nothing if it is one somebody can forget to make.
+func (q *Queries) RunForIngest(ctx context.Context, arg RunForIngestParams) (RunForIngestRow, error) {
+	row := q.db.QueryRow(ctx, runForIngest, arg.RunID)
+	var i RunForIngestRow
+	err := row.Scan(
+		&i.ID,
+		&i.OrgID,
+		&i.ProgramID,
+		&i.Kind,
+		&i.Scope,
+		&i.State,
+		&i.Deadline,
+		&i.ProgramState,
+		&i.AuthorizedFrom,
+		&i.AuthorizedTo,
+	)
+	return i, err
+}
+
 const upsertAssetAndProjection = `-- name: UpsertAssetAndProjection :one
 
 WITH input AS (
@@ -219,7 +429,18 @@ WITH input AS (
         $12::text       AS scope_status,
         $13::timestamptz     AS seen_at,
         $14::timestamptz AS next_resolve_at,
-        $15::timestamptz    AS next_full_at
+        $15::timestamptz    AS next_full_at,
+        -- Derived in the control plane from the address the run connected to.
+        -- They travel with the upsert rather than in a statement of their own:
+        -- the enrichment is in hand at the moment the row is written, and a
+        -- second round trip on the hottest write path is the thing the budget
+        -- exists to refuse.
+        $16::inet      AS ip,
+        $17::int      AS asn,
+        $18::text AS asn_org,
+        $19::char(2) AS country,
+        $20::text  AS region,
+        $21::text    AS city
 ),
 previous AS (
     SELECT a.id, a.scope_status, a.discovery_source, c.lifecycle
@@ -257,12 +478,14 @@ written AS (
 projected AS (
     INSERT INTO asset_current (
         asset_id, org_id, program_id, kind, key, scope_status,
-        host, port, scheme, next_resolve_at, next_full_at, first_seen, last_seen)
+        host, port, scheme, next_resolve_at, next_full_at,
+        ip, asn, asn_org, country, region, city, first_seen, last_seen)
     SELECT
         w.id, i.org_id, i.program_id, i.kind, i.key, i.scope_status,
         i.host, i.port, i.scheme,
         CASE WHEN i.scope_status = 'in_scope' THEN i.next_resolve_at END,
         CASE WHEN i.scope_status = 'in_scope' THEN i.next_full_at END,
+        i.ip, i.asn, i.asn_org, i.country, i.region, i.city,
         i.seen_at, i.seen_at
       FROM written w, input i
     ON CONFLICT (asset_id) DO UPDATE SET
@@ -272,6 +495,15 @@ projected AS (
         host         = COALESCE(asset_current.host, EXCLUDED.host),
         port         = COALESCE(asset_current.port, EXCLUDED.port),
         scheme       = COALESCE(asset_current.scheme, EXCLUDED.scheme),
+        -- Re-evaluated on every pass rather than frozen: a target can move
+        -- between two runs. COALESCE keeps what a pass without an address
+        -- could not say, so an enrichment does not erase itself.
+        ip      = COALESCE(EXCLUDED.ip, asset_current.ip),
+        asn     = COALESCE(EXCLUDED.asn, asset_current.asn),
+        asn_org = COALESCE(EXCLUDED.asn_org, asset_current.asn_org),
+        country = COALESCE(EXCLUDED.country, asset_current.country),
+        region  = COALESCE(EXCLUDED.region, asset_current.region),
+        city    = COALESCE(EXCLUDED.city, asset_current.city),
         -- Only in-scope assets are scheduled. An asset leaving the perimeter
         -- loses its due dates in the same statement that reclassifies it,
         -- otherwise it keeps being scanned outside the authorization.
@@ -310,6 +542,12 @@ type UpsertAssetAndProjectionParams struct {
 	SeenAt          pgtype.Timestamptz
 	NextResolveAt   pgtype.Timestamptz
 	NextFullAt      pgtype.Timestamptz
+	Ip              netip.Addr
+	Asn             *int32
+	AsnOrg          *string
+	Country         *string
+	Region          *string
+	City            *string
 }
 
 type UpsertAssetAndProjectionRow struct {
@@ -351,6 +589,12 @@ func (q *Queries) UpsertAssetAndProjection(ctx context.Context, arg UpsertAssetA
 		arg.SeenAt,
 		arg.NextResolveAt,
 		arg.NextFullAt,
+		arg.Ip,
+		arg.Asn,
+		arg.AsnOrg,
+		arg.Country,
+		arg.Region,
+		arg.City,
 	)
 	var i UpsertAssetAndProjectionRow
 	err := row.Scan(

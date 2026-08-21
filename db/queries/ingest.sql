@@ -27,7 +27,18 @@ WITH input AS (
         @scope_status::text       AS scope_status,
         @seen_at::timestamptz     AS seen_at,
         sqlc.narg(next_resolve_at)::timestamptz AS next_resolve_at,
-        sqlc.narg(next_full_at)::timestamptz    AS next_full_at
+        sqlc.narg(next_full_at)::timestamptz    AS next_full_at,
+        -- Derived in the control plane from the address the run connected to.
+        -- They travel with the upsert rather than in a statement of their own:
+        -- the enrichment is in hand at the moment the row is written, and a
+        -- second round trip on the hottest write path is the thing the budget
+        -- exists to refuse.
+        sqlc.narg(ip)::inet      AS ip,
+        sqlc.narg(asn)::int      AS asn,
+        sqlc.narg(asn_org)::text AS asn_org,
+        sqlc.narg(country)::char(2) AS country,
+        sqlc.narg(region)::text  AS region,
+        sqlc.narg(city)::text    AS city
 ),
 previous AS (
     SELECT a.id, a.scope_status, a.discovery_source, c.lifecycle
@@ -65,12 +76,14 @@ written AS (
 projected AS (
     INSERT INTO asset_current (
         asset_id, org_id, program_id, kind, key, scope_status,
-        host, port, scheme, next_resolve_at, next_full_at, first_seen, last_seen)
+        host, port, scheme, next_resolve_at, next_full_at,
+        ip, asn, asn_org, country, region, city, first_seen, last_seen)
     SELECT
         w.id, i.org_id, i.program_id, i.kind, i.key, i.scope_status,
         i.host, i.port, i.scheme,
         CASE WHEN i.scope_status = 'in_scope' THEN i.next_resolve_at END,
         CASE WHEN i.scope_status = 'in_scope' THEN i.next_full_at END,
+        i.ip, i.asn, i.asn_org, i.country, i.region, i.city,
         i.seen_at, i.seen_at
       FROM written w, input i
     ON CONFLICT (asset_id) DO UPDATE SET
@@ -80,6 +93,15 @@ projected AS (
         host         = COALESCE(asset_current.host, EXCLUDED.host),
         port         = COALESCE(asset_current.port, EXCLUDED.port),
         scheme       = COALESCE(asset_current.scheme, EXCLUDED.scheme),
+        -- Re-evaluated on every pass rather than frozen: a target can move
+        -- between two runs. COALESCE keeps what a pass without an address
+        -- could not say, so an enrichment does not erase itself.
+        ip      = COALESCE(EXCLUDED.ip, asset_current.ip),
+        asn     = COALESCE(EXCLUDED.asn, asset_current.asn),
+        asn_org = COALESCE(EXCLUDED.asn_org, asset_current.asn_org),
+        country = COALESCE(EXCLUDED.country, asset_current.country),
+        region  = COALESCE(EXCLUDED.region, asset_current.region),
+        city    = COALESCE(EXCLUDED.city, asset_current.city),
         -- Only in-scope assets are scheduled. An asset leaving the perimeter
         -- loses its due dates in the same statement that reclassifies it,
         -- otherwise it keeps being scanned outside the authorization.
@@ -233,3 +255,62 @@ UPDATE asset_current SET
 SELECT p.id, p.org_id, p.state, p.authorized_from, p.authorized_to
   FROM program p
  WHERE p.id = @program_id::uuid;
+
+-- ReplaceGenericPivots is the whole of the seed's write.
+--
+-- Replacement rather than merge: a merge would let an entry added outside the
+-- repository survive every deployment, and the divergence would be invisible.
+--
+-- name: ClearGenericPivots :exec
+DELETE FROM generic_pivot_value;
+
+-- name: InsertGenericPivot :exec
+INSERT INTO generic_pivot_value (pivot_type, pattern, note)
+VALUES (@pivot_type::text, @pattern::text, sqlc.narg(note)::text)
+ON CONFLICT (pivot_type, pattern) DO UPDATE SET note = EXCLUDED.note;
+
+-- EnsurePartitions creates this month's partition and the next ones.
+--
+-- name: EnsurePartitions :one
+SELECT ensure_monthly_partitions(to_regclass(@target::text), @months_ahead::int);
+
+-- RunForIngest reads everything an ingestion checks before writing anything.
+--
+-- The authorization window comes back with the run rather than in a second
+-- query: a run that started before an expiry must not write after it, and the
+-- check is worth nothing if it is one somebody can forget to make.
+--
+-- name: RunForIngest :one
+SELECT r.id, r.org_id, r.program_id, r.kind, r.scope, r.state, r.deadline,
+       p.state AS program_state, p.authorized_from, p.authorized_to
+  FROM run r
+  JOIN program p ON p.id = r.program_id
+ WHERE r.id = @run_id::uuid;
+
+-- name: ListRunTargets :many
+SELECT key FROM run_target WHERE run_id = @run_id::uuid;
+
+-- name: CreateRun :exec
+INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline, target_count)
+VALUES (@id::uuid, @org_id::uuid, @program_id::uuid, @kind::text, @scope::text,
+        'pending', @deadline::timestamptz, sqlc.narg(target_count)::int);
+
+-- name: AddRunTarget :exec
+INSERT INTO run_target (run_id, asset_id, org_id, key)
+VALUES (@run_id::uuid, @asset_id::uuid, @org_id::uuid, @key::text)
+ON CONFLICT (run_id, asset_id) DO NOTHING;
+
+-- CloseRun records what a run did.
+--
+-- started_at is written by the first report and never moved afterwards: it is
+-- the only thing that separates a run something actually opened from one whose
+-- provisioning failed, and those two call for opposite actions.
+--
+-- name: CloseRun :exec
+UPDATE run SET
+    state       = @state::text,
+    started_at  = COALESCE(started_at, @at::timestamptz),
+    finished_at = @at::timestamptz,
+    summary     = @summary::jsonb,
+    error       = sqlc.narg(error)::text
+ WHERE id = @run_id::uuid;

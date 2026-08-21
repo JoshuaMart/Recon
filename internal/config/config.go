@@ -40,6 +40,11 @@ const (
 	RoleMigrate Role = "migrate"
 )
 
+// MinSigningKeyLength is what the signing key has to reach. It mirrors what the
+// signer itself enforces, so a deployment finds out at startup rather than on
+// the first run it tries to authenticate.
+const MinSigningKeyLength = 32
+
 // Environments the configuration accepts. Several options are refused outside
 // dev, so an unknown value must fail rather than default to the permissive
 // side.
@@ -56,6 +61,28 @@ type Config struct {
 	HTTP     HTTP     `koanf:"http"`
 	Database Database `koanf:"database"`
 	Enrich   Enrich   `koanf:"enrich"`
+	Security Security `koanf:"security"`
+
+	Maintenance Maintenance `koanf:"maintenance"`
+}
+
+// Security holds the one secret the control plane signs with.
+//
+// A run's credentials are HMACs over the run, the purpose and an expiry, so
+// there is nothing to store, nothing to revoke and nothing to purge. The whole
+// of that rests on this key, which is why a short one is refused: an HMAC whose
+// key can be guessed lets anyone mint a token for any run.
+type Security struct {
+	SigningKey string `koanf:"signing_key"`
+}
+
+// Maintenance is the housekeeping tick.
+//
+// It has no enable flag on purpose. A partition job that can be turned off is
+// an ingestion outage three months later, triggered by a button that talks
+// about something else.
+type Maintenance struct {
+	Interval time.Duration `koanf:"interval"`
 }
 
 // Log controls what the process writes to stderr. Everything is structured and
@@ -119,6 +146,7 @@ func Defaults() Config {
 			MaxConns:       10,
 			ConnectTimeout: 5 * time.Second,
 		},
+		Maintenance: Maintenance{Interval: time.Hour},
 	}
 }
 
@@ -280,6 +308,13 @@ func (c *Config) Validate(role Role) error {
 		}
 		if c.Database.ConnectTimeout <= 0 {
 			fail("database.connect_timeout must be positive, got %s", c.Database.ConnectTimeout)
+		}
+		if len(c.Security.SigningKey) < MinSigningKeyLength {
+			fail("security.signing_key must be at least %d bytes: it is what makes a run's "+
+				"credentials unforgeable, and a guessable key is an unsigned one", MinSigningKeyLength)
+		}
+		if c.Maintenance.Interval <= 0 {
+			fail("maintenance.interval must be positive, got %s", c.Maintenance.Interval)
 		}
 
 	case RoleMigrate:

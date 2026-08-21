@@ -134,6 +134,25 @@ services:
         condition: service_completed_successfully
     restart: "no"
 
+  # Reference data, reapplied on every deployment rather than by a one-off
+  # migration: the denylist grows as new frameworks and edges appear. It runs
+  # as the owner, because the application role has no write on that table.
+  seed:
+    networks: [control]
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+      target: migrate
+    command: ["seed"]
+    environment:
+      RECON_LOG__FORMAT: text
+      RECON_DATABASE__MIGRATION_URL: >-
+        postgres://${POSTGRES_USER:-asm_owner}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-recon}?sslmode=disable
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
   controlplane:
     networks: [control]
     build:
@@ -150,10 +169,22 @@ services:
       # owner credentials next to the application ones.
       RECON_DATABASE__URL: >-
         postgres://asm_app:${APP_PASSWORD}@postgres:5432/${POSTGRES_DB:-recon}?sslmode=disable
+      # What makes a run's credentials unforgeable. There is nothing to store
+      # and nothing to revoke because everything rests on this.
+      RECON_SECURITY__SIGNING_KEY: ${SIGNING_KEY:?set SIGNING_KEY in .env}
+      # Optional. A deployment with no database is a normal deployment, and the
+      # console is told which of the two it is rather than guessing from data
+      # that looks the same either way.
+      RECON_ENRICH__CITY_DATABASE: ${GEOIP_CITY_DATABASE:-}
+      RECON_ENRICH__ASN_DATABASE: ${GEOIP_ASN_DATABASE:-}
+    volumes:
+      - ${GEOIP_DIR:-../../var/geoip}:/geoip:ro
     ports:
       - "127.0.0.1:${CONTROLPLANE_PORT:-8080}:8080"
     depends_on:
       db-app-role:
+        condition: service_completed_successfully
+      seed:
         condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "/controlplane", "-health"]

@@ -79,13 +79,13 @@ the second one was true for a while.
 - [x] `observation`, **[partitioned monthly](/architecture/data-model/#partitioning-from-the-first-migration)** from the start
 - [x] `asset_current` and `asset_layer`
 - [x] `run` and `run_target`
-- [ ] `pivot_count`, `favicon_image`, and the seeded denylist with its idempotent seed
+- [x] `pivot_count`, `favicon_image`, and the seeded denylist with its idempotent seed
 - [x] `org_id` on **every** business table
 - [x] Indexes: GIN on JSONB and arrays, B-tree on promoted columns, the `reverse(key)` expression index
 - [x] The single [`normalize(layer, data)`](/architecture/data-model/#normalization-comes-first) function, with its per layer schemas
-- [ ] `POST /reports` with [scope re-evaluation](/architecture/scope/#52-re-evaluated-at-ingestion) and [deduplication on write](/architecture/data-model/#deduplication-on-write)
+- [x] `POST /reports` with [scope re-evaluation](/architecture/scope/#52-re-evaluated-at-ingestion) and [deduplication on write](/architecture/data-model/#deduplication-on-write)
 - [x] [Geo-IP and ASN enrichment](/architecture/verification/#88-geo-ip-and-asn-enrichment) in memory in the control plane
-- [ ] [One authorization layer](/architecture/security/#111-irreversible-decisions) receiving a principal
+- [x] [One authorization layer](/architecture/security/#111-irreversible-decisions) receiving a principal
 
 ### Milestone 1
 
@@ -96,13 +96,17 @@ the second one was true for a while.
 - [x] Changing a `scope_rule` reclassifies history without rescanning
 - [x] A rule naming a host reclassifies its services and their URLs with it, and a `url_prefix` exclusion leaves the service carrying it in scope
 - [x] A query carrying a different `org_id` returns **no** row
-- [ ] A report attached to an expired `program` is rejected at ingestion
+- [x] A report attached to an expired `program` is rejected at ingestion
 - [x] A report naming a host outside its run's frozen target list is **rejected**, not ignored
-- [ ] Monthly partitions are created automatically, and a row outside any partition fails
-- [ ] Connected as `asm_app`: `DROP TABLE asset` fails, writing to the seeded denylist fails, reading it succeeds, and `INSERT INTO asset` succeeds
+- [x] Monthly partitions are created automatically, and a row outside any partition fails
+- [x] Connected as `asm_app`: `DROP TABLE asset` fails, writing to the seeded denylist fails, reading it succeeds, and `INSERT INTO asset` succeeds
 - [x] The ingestion cost stays under the round trip budget per observation, measured rather than estimated
 
 :::note[Measured]
+**Milestone 1 is closed.** The two assertions that took longest were the ones nobody can tick by reading:
+the round trip budget needed a tracer, and "partitions are created automatically" needed something to
+call the function without being asked.
+
 **1.50 round trips per observation**, counted by a pgx tracer rather than estimated, against a budget of
 three. One report of one host writes two assets and four observations in six statements: the identity and
 its projection travel in one, and so do the deduplication lookup and whatever it decides.

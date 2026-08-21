@@ -1,0 +1,106 @@
+# Values that group without discriminating, and therefore are not pivots.
+#
+# The relevant frequency is on the internet, not inside one organization.
+# PHPSESSID is noise because it is universal, not because it is locally
+# frequent: on a small perimeter the variance dominates, and three occurrences
+# of a framework cookie are statistically indistinguishable from two of a rare
+# application one.
+#
+# This removes a badge and never a piece of data. Every name is indexed without
+# exception, so a misclassified entry loses nothing and the explicit search
+# still works.
+#
+# The file is the truth and the table is its reflection. The seed replaces the
+# whole table rather than merging into it: a merge would let an entry added by
+# hand survive every deployment and make the divergence invisible.
+
+cookie_name:
+  # Framework sessions.
+  - pattern: PHPSESSID
+    note: PHP
+  - pattern: JSESSIONID
+    note: Java
+  - pattern: ASP.NET_SessionId
+    note: ASP.NET
+  - pattern: ASPSESSIONID*
+    note: classic ASP
+  - pattern: csrftoken
+    note: Django
+  - pattern: sessionid
+    note: Django
+  - pattern: laravel_session
+    note: Laravel
+  - pattern: XSRF-TOKEN
+    note: Angular and Laravel
+  - pattern: _session_id
+    note: Rails
+  - pattern: connect.sid
+    note: Express
+  - pattern: JSESSIONIDSSO
+    note: JBoss
+
+  # Analytics, which say who measures a site rather than what it runs.
+  - pattern: _ga
+  - pattern: _ga_*
+  - pattern: _gid
+  - pattern: _gat*
+  - pattern: _fbp
+  - pattern: _hj*
+    note: Hotjar
+  - pattern: _clck
+    note: Microsoft Clarity
+  - pattern: _clsk
+    note: Microsoft Clarity
+  - pattern: __utm*
+    note: legacy Google Analytics
+
+  # Edges and mitigations. These identify the provider in front of a target,
+  # which is already a promoted column, and they are shared by every customer
+  # of it.
+  - pattern: __cfduid
+    note: Cloudflare
+  - pattern: __cf_bm
+    note: Cloudflare
+  - pattern: cf_clearance
+    note: Cloudflare
+  - pattern: __cflb
+    note: Cloudflare
+  - pattern: AWSALB
+  - pattern: AWSALBCORS
+  - pattern: AWSELB
+  - pattern: incap_ses_*
+    note: Imperva
+  - pattern: visid_incap_*
+    note: Imperva
+  - pattern: nlbi_*
+    note: Imperva
+  - pattern: ak_bmsc
+    note: Akamai
+  - pattern: bm_sv
+    note: Akamai
+  - pattern: TS*
+    note: F5 BIG-IP
+  - pattern: BIGipServer*
+    note: F5 BIG-IP
+
+  # Content management, where the name says the product and nothing about the
+  # instance.
+  - pattern: wordpress_*
+  - pattern: wp-settings-*
+  - pattern: wordpress_logged_in_*
+  - pattern: PrestaShop-*
+  - pattern: OCSESSID
+    note: OpenCart
+
+  # Consent and preference, which are neither infrastructure nor application.
+  - pattern: cookieconsent_status
+  - pattern: euconsent-v2
+  - pattern: OptanonConsent
+  - pattern: OptanonAlertBoxClosed
+
+favicon:
+  # Default icons shipped by a product. They identify the product, which is
+  # already a technology, and they group every default installation on the
+  # internet.
+  - pattern: "0"
+    note: an empty or unreadable icon

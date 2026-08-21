@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
 
+	"github.com/JoshuaMart/recon/internal/enrich"
 	"github.com/JoshuaMart/recon/internal/ingest"
 	"github.com/JoshuaMart/recon/internal/scope"
 	"github.com/JoshuaMart/recon/internal/store"
@@ -447,3 +449,57 @@ func TestTheIngestionCostStaysUnderItsBudget(t *testing.T) {
 }
 
 var _ = pgtype.Timestamptz{}
+
+// The projection carries the operator, and it travels with the upsert rather
+// than in a statement of its own: the enrichment is in hand at the moment the
+// row is written.
+func TestTheOperatorReachesTheProjection(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	set := h.scope(t, include("target.test"))
+
+	h.ing = ingest.New(fixedEnricher{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := h.ing.Report(ctx, h.queries, h.run(), set, oneHost("api.target.test")); err != nil {
+		t.Fatalf("report: %v", err)
+	}
+
+	var asn *int32
+	var org, country *string
+	err := h.pool.QueryRow(ctx,
+		`SELECT asn, asn_org, country FROM asset_current WHERE key = 'api.target.test'`).
+		Scan(&asn, &org, &country)
+	if err != nil {
+		t.Fatalf("read the projection: %v", err)
+	}
+	if asn == nil || *asn != 15133 {
+		t.Errorf("asn = %v, want the operator the enricher reported", asn)
+	}
+	if org == nil || *org != "Example Networks" {
+		t.Errorf("asn_org = %v", org)
+	}
+	if country == nil || *country != "FR" {
+		t.Errorf("country = %v", country)
+	}
+
+	// A service derived from that host carries it too: five ports of one
+	// address have the same operator, and the row that describes a surface is
+	// the one somebody filters on.
+	var serviceASN *int32
+	if err := h.pool.QueryRow(ctx,
+		`SELECT asn FROM asset_current WHERE kind = 'service'`).Scan(&serviceASN); err != nil {
+		t.Fatalf("read the service: %v", err)
+	}
+	if serviceASN == nil {
+		t.Error("the derived service carries no operator, and it is the row a filter reads")
+	}
+}
+
+// A stand-in rather than the real databases: this asserts the wiring, and the
+// databases have their own test that skips when they are absent.
+type fixedEnricher struct{}
+
+func (fixedEnricher) Configured() bool { return true }
+func (fixedEnricher) Close() error     { return nil }
+func (fixedEnricher) Lookup(netip.Addr) enrich.Result {
+	return enrich.Result{ASN: 15133, ASNOrg: "Example Networks", Country: "FR", City: "Paris"}
+}

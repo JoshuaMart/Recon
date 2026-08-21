@@ -38,6 +38,7 @@ func TestTwoUnderscoresNestAndOneDoesNot(t *testing.T) {
 	cfg, err := config.Load(config.RoleControlPlane, config.Options{
 		Environ: environ(
 			"RECON_DATABASE__URL=postgres://app@localhost/recon",
+			"RECON_SECURITY__SIGNING_KEY=a-signing-key-long-enough-to-be-one",
 			// One underscore inside a key, two between levels. If the
 			// transform confused the two, this would land nowhere and the
 			// default would survive.
@@ -67,6 +68,7 @@ func TestTheControlPlaneRefusesTheOwnerCredential(t *testing.T) {
 		Environ: environ(
 			"RECON_DATABASE__URL=postgres://app@localhost/recon",
 			"RECON_DATABASE__MIGRATION_URL=postgres://owner@localhost/recon",
+			"RECON_SECURITY__SIGNING_KEY=a-signing-key-long-enough-to-be-one",
 		),
 	})
 	if err == nil {
@@ -155,5 +157,24 @@ func TestTheConfigPathIsNotAnOption(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("load: %v", err)
+	}
+}
+
+// A guessable key is an unsigned one, so the refusal happens at startup rather
+// than on the first run the control plane tries to authenticate.
+func TestTheControlPlaneRefusesAShortSigningKey(t *testing.T) {
+	t.Parallel()
+
+	_, err := config.Load(config.RoleControlPlane, config.Options{
+		Environ: environ(
+			"RECON_DATABASE__URL=postgres://app@localhost/recon",
+			"RECON_SECURITY__SIGNING_KEY=short",
+		),
+	})
+	if err == nil {
+		t.Fatal("a five byte signing key was accepted")
+	}
+	if !strings.Contains(err.Error(), "signing_key") {
+		t.Errorf("the error does not name the option: %v", err)
 	}
 }

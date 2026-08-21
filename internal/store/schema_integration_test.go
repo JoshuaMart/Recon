@@ -155,3 +155,84 @@ func seedOneAsset(t *testing.T, conn *pgx.Conn) string {
 
 	return assetID
 }
+
+// The half of the role assertion that needed the business tables, which is why
+// it moved here from the first milestone rather than being ticked on a table
+// the test invented for itself.
+func TestTheApplicationRoleAgainstTheRealTables(t *testing.T) {
+	url := start(t)
+	ctx := context.Background()
+
+	if err := migrator(t, url).Run(ctx, store.Up); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+
+	ownerConn := connect(t, url)
+	exec(t, ownerConn, fmt.Sprintf(`ALTER ROLE asm_app WITH LOGIN PASSWORD %s`, quote(appPwd)))
+
+	// Reference data comes from the repository, applied by the owner.
+	written, err := store.Seed(ctx, ownerConn)
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if written == 0 {
+		t.Fatal("the seed wrote nothing, so the read below would prove nothing")
+	}
+
+	seedOneAsset(t, ownerConn)
+	appConn := connect(t, appURL(url))
+
+	// What it must be able to do. This half first: without it, every refusal
+	// beside it would pass just as well on a role that can do nothing.
+	exec(t, appConn, `
+		INSERT INTO asset (id, org_id, program_id, kind, key, host, discovery_source, scope_status, first_seen, last_seen)
+		VALUES (gen_random_uuid(), $1, $2, 'fqdn', 'written-by-the-app.target.test', 'written-by-the-app.target.test',
+		        'manual', 'in_scope', now(), now())`, tenantID, programID)
+
+	var patterns int
+	if err := appConn.QueryRow(ctx, `SELECT count(*) FROM generic_pivot_value`).Scan(&patterns); err != nil {
+		t.Fatalf("the application cannot read the denylist, and the search path needs it: %v", err)
+	}
+	if patterns != written {
+		t.Errorf("the application reads %d patterns, the seed wrote %d", patterns, written)
+	}
+
+	// And what it must not.
+	refuses(t, appConn, "DROP TABLE asset", `DROP TABLE asset`)
+	refuses(t, appConn, "writing the denylist",
+		`INSERT INTO generic_pivot_value (pivot_type, pattern) VALUES ('cookie_name', 'smuggled')`)
+	refuses(t, appConn, "deleting from the denylist", `DELETE FROM generic_pivot_value`)
+}
+
+// The seed replaces rather than merges: an entry added outside the repository
+// must not survive a deployment, or the divergence is invisible.
+func TestTheSeedReplacesRatherThanMerges(t *testing.T) {
+	url := start(t)
+	ctx := context.Background()
+
+	if err := migrator(t, url).Run(ctx, store.Up); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	conn := connect(t, url)
+
+	if _, err := store.Seed(ctx, conn); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	exec(t, conn, `INSERT INTO generic_pivot_value (pivot_type, pattern, note)
+	               VALUES ('cookie_name', 'added-by-hand', 'not from the repository')`)
+
+	// Replayed, which is what every deployment does.
+	if _, err := store.Seed(ctx, conn); err != nil {
+		t.Fatalf("reseed: %v", err)
+	}
+
+	var survivors int
+	if err := conn.QueryRow(ctx,
+		`SELECT count(*) FROM generic_pivot_value WHERE pattern = 'added-by-hand'`).Scan(&survivors); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if survivors != 0 {
+		t.Error("an entry added outside the repository survived a deployment, and nothing " +
+			"would ever show the divergence")
+	}
+}

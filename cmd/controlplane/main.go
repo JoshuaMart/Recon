@@ -21,9 +21,15 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/JoshuaMart/recon/internal/api"
+	"github.com/JoshuaMart/recon/internal/auth"
 	"github.com/JoshuaMart/recon/internal/config"
+	"github.com/JoshuaMart/recon/internal/enrich"
+	"github.com/JoshuaMart/recon/internal/ingest"
+	"github.com/JoshuaMart/recon/internal/maintenance"
 	"github.com/JoshuaMart/recon/internal/obs"
 	"github.com/JoshuaMart/recon/internal/store"
+	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
 func main() {
@@ -61,9 +67,28 @@ func run() error {
 	}
 	defer pool.Close()
 
+	signer, err := auth.NewSigner(cfg.Security.SigningKey)
+	if err != nil {
+		return err
+	}
+
+	enricher, err := enrich.Open(enrich.Paths{
+		City: cfg.Enrich.CityDatabase,
+		ASN:  cfg.Enrich.ASNDatabase,
+	})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = enricher.Close() }()
+	log.InfoContext(ctx, "enrichment", "configured", enricher.Configured())
+
+	// Started unconditionally, and before anything can write: a partition job
+	// behind a toggle is an ingestion outage three months later.
+	go maintenance.New(sqlcgen.New(pool), cfg.Maintenance.Interval, log).Run(ctx)
+
 	srv := &http.Server{
 		Addr:              cfg.HTTP.Addr,
-		Handler:           routes(pool, log),
+		Handler:           routes(pool, signer, ingest.New(enricher, log), log),
 		ReadHeaderTimeout: cfg.HTTP.ReadTimeout,
 	}
 
@@ -120,8 +145,12 @@ func probe() error {
 	return nil
 }
 
-func routes(pool *pgxpool.Pool, log *slog.Logger) http.Handler {
+func routes(pool *pgxpool.Pool, signer *auth.Signer, ingestor *ingest.Ingestor, log *slog.Logger) http.Handler {
 	mux := http.NewServeMux()
+
+	// Where a run's report lands. It authenticates before reading anything
+	// else, and the run comes from the credential rather than from the body.
+	mux.Handle("POST /reports", api.NewReports(pool, signer, ingestor, log))
 
 	// Liveness. It touches nothing, because a probe that queries the database
 	// turns a slow database into a restarted process.

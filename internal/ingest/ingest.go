@@ -172,6 +172,7 @@ func (i *Ingestor) writeAsset(
 	if len(path) > 0 {
 		params.DiscoveryPath = path
 	}
+	i.enrichInto(&params, target.Addresses)
 	// Only in-scope assets are scheduled, which the statement enforces too.
 	if status == scope.InScope {
 		params.NextResolveAt = stampPtr(run.Due.Resolve)
@@ -183,6 +184,33 @@ func (i *Ingestor) writeAsset(
 		return uuid.Nil, fmt.Errorf("upsert asset %s: %w", key.Value, err)
 	}
 	return uuid.UUID(row.AssetID.Bytes), nil
+}
+
+// enrichInto turns the address a run connected to into an operator and a place.
+//
+// It reads the submitted payload rather than the normalized one, which is the
+// only exception of its kind in the write path and is deliberate: a name in
+// round robin answers a different address on every pass, so the field is
+// dropped at normalization and exists only to fill these columns. A payload
+// carrying it would differ on every run for a target nobody touched.
+func (i *Ingestor) enrichInto(params *sqlcgen.UpsertAssetAndProjectionParams, addrs []netip.Addr) {
+	if len(addrs) == 0 {
+		return
+	}
+	addr := addrs[0]
+	params.Ip = addr
+
+	found := i.enricher.Lookup(addr)
+	if found.Empty() {
+		return
+	}
+	if found.ASN != 0 {
+		params.Asn = int32Ptr(found.ASN)
+	}
+	params.AsnOrg = text(found.ASNOrg)
+	params.Country = text(found.Country)
+	params.Region = text(found.Region)
+	params.City = text(found.City)
 }
 
 func (i *Ingestor) writeHostObservations(
