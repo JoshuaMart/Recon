@@ -23,11 +23,29 @@ import (
 // layer answers is inactive, and reading that off a single layer would give the
 // opposite answer depending on which observation happened to be written last.
 type state struct {
-	id        uuid.UUID
-	kind      normalize.Kind
-	created   bool
-	lifecycle string
-	tier      int
+	id      uuid.UUID
+	key     string
+	kind    normalize.Kind
+	created bool
+	// lineage is what the upsert returned in passing. Every notification
+	// carries it rather than just the current state, and it is in the row that
+	// was just written, so it costs nothing to hold.
+	lineage []byte
+	// source is the asset's own discovery source, which is the one from its
+	// first appearance. The grace reads it rather than the observation's: a
+	// typed in asset is born from a probe observation, so reading that would
+	// make the hand fed branch dead code in production while its test passes.
+	source string
+	// announced marks the lifecycle transition as already told. An asset has
+	// one transition per report and several observations, so emitting from
+	// each layer would notify the same arrival two or three times over.
+	announced bool
+	// previousLifecycle is what this asset was before this report touched it.
+	// A transition is the difference between the two, and reading the column
+	// afterwards would compare a state with itself.
+	previousLifecycle string
+	lifecycle         string
+	tier              int
 	// reach is what each observer has managed, and regime is what the
 	// projection has settled on. They are two different questions: the first
 	// moves on every observation, the second only after three concordant ones.
@@ -59,8 +77,12 @@ func newState(row sqlcgen.UpsertAssetAndProjectionRow, kind normalize.Kind, port
 		renderable: port > 0 && fingerprint.Renderable(port),
 		layers:     map[normalize.Layer]lifecycle.Counters{},
 	}
+	if row.PreviousDiscoverySource != nil {
+		st.source = *row.PreviousDiscoverySource
+	}
 	if row.PreviousLifecycle != nil {
 		st.lifecycle = *row.PreviousLifecycle
+		st.previousLifecycle = *row.PreviousLifecycle
 	}
 	if row.PreviousBackoffTier != nil {
 		st.tier = int(*row.PreviousBackoffTier)
@@ -310,10 +332,41 @@ func (i *Ingestor) apply(
 	}
 
 	summary.Observations++
+
+	// What the asset became is told whether or not a row was written. A death
+	// is three identical nxdomains and the transition lands on the third, so
+	// producing it only where a row was written would make the most common
+	// death in the system silent.
+	i.announce(run, st, obs, st.source, summary)
+
 	if row.Deduplicated {
 		summary.Deduplicated++
 		return nil
 	}
+
+	// Only an insertion has a diff. The previous payload comes back on that
+	// path alone: without the condition every observation would drag its own
+	// payload across the wire while most of them deduplicate and have nothing
+	// to compare.
+	var before map[string]any
+	if len(row.PreviousData) > 0 {
+		if err := json.Unmarshal(row.PreviousData, &before); err != nil {
+			return fmt.Errorf("decode the previous %s payload: %w", obs.layer, err)
+		}
+	}
+	previousVersion := ""
+	if row.PreviousProducerVersion != nil {
+		previousVersion = *row.PreviousProducerVersion
+	}
+	// The comparison runs on the normalized structure, never on the payload as
+	// it arrived. The stored side is normalized by construction, so comparing
+	// the raw side against it reports every field normalization touches as a
+	// change: a version the normalizer drops, a cookie map it turns into names.
+	// Two divergent forms reintroduce exactly the false change this comparison
+	// exists to remove.
+	normalized := obs
+	normalized.data = result.Data
+	i.diffEvents(run, st, normalized, before, previousVersion, report.Run.Version, st.source, summary)
 
 	// A change the HTTP layer detected buys a render, and only in the nominal
 	// regime. When the raw client is the one being turned away, the probe keeps

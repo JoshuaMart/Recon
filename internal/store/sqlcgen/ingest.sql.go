@@ -445,7 +445,18 @@ func (q *Queries) RescheduleAsset(ctx context.Context, arg RescheduleAssetParams
 
 const runForIngest = `-- name: RunForIngest :one
 SELECT r.id, r.org_id, r.program_id, r.kind, r.scope, r.state, r.deadline,
-       p.state AS program_state, p.authorized_from, p.authorized_to
+       p.state AS program_state, p.authorized_from, p.authorized_to,
+       -- The first run grace, read here rather than in a query of its own.
+       -- Ingestion has a round trip budget and this statement already stands
+       -- between the credential and the write, so the three facts the grace is
+       -- decided from ride along for nothing.
+       p.created_at AS program_created_at,
+       EXISTS (SELECT 1 FROM run d
+                WHERE d.program_id = p.id AND d.kind = 'discovery'
+                  AND d.state = 'completed') AS completed_discovery,
+       EXISTS (SELECT 1 FROM run d
+                WHERE d.program_id = p.id AND d.kind = 'discovery') AS any_discovery,
+       (SELECT count(*) FROM asset a WHERE a.program_id = p.id) AS assets
   FROM run r
   JOIN program p ON p.id = r.program_id
  WHERE r.id = $1::uuid
@@ -456,16 +467,20 @@ type RunForIngestParams struct {
 }
 
 type RunForIngestRow struct {
-	ID             pgtype.UUID
-	OrgID          pgtype.UUID
-	ProgramID      pgtype.UUID
-	Kind           string
-	Scope          string
-	State          string
-	Deadline       pgtype.Timestamptz
-	ProgramState   string
-	AuthorizedFrom pgtype.Timestamptz
-	AuthorizedTo   pgtype.Timestamptz
+	ID                 pgtype.UUID
+	OrgID              pgtype.UUID
+	ProgramID          pgtype.UUID
+	Kind               string
+	Scope              string
+	State              string
+	Deadline           pgtype.Timestamptz
+	ProgramState       string
+	AuthorizedFrom     pgtype.Timestamptz
+	AuthorizedTo       pgtype.Timestamptz
+	ProgramCreatedAt   pgtype.Timestamptz
+	CompletedDiscovery bool
+	AnyDiscovery       bool
+	Assets             int64
 }
 
 // RunForIngest reads everything an ingestion checks before writing anything.
@@ -487,6 +502,10 @@ func (q *Queries) RunForIngest(ctx context.Context, arg RunForIngestParams) (Run
 		&i.ProgramState,
 		&i.AuthorizedFrom,
 		&i.AuthorizedTo,
+		&i.ProgramCreatedAt,
+		&i.CompletedDiscovery,
+		&i.AnyDiscovery,
+		&i.Assets,
 	)
 	return i, err
 }

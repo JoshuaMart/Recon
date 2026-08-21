@@ -48,3 +48,50 @@ func (r iteratorForAddRunTargets) Err() error {
 func (q *Queries) AddRunTargets(ctx context.Context, arg []AddRunTargetsParams) (int64, error) {
 	return q.db.CopyFrom(ctx, []string{"run_target"}, []string{"run_id", "asset_id", "org_id", "key"}, &iteratorForAddRunTargets{rows: arg})
 }
+
+// iteratorForWriteEvents implements pgx.CopyFromSource.
+type iteratorForWriteEvents struct {
+	rows                 []WriteEventsParams
+	skippedFirstNextCall bool
+}
+
+func (r *iteratorForWriteEvents) Next() bool {
+	if len(r.rows) == 0 {
+		return false
+	}
+	if !r.skippedFirstNextCall {
+		r.skippedFirstNextCall = true
+		return true
+	}
+	r.rows = r.rows[1:]
+	return len(r.rows) > 0
+}
+
+func (r iteratorForWriteEvents) Values() ([]interface{}, error) {
+	return []interface{}{
+		r.rows[0].OrgID,
+		r.rows[0].ProgramID,
+		r.rows[0].AssetID,
+		r.rows[0].Kind,
+		r.rows[0].Priority,
+		r.rows[0].Payload,
+		r.rows[0].CreatedAt,
+		r.rows[0].Suppressed,
+	}, nil
+}
+
+func (r iteratorForWriteEvents) Err() error {
+	return nil
+}
+
+// Notifications. The event is written by ingestion, in its transaction; only
+// the sending is asynchronous.
+// WriteEvents inserts a whole batch in one statement.
+//
+// Ingestion has a round trip budget per observation and a test fails past it.
+// One INSERT per changed observation would blow it on a first run, where
+// everything changes, which is exactly the scenario the milestone measures. So
+// the budget is counted per observation beyond the fixed cost of a batch.
+func (q *Queries) WriteEvents(ctx context.Context, arg []WriteEventsParams) (int64, error) {
+	return q.db.CopyFrom(ctx, []string{"notification_event"}, []string{"org_id", "program_id", "asset_id", "kind", "priority", "payload", "created_at", "suppressed"}, &iteratorForWriteEvents{rows: arg})
+}

@@ -75,6 +75,34 @@ type Config struct {
 	Verification Verification `koanf:"verification"`
 	Render       Render       `koanf:"render"`
 	Runner       Runner       `koanf:"runner"`
+	Notify       Notify       `koanf:"notify"`
+}
+
+// Notify is where alerts go and how often they leave.
+//
+// One generic webhook and only that. Discord and Slack are a payload template
+// rather than a connector: writing one in Go would freeze what a template
+// expresses and start over at the next one.
+type Notify struct {
+	// WebhookURL is the configured channel. Empty means an organization with no
+	// channel, which is a deliberate configuration rather than an outage:
+	// events are marked delivered and counted, so "computed and sent nowhere"
+	// stays visible.
+	WebhookURL string `koanf:"webhook_url"`
+	// Template renders the body. Empty takes the default, which is the shape
+	// Discord and Slack both accept.
+	Template string `koanf:"template"`
+	// MinPriority is the floor the configured channel wants.
+	MinPriority string `koanf:"min_priority"`
+	// Interval is how often the queue is drained. A takeover is sent with at
+	// most one tick between being written and being sent, so this is what
+	// "immediate" actually means.
+	Interval time.Duration `koanf:"interval"`
+	Batch    int           `koanf:"batch"`
+	Timeout  time.Duration `koanf:"timeout"`
+	// UnobservableAlert is the share of a programme's inventory that makes a
+	// mass tip an event.
+	UnobservableAlert float64 `koanf:"unobservable_alert"`
 }
 
 // Runner is how a run definition is actually started.
@@ -278,6 +306,13 @@ func Defaults() Config {
 			ConnectTimeout: 5 * time.Second,
 		},
 		Maintenance: Maintenance{Interval: time.Hour},
+		Notify: Notify{
+			MinPriority:       "low",
+			Interval:          30 * time.Second,
+			Batch:             200,
+			Timeout:           10 * time.Second,
+			UnobservableAlert: 0.10,
+		},
 		Runner: Runner{
 			Provider: RunnerNone,
 			Region:   "fr-par",
@@ -560,6 +595,18 @@ func (c *Config) Validate(role Role) error {
 		// this cannot be derived from the listen address. Without it a run
 		// definition names nowhere, and the failure would surface as a scanner
 		// that cannot fetch its targets rather than as a missing setting.
+		switch c.Notify.MinPriority {
+		case "critical", "high", "medium", "low":
+		default:
+			fail("notify.min_priority must be critical, high, medium or low, got %q", c.Notify.MinPriority)
+		}
+		if c.Notify.Interval <= 0 || c.Notify.Timeout <= 0 || c.Notify.Batch <= 0 {
+			fail("notify.interval, notify.timeout and notify.batch must all be positive")
+		}
+		if c.Notify.UnobservableAlert <= 0 || c.Notify.UnobservableAlert > 1 {
+			fail("notify.unobservable_alert must be a share in (0, 1], got %v", c.Notify.UnobservableAlert)
+		}
+
 		if c.Verification.PublicURL == "" {
 			fail("verification.public_url is required: it is where a run fetches its " +
 				"target list and posts its report")

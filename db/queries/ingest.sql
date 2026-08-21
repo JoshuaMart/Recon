@@ -463,7 +463,18 @@ SELECT ensure_monthly_partitions(to_regclass(@target::text), @months_ahead::int)
 --
 -- name: RunForIngest :one
 SELECT r.id, r.org_id, r.program_id, r.kind, r.scope, r.state, r.deadline,
-       p.state AS program_state, p.authorized_from, p.authorized_to
+       p.state AS program_state, p.authorized_from, p.authorized_to,
+       -- The first run grace, read here rather than in a query of its own.
+       -- Ingestion has a round trip budget and this statement already stands
+       -- between the credential and the write, so the three facts the grace is
+       -- decided from ride along for nothing.
+       p.created_at AS program_created_at,
+       EXISTS (SELECT 1 FROM run d
+                WHERE d.program_id = p.id AND d.kind = 'discovery'
+                  AND d.state = 'completed') AS completed_discovery,
+       EXISTS (SELECT 1 FROM run d
+                WHERE d.program_id = p.id AND d.kind = 'discovery') AS any_discovery,
+       (SELECT count(*) FROM asset a WHERE a.program_id = p.id) AS assets
   FROM run r
   JOIN program p ON p.id = r.program_id
  WHERE r.id = @run_id::uuid;

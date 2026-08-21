@@ -17,6 +17,7 @@ import (
 
 	"github.com/JoshuaMart/recon/internal/auth"
 	"github.com/JoshuaMart/recon/internal/ingest"
+	"github.com/JoshuaMart/recon/internal/notify"
 	"github.com/JoshuaMart/recon/internal/scope"
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
@@ -137,7 +138,13 @@ func (h *Reports) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Kind:      run.Kind,
 		Scope:     run.Scope,
 		Targets:   targets,
-		Due:       ingest.DefaultSchedule(h.now(), false),
+		Grace: notify.Grace{
+			CompletedDiscovery: run.CompletedDiscovery,
+			AnyDiscovery:       run.AnyDiscovery,
+			Assets:             int(run.Assets),
+			CreatedAt:          run.ProgramCreatedAt.Time,
+		},
+		Due: ingest.DefaultSchedule(h.now(), false),
 	}, set, report)
 	if err != nil {
 		h.log.ErrorContext(ctx, "ingest failed", "run", runID, "error", err)

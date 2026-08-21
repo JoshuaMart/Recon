@@ -126,6 +126,32 @@ type Membership struct {
 	Role   string
 }
 
+type NotificationChannel struct {
+	ID          pgtype.UUID
+	OrgID       pgtype.UUID
+	Kind        string
+	Url         string
+	SecretRef   *string
+	Template    *string
+	Enabled     bool
+	MinPriority string
+	ManagedBy   string
+	CreatedAt   pgtype.Timestamptz
+}
+
+type NotificationEvent struct {
+	ID         int64
+	OrgID      pgtype.UUID
+	ProgramID  pgtype.UUID
+	AssetID    pgtype.UUID
+	Kind       string
+	Priority   string
+	Payload    []byte
+	CreatedAt  pgtype.Timestamptz
+	NotifiedAt pgtype.Timestamptz
+	Suppressed bool
+}
+
 type Observation struct {
 	ID                  int64
 	OrgID               pgtype.UUID

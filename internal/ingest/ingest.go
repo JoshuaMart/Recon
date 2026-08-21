@@ -18,6 +18,7 @@ import (
 	"github.com/JoshuaMart/recon/internal/fingerprint"
 	"github.com/JoshuaMart/recon/internal/lifecycle"
 	"github.com/JoshuaMart/recon/internal/normalize"
+	"github.com/JoshuaMart/recon/internal/notify"
 	"github.com/JoshuaMart/recon/internal/scope"
 	"github.com/JoshuaMart/recon/internal/signals"
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
@@ -53,6 +54,11 @@ type Run struct {
 	// Due is when a freshly created asset becomes due. The arithmetic lives in
 	// Go, where it is testable, rather than in the statement that stores it.
 	Due Schedule
+	// Grace is what this programme's first run is allowed to keep quiet. It is
+	// read by the caller, in the statement that already checks the run, and
+	// frozen here for the whole batch: a notifier deciding at drain time would
+	// send a first run's flood late rather than never.
+	Grace notify.Grace
 }
 
 // Schedule is the first due date of a new asset.
@@ -85,7 +91,17 @@ type Summary struct {
 	// simply finds less, and nobody notices while looking at an inventory they
 	// have never seen otherwise.
 	Sources []SourceReport `json:"sources,omitempty"`
-	Unknown map[string]int
+	// Notifications is what this report is worth telling somebody, accumulated
+	// and written in one statement at the end of the transaction. Excluded
+	// from the run summary: it is a batch in flight rather than a fact about
+	// the run.
+	Notifications []notify.Event `json:"-"`
+	// grace is read once per report rather than once per event, and frozen at
+	// write time with the payload for the same reason.
+	grace notify.Grace
+	// suppressedCount is what the summary says about a first run.
+	Suppressed int
+	Unknown    map[string]int
 }
 
 // SourceReport is one enumeration source and how it went.
@@ -164,6 +180,8 @@ func New(enricher enrich.Enricher, cadence lifecycle.Cadence, log *slog.Logger, 
 func (i *Ingestor) Report(ctx context.Context, q *sqlcgen.Queries, run Run, set *scope.Set, report Report) (Summary, error) {
 	summary := Summary{Unknown: map[string]int{}}
 
+	summary.grace = run.Grace
+
 	for _, host := range report.Hosts {
 		summary.Hosts++
 
@@ -223,6 +241,10 @@ func (i *Ingestor) Report(ctx context.Context, q *sqlcgen.Queries, run Run, set 
 	// A declared path earns its render once the service it belongs to has
 	// answered. One statement for the whole report rather than one per
 	// service: it reads a state the observations above have already written.
+	if err := i.writeEvents(ctx, q, run, &summary); err != nil {
+		return summary, err
+	}
+
 	if err := q.ScheduleDeclaredURLs(ctx, sqlcgen.ScheduleDeclaredURLsParams{
 		ProgramID: uuidTo(run.ProgramID),
 		At:        stamp(i.now()),
@@ -333,7 +355,19 @@ func (i *Ingestor) writeAsset(
 	if err != nil {
 		return nil, fmt.Errorf("upsert asset %s: %w", key.Value, err)
 	}
-	return newState(row, key.Kind, key.Port)
+
+	st, err := newState(row, key.Kind, key.Port)
+	if err != nil {
+		return nil, err
+	}
+	st.key = key.Value
+	st.lineage = path
+	// On a first appearance there is no previous source, and the one being
+	// written is the answer to the same question.
+	if st.source == "" {
+		st.source = params.DiscoverySource
+	}
+	return st, nil
 }
 
 // enrichInto turns the address a run connected to into an operator and a place.
@@ -695,6 +729,47 @@ func qualify(outcome string, report Report) string {
 		return OutcomeError
 	}
 	return outcome
+}
+
+// writeEvents inserts a whole batch in one statement.
+//
+// Ingestion has a round trip budget per observation and a test fails past it.
+// One insert per changed observation would blow it on a first run, where
+// everything changes, which is exactly the scenario the milestone measures.
+func (i *Ingestor) writeEvents(ctx context.Context, q *sqlcgen.Queries, run Run, summary *Summary) error {
+	if len(summary.Notifications) == 0 {
+		return nil
+	}
+
+	at := stamp(i.now())
+	rows := make([]sqlcgen.WriteEventsParams, 0, len(summary.Notifications))
+	for _, event := range summary.Notifications {
+		payload, err := json.Marshal(event.Payload)
+		if err != nil {
+			return fmt.Errorf("encode %s payload: %w", event.Kind, err)
+		}
+		row := sqlcgen.WriteEventsParams{
+			OrgID:      uuidTo(run.OrgID),
+			ProgramID:  uuidTo(run.ProgramID),
+			Kind:       event.Kind,
+			Priority:   event.Priority,
+			Payload:    payload,
+			CreatedAt:  at,
+			Suppressed: event.Suppressed,
+		}
+		if event.AssetID != nil {
+			row.AssetID = uuidTo(*event.AssetID)
+		}
+		if event.Suppressed {
+			summary.Suppressed++
+		}
+		rows = append(rows, row)
+	}
+
+	if _, err := q.WriteEvents(ctx, rows); err != nil {
+		return fmt.Errorf("write %d events: %w", len(rows), err)
+	}
+	return nil
 }
 
 // accounting carries the scanner's source report into the run's summary.

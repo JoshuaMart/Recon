@@ -79,20 +79,21 @@ func (q *Queries) AssetForRender(ctx context.Context, arg AssetForRenderParams) 
 }
 
 const countUnobservable = `-- name: CountUnobservable :many
-SELECT c.program_id, p.name,
+SELECT c.program_id, c.org_id, p.name,
        count(*) FILTER (WHERE c.lifecycle = 'unobservable') AS unobservable,
        count(*) AS total
   FROM asset_current c
   JOIN program p ON p.id = c.program_id
  WHERE c.scope_status = 'in_scope'
    AND c.lifecycle <> 'archived'
- GROUP BY c.program_id, p.name
+ GROUP BY c.program_id, c.org_id, p.name
 HAVING count(*) FILTER (WHERE c.lifecycle = 'unobservable') > 0
  ORDER BY c.program_id
 `
 
 type CountUnobservableRow struct {
 	ProgramID    pgtype.UUID
+	OrgID        pgtype.UUID
 	Name         string
 	Unobservable int64
 	Total        int64
@@ -116,6 +117,7 @@ func (q *Queries) CountUnobservable(ctx context.Context) ([]CountUnobservableRow
 		var i CountUnobservableRow
 		if err := rows.Scan(
 			&i.ProgramID,
+			&i.OrgID,
 			&i.Name,
 			&i.Unobservable,
 			&i.Total,

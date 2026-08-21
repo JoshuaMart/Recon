@@ -10,6 +10,7 @@ import (
 	"github.com/JoshuaMart/recon/internal/fingerprint"
 	"github.com/JoshuaMart/recon/internal/lifecycle"
 	"github.com/JoshuaMart/recon/internal/normalize"
+	"github.com/JoshuaMart/recon/internal/notify"
 	"github.com/JoshuaMart/recon/internal/signals"
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
@@ -91,8 +92,16 @@ func (i *Ingestor) Render(
 		obs.rendered = &at
 	}
 
-	summary := Summary{Unknown: map[string]int{}}
+	summary := Summary{Unknown: map[string]int{}, grace: asset.Grace}
 	if err := i.applyRender(ctx, q, asset, result, st, obs, &summary); err != nil {
+		return Rendered{}, err
+	}
+
+	// A render produces events like any other observation, and they are written
+	// in the same transaction. Leaving this out made every detection the
+	// browser improved on invisible, which is the one classification the
+	// instrument's version exists for.
+	if err := i.writeEvents(ctx, q, Run{OrgID: asset.OrgID, ProgramID: asset.ProgramID}, &summary); err != nil {
 		return Rendered{}, err
 	}
 
@@ -131,6 +140,10 @@ type RenderTarget struct {
 	URL       string
 	Fronted   bool
 	Provider  string
+	// Grace is what this programme's first run may keep quiet, frozen by the
+	// caller for the same reason ingestion freezes it: a decision taken at
+	// drain time would send a first run's flood late rather than never.
+	Grace notify.Grace
 }
 
 // renderState reads the asset's counters without writing an identity.
@@ -147,7 +160,7 @@ func (i *Ingestor) renderState(ctx context.Context, q *sqlcgen.Queries, asset Re
 	if row.Port != nil {
 		port = int(*row.Port)
 	}
-	return newState(sqlcgen.UpsertAssetAndProjectionRow{
+	st, err := newState(sqlcgen.UpsertAssetAndProjectionRow{
 		AssetID:                      row.AssetID,
 		PreviousLifecycle:            &row.Lifecycle,
 		PreviousBackoffTier:          &row.BackoffTier,
@@ -158,6 +171,14 @@ func (i *Ingestor) renderState(ctx context.Context, q *sqlcgen.Queries, asset Re
 		PreviousFirstSeen:            row.FirstSeen,
 		PreviousLayers:               row.Layers,
 	}, normalize.Kind(asset.Kind), port)
+	if err != nil {
+		return nil, err
+	}
+	// A render is made for an asset that already exists, so its identity comes
+	// from the target rather than from a write. Without it every event a render
+	// produces names nothing.
+	st.key = asset.Key
+	return st, nil
 }
 
 // applyRender writes the observation, its counters and the schedule.

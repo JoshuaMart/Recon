@@ -57,14 +57,14 @@ UPDATE asset_current SET
 -- exactly when it matters.
 --
 -- name: CountUnobservable :many
-SELECT c.program_id, p.name,
+SELECT c.program_id, c.org_id, p.name,
        count(*) FILTER (WHERE c.lifecycle = 'unobservable') AS unobservable,
        count(*) AS total
   FROM asset_current c
   JOIN program p ON p.id = c.program_id
  WHERE c.scope_status = 'in_scope'
    AND c.lifecycle <> 'archived'
- GROUP BY c.program_id, p.name
+ GROUP BY c.program_id, c.org_id, p.name
 HAVING count(*) FILTER (WHERE c.lifecycle = 'unobservable') > 0
  ORDER BY c.program_id;
 

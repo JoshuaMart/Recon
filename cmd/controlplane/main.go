@@ -28,6 +28,7 @@ import (
 	"github.com/JoshuaMart/recon/internal/fingerprint"
 	"github.com/JoshuaMart/recon/internal/ingest"
 	"github.com/JoshuaMart/recon/internal/maintenance"
+	"github.com/JoshuaMart/recon/internal/notify"
 	"github.com/JoshuaMart/recon/internal/obs"
 	"github.com/JoshuaMart/recon/internal/render"
 	"github.com/JoshuaMart/recon/internal/runner"
@@ -102,6 +103,18 @@ func run() error {
 	go runs.NewSweeper(scheduler, sqlcgen.New(pool), cfg.Verification.SweepInterval, log).Run(ctx)
 	// The pass that provisions enumeration, distinct from the one on due dates.
 	go runs.NewCadence(pool, scheduler, cfg.Verification.SweepInterval, log).Run(ctx)
+
+	// The configured channel becomes the single row that carries it, and only
+	// where exactly one organization exists: a configuration file cannot name a
+	// tenant.
+	if err := notify.Bootstrap(ctx, sqlcgen.New(pool),
+		cfg.Notify.WebhookURL, cfg.Notify.Template, cfg.Notify.MinPriority, log); err != nil {
+		return err
+	}
+	// The only asynchronous half of the alert path. Producing an event is
+	// ingestion's job, in its transaction; this can lag without consequence.
+	notifier := notify.New(pool, notify.NewSender(cfg.Notify.Timeout, nil), cfg.Notify.Batch, log)
+	go notify.NewLoop(notifier, cfg.Notify.Interval, cfg.Notify.UnobservableAlert).Run(ctx)
 
 	// The browser loop, and the one thing here that is optional. A deployment
 	// with no rendering service is a deployment that only probes: the assets

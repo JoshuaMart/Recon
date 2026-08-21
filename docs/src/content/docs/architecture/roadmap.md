@@ -393,32 +393,69 @@ them, which is asserted on the definition it produces.
 
 **Goal**: [the system becomes better than a script](/architecture/notifications/).
 
-- [ ] [`notification_event`](/architecture/notifications/#123-where-the-event-is-produced) written **inside the ingestion transaction**, payload frozen, with its `CHECK`
-- [ ] Monthly partitioning, and a maintenance loop that starts unconditionally, for **both** partitioned tables
-- [ ] [Asymmetric retention](/architecture/notifications/#127-volume-and-retention)
-- [ ] The write folded into the statements that already exist
-- [ ] [Structured diffs](/architecture/notifications/#121-structured-diffs) per field type
-- [ ] [Revelation against real change](/architecture/verification/#87-dating-the-instrument) classification
-- [ ] The [event table](/architecture/notifications/#122-events-worth-notifying), excluding `geo_anomaly` and `external_host_dead`
-- [ ] Notifier loop, and the two program events it alone can produce
-- [ ] [Anti-flood](/architecture/notifications/#124-aggregation-and-anti-flood) and the [first run grace](/architecture/notifications/#125-the-first-run-of-a-program) with its age guardrail
-- [ ] [Per organization channels](/architecture/notifications/#channels-belong-to-an-organization) and a generic templated webhook
+- [x] [`notification_event`](/architecture/notifications/#123-where-the-event-is-produced) written **inside the ingestion transaction**, payload frozen, with its `CHECK`
+- [x] Monthly partitioning, and a maintenance loop that starts unconditionally, for **both** partitioned tables
+- [x] [Asymmetric retention](/architecture/notifications/#127-volume-and-retention)
+- [x] The write folded into the statements that already exist
+- [x] [Structured diffs](/architecture/notifications/#121-structured-diffs) per field type
+- [x] [Revelation against real change](/architecture/verification/#87-dating-the-instrument) classification
+- [x] The [event table](/architecture/notifications/#122-events-worth-notifying), excluding `geo_anomaly` and `external_host_dead`
+- [x] Notifier loop, and the two program events it alone can produce
+- [x] [Anti-flood](/architecture/notifications/#124-aggregation-and-anti-flood) and the [first run grace](/architecture/notifications/#125-the-first-run-of-a-program) with its age guardrail
+- [x] [Per organization channels](/architecture/notifications/#channels-belong-to-an-organization) and a generic templated webhook
 
 ### Milestone 5
 
-- [ ] An application version bump produces a readable notification saying *what* changed
-- [ ] A rescan with no real change produces **no** notification
+- [x] An application version bump produces a readable notification saying *what* changed
+- [x] A rescan with no real change produces **no** notification
 - [ ] On a **synthetic** set of 5 000 assets, a first run produces **one** summary and 5 000 suppressed events
 - [ ] On the same set, a later run turning 5 000 assets active sends at most 20 notifications per window, the rest carried by summaries, and **no event lost**
-- [ ] A takeover candidate is notified at critical priority, at most one Notifier tick after the event was written
-- [ ] A fingerprinter version bump produces diffs classified as detection improved, with no alert
-- [ ] A dangling CNAME recorded in phase 2 produces a critical notification **without recollecting anything**
+- [x] A takeover candidate is notified at critical priority, at most one Notifier tick after the event was written
+- [x] A fingerprinter version bump produces diffs classified as detection improved, with no alert
+- [x] A dangling CNAME recorded in phase 2 produces a critical notification **without recollecting anything**
 - [ ] A mass tip into `unobservable` triggers a distinct alert rather than being swallowed by a summary
 - [ ] A webhook answering 500 marks **no** event notified, and sending resumes on recovery
-- [ ] A program event with no `asset_id` is accepted, and a `takeover_candidate` without one is **refused by the database**
+- [x] A program event with no `asset_id` is accepted, and a `takeover_candidate` without one is **refused by the database**
 - [ ] A failed first run leaves the grace active; a later successful one ends it
 - [ ] A grace nothing ends expires at 7 days, emits its summary and reports the incident
-- [ ] The ingestion cost stays under budget, events included, on a batch where everything changes
+- [x] The ingestion cost stays under budget, events included, on a batch where everything changes
+
+:::caution[Phase 5 is not closed]
+Five assertions are still red, and all five are about **volume**: the synthetic set of five thousand
+assets, the twenty-per-window cap and its summary, the failed and expired graces, and the webhook that
+answers 500. Every one of them needs a fixture this suite does not have yet, and none of them is a
+question the parts already asserted can settle by looking harder.
+
+What is built and asserted is the shape: the event is written in the ingestion transaction and its
+payload is frozen there, the diff runs on normalized structures on **both** sides, the revelation
+classification holds, the grace and the windows are pure functions with their own tests, and the channel
+is a per organization row with a template rather than a connector.
+:::
+
+:::note[Measured]
+**Three bugs were found by writing the assertions, and the second is the one that mattered most.**
+
+`new_active` fired once per **observation** rather than once per asset, so one host arriving notified
+twice and a host with a service three times, and every one of those lines was true. A transition happens
+once per report and is told once.
+
+**A transition on a deduplicated observation produced nothing at all.** The diff needs a row to compare
+against, so the write path returned early where none was written, and the transition rode along in that
+early return. A death is three identical `nxdomain` answers and the transition lands on the **third**:
+the most common death in the system was silent. What the asset became is now told whether or not a row
+was written; what changed in the world is still told only where there is something to compare.
+
+**The comparison ran on the payload as it arrived against the stored one, which is normalized.** So every
+field normalization touches read as a change forever: a version it drops, a cookie map it turns into
+names. It also broke the revelation classification, because a pure addition arrived mixed with two
+phantom ones, so a detection improvement alerted as a real change. Both sides are normalized now, by the
+same function, which is what [12.1](/architecture/notifications/#121-structured-diffs) asks for in the
+sentence about two divergent implementations.
+
+**The round trip budget went to 3.00 and came back to 2.67.** Reading the first run grace in a query of
+its own cost one round trip per report, and the statement that already stands between the credential and
+the write had the three facts in reach.
+:::
 
 ## Phase 6: Search and facets
 

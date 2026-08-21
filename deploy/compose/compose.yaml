@@ -200,6 +200,8 @@ services:
       RECON_RUNNER__REGION: ${RUNNER_REGION:-fr-par}
       RECON_RUNNER__JOB_ID: ${RUNNER_JOB_ID:-}
       RECON_RUNNER__SECRET_KEY: ${RUNNER_SECRET_KEY:-}
+      RECON_NOTIFY__WEBHOOK_URL: ${NOTIFY_WEBHOOK_URL:-}
+      RECON_NOTIFY__MIN_PRIORITY: ${NOTIFY_MIN_PRIORITY:-low}
     volumes:
       - ${GEOIP_DIR:-../../var/geoip}:/geoip:ro
     ports:
