@@ -59,18 +59,21 @@ func TestTheCNAMEChainKeepsItsOrder(t *testing.T) {
 	}
 }
 
-func TestTheProbeSettingsBecomeCounts(t *testing.T) {
+// The counts are what separate "nothing else is open" from "nothing else was
+// tried", and they travel as counts rather than as a hundred identical port
+// numbers copied once per asset.
+func TestTheTCPLayerKeepsWhatTheSweepTried(t *testing.T) {
 	t.Parallel()
 
 	out := normalized(t, normalize.LayerTCP,
-		`{"open_ports":[443,80],"scanned_ports":[80,443,8080],"closed_ports":[8080]}`)
+		`{"open_ports":[443,80],"scan":{"scanned":100,"open":2,"refused":98,"filtered":0}}`)
 
-	if _, present := out["scanned_ports"]; present {
-		t.Error("a hundred identical port numbers stayed in the payload, once per asset")
+	scan, ok := out["scan"].(map[string]any)
+	if !ok {
+		t.Fatalf("the sweep counts did not survive: %v", out["scan"])
 	}
-	if out["scanned_ports_count"] != 3 {
-		t.Errorf("scanned_ports_count = %v, want 3: the count separates "+
-			"'nothing else is open' from 'nothing else was tried'", out["scanned_ports_count"])
+	if scan["refused"] != float64(98) {
+		t.Errorf("refused = %v, and it is the only thing that makes a closed host readable", scan["refused"])
 	}
 	if ports := out["open_ports"].([]any); ports[0] != float64(80) {
 		t.Errorf("open ports were not sorted: %v", ports)

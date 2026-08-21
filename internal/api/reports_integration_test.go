@@ -22,7 +22,10 @@ import (
 
 	"github.com/JoshuaMart/recon/internal/api"
 	"github.com/JoshuaMart/recon/internal/auth"
+	"github.com/JoshuaMart/recon/internal/config"
 	"github.com/JoshuaMart/recon/internal/ingest"
+	"github.com/JoshuaMart/recon/internal/lifecycle"
+	"github.com/JoshuaMart/recon/internal/runs"
 	"github.com/JoshuaMart/recon/internal/store"
 )
 
@@ -32,9 +35,15 @@ type harness struct {
 	pool    *pgxpool.Pool
 	server  *httptest.Server
 	signer  *auth.Signer
+	sched   *runs.Scheduler
+	clock   *clock
 	org     uuid.UUID
 	program uuid.UUID
 }
+
+type clock struct{ now time.Time }
+
+func (c *clock) Now() time.Time { return c.now }
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
@@ -79,8 +88,32 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("signer: %v", err)
 	}
 
-	h := &harness{pool: pool, signer: signer, org: uuid.New(), program: uuid.New()}
-	h.server = httptest.NewServer(api.NewReports(pool, signer, ingest.New(nil, quiet), quiet))
+	c := &clock{now: time.Now()}
+	cfg := config.Defaults().Verification
+	cfg.PublicURL = "https://recon.example"
+
+	h := &harness{
+		pool:    pool,
+		signer:  signer,
+		org:     uuid.New(),
+		program: uuid.New(),
+		clock:   c,
+		sched:   runs.New(signer, cfg, quiet, runs.WithClock(c.Now)),
+	}
+	ingestor := ingest.New(nil, lifecycle.DefaultCadence(), quiet)
+
+	// The whole route set rather than one handler. What the tests below check
+	// about a refusal is which of them answers, and a mux built per test would
+	// let a route be reachable in a test and unrouted in the binary.
+	mux := http.NewServeMux()
+	mux.Handle("POST /reports", api.NewReports(pool, signer, ingestor, quiet))
+	mux.Handle("GET /runs/{run}/targets", api.NewTargets(pool, signer, quiet))
+	guard := api.NewGuard(pool, quiet)
+	programs := api.NewPrograms(pool, h.sched, ingestor, quiet)
+	mux.Handle("POST /programs/{program}/runs", guard.Require(auth.ActionManageJobs, programs.StartRun))
+	mux.Handle("POST /programs/{program}/assets", guard.Require(auth.ActionManageScope, programs.EnterAssets))
+
+	h.server = httptest.NewServer(mux)
 	t.Cleanup(h.server.Close)
 
 	h.exec(t, `INSERT INTO org (id, name) VALUES ($1, 'tenant')`, h.org)

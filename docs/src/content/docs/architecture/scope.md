@@ -143,6 +143,21 @@ What matters is the meaning of the refusal. The client did not make a syntax err
 decision on a state that no longer exists, and the only honest answer is to say so, so it can reread
 before rewriting. Creation carries no version, since there is nothing to avoid overwriting.
 
+### Entering an asset by hand
+
+`POST /programs/{id}/assets` takes a list of names and URLs. It sits under the **scope** action rather
+than the ingestion one, and that is the decision worth writing down: entering an asset is an assertion
+about the perimeter, so a credential that could do it could widen the mandate it spends a budget on. A
+run holds the ingestion action and nothing else.
+
+Each entry becomes what [6.3](/architecture/lifecycle/#who-fills-the-due-dates) says it becomes. A name
+is a host due for `full`. A URL creates or finds the service it belongs to, schedules the **host** that
+service sits on, and earns its render only once the service has answered.
+
+An entry outside the perimeter is **stored and never probed**, like any other, and the answer says so
+per entry rather than in aggregate. A list where three names silently went nowhere is the failure mode
+this endpoint has, and a count of accepted entries would hide it.
+
 ### What the console can read
 
 The list of programs, one program, and its rules. Nothing more: the assets of a program are

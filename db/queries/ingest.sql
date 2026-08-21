@@ -41,10 +41,22 @@ WITH input AS (
         sqlc.narg(city)::text    AS city
 ),
 previous AS (
-    SELECT a.id, a.scope_status, a.discovery_source, c.lifecycle
+    SELECT a.id, a.scope_status, a.discovery_source, c.lifecycle, c.backoff_tier,
+           c.http_streak, c.fingerprint_streak, c.first_seen
       FROM asset a
       LEFT JOIN asset_current c ON c.asset_id = a.id
       JOIN input i ON a.program_id = i.program_id AND a.kind = i.kind AND a.key = i.key
+),
+layers AS (
+    SELECT jsonb_object_agg(l.layer, jsonb_build_object(
+               'state', l.state,
+               'informative', l.informative_failures,
+               'non_informative', l.non_informative_failures,
+               'first_failure_at', l.first_failure_at,
+               'last_ok_at', l.last_ok_at,
+               'last_checked_at', l.last_checked_at)) AS layers
+      FROM asset_layer l
+      JOIN previous p ON p.id = l.asset_id
 ),
 written AS (
     INSERT INTO asset (
@@ -113,20 +125,34 @@ projected AS (
                                    THEN asset_current.next_fingerprint_at END
     RETURNING asset_id
 )
--- A left join rather than three scalar subqueries, so that the generator can
--- see these are absent on a first appearance. A column it believes non-null is
--- one the caller cannot scan the first time an asset is written.
+-- A left join rather than scalar subqueries, so that the generator can see
+-- these are absent on a first appearance. A column it believes non-null is one
+-- the caller cannot scan the first time an asset is written.
+--
+-- The layer counters come back with the identity because the transitions are
+-- decided in Go, in this transaction, and reading them separately would put a
+-- round trip on the hottest write path for values this statement already has
+-- its hands on. They travel as one jsonb object rather than as four sets of
+-- columns: the set of layers is open, and adding one would otherwise be a
+-- signature change here and at every call site.
 SELECT
     w.id      AS asset_id,
     w.created AS created,
     p.scope_status     AS previous_scope_status,
     p.lifecycle        AS previous_lifecycle,
-    p.discovery_source AS previous_discovery_source
+    p.discovery_source AS previous_discovery_source,
+    p.backoff_tier     AS previous_backoff_tier,
+    p.http_streak      AS previous_http_streak,
+    p.fingerprint_streak AS previous_fingerprint_streak,
+    p.first_seen       AS previous_first_seen,
+    l.layers           AS previous_layers
   FROM written w
   LEFT JOIN previous p ON TRUE
+  LEFT JOIN layers l ON TRUE
  WHERE EXISTS (SELECT 1 FROM projected);
 
--- WriteObservation deduplicates against the head of the chain.
+-- WriteObservation deduplicates against the head of the chain, and applies
+-- everything the observation decides.
 --
 -- An observation is inserted only when it differs from the last one of the
 -- same (asset, layer). Each row then means "this state held from observed_at
@@ -138,9 +164,12 @@ SELECT
 -- version bump that changes nothing in the result must not write a row, which
 -- is the whole reason that version is stored twice.
 --
--- The previous payload comes back only when there was an insertion. Without
--- that condition, every observation would drag its own payload across the wire
--- while most of them deduplicate and have no diff to compute.
+-- The layer counters, the lifecycle and the promoted columns travel with it.
+-- They are decided in Go, from the counters the upsert already returned, so
+-- this statement stores a verdict rather than computing one. Splitting them
+-- into a second statement would double the round trips of the hottest write
+-- path of the system and open a window where an asset's state contradicts its
+-- last observation.
 --
 -- name: WriteObservation :one
 WITH input AS (
@@ -153,7 +182,37 @@ WITH input AS (
         @layer::text               AS layer,
         @outcome::text             AS outcome,
         sqlc.narg(producer_version)::text AS producer_version,
-        @data::jsonb               AS data
+        @data::jsonb               AS data,
+        -- The verdict, decided before this statement runs.
+        @layer_state::text         AS layer_state,
+        @informative::int          AS informative,
+        @non_informative::int      AS non_informative,
+        sqlc.narg(first_failure_at)::timestamptz AS first_failure_at,
+        sqlc.narg(last_ok_at)::timestamptz       AS last_ok_at,
+        @lifecycle::text           AS lifecycle,
+        -- Promoted columns are written only by the layer that owns them. A
+        -- COALESCE would look equivalent and is not: a page that loses its
+        -- title would keep the previous one forever.
+        @promote::boolean          AS promote,
+        sqlc.narg(status_code)::int   AS status_code,
+        sqlc.narg(final_url)::text    AS final_url,
+        sqlc.narg(title)::text        AS title,
+        sqlc.narg(server)::text       AS server,
+        sqlc.narg(technologies)::text[] AS technologies,
+        sqlc.narg(is_cdn)::boolean    AS is_cdn,
+        sqlc.narg(cdn_provider)::text AS cdn_provider,
+        sqlc.narg(waf_detected)::boolean AS waf_detected,
+        sqlc.narg(waf_vendor)::text   AS waf_vendor,
+        -- Signed: consecutive successes above zero, failures below. Null on a
+        -- layer that says nothing about an observer's reach.
+        sqlc.narg(http_streak)::int   AS http_streak,
+        sqlc.narg(http_reachable)::boolean AS http_reachable,
+        sqlc.narg(next_fingerprint_at)::timestamptz AS next_fingerprint_at,
+        sqlc.narg(fingerprint_priority)::smallint   AS fingerprint_priority,
+        -- The finding without its date, so that a pass which re-confirms it
+        -- compares equal and keeps the original.
+        sqlc.narg(takeover)::jsonb    AS takeover,
+        @takeover_kind::text          AS takeover_kind
 ),
 head AS (
     SELECT o.id, o.observed_at, o.outcome, o.data, o.last_producer_version
@@ -188,9 +247,102 @@ inserted AS (
       FROM input i
      WHERE NOT EXISTS (SELECT 1 FROM confirmed)
     RETURNING id
+),
+layered AS (
+    INSERT INTO asset_layer (
+        asset_id, org_id, layer, state, informative_failures,
+        non_informative_failures, first_failure_at, last_ok_at, last_checked_at)
+    SELECT
+        i.asset_id, i.org_id, i.layer, i.layer_state, i.informative,
+        i.non_informative, i.first_failure_at, i.last_ok_at, i.observed_at
+      FROM input i
+    ON CONFLICT (asset_id, layer) DO UPDATE SET
+        state                    = EXCLUDED.state,
+        informative_failures     = EXCLUDED.informative_failures,
+        non_informative_failures = EXCLUDED.non_informative_failures,
+        first_failure_at         = EXCLUDED.first_failure_at,
+        -- Never walked backwards: a layer that succeeded once has a date, and
+        -- an observation that says nothing must not erase it.
+        last_ok_at               = COALESCE(EXCLUDED.last_ok_at, asset_layer.last_ok_at),
+        last_checked_at          = GREATEST(asset_layer.last_checked_at, EXCLUDED.last_checked_at)
+    RETURNING asset_id
+),
+projected AS (
+    UPDATE asset_current c SET
+        lifecycle  = i.lifecycle,
+        dns_state  = CASE WHEN i.layer = 'dns'  THEN i.layer_state ELSE c.dns_state  END,
+        tcp_state  = CASE WHEN i.layer = 'tcp'  THEN i.layer_state ELSE c.tcp_state  END,
+        http_state = CASE WHEN i.layer = 'http' THEN i.layer_state ELSE c.http_state END,
+
+        status_code  = CASE WHEN i.promote THEN i.status_code  ELSE c.status_code  END,
+        final_url    = CASE WHEN i.promote THEN i.final_url    ELSE c.final_url    END,
+        title        = CASE WHEN i.promote THEN i.title        ELSE c.title        END,
+        server       = CASE WHEN i.promote THEN i.server       ELSE c.server       END,
+        technologies = CASE WHEN i.promote THEN COALESCE(i.technologies, '{}') ELSE c.technologies END,
+        waf_detected = CASE WHEN i.promote THEN i.waf_detected ELSE c.waf_detected END,
+        waf_vendor   = CASE WHEN i.promote THEN i.waf_vendor   ELSE c.waf_vendor   END,
+        -- Structural and observed identically by both observers, so it is
+        -- re-evaluated on every pass that can see it and never frozen: a
+        -- target can move behind an edge between two runs.
+        is_cdn       = COALESCE(i.is_cdn, c.is_cdn),
+        -- Follows is_cdn rather than coalescing on its own. A target that
+        -- moved off an edge would otherwise keep the provider it used to sit
+        -- behind, and a console showing a name beside a false flag is worse
+        -- than one showing neither.
+        cdn_provider = CASE WHEN i.is_cdn IS NULL THEN c.cdn_provider ELSE i.cdn_provider END,
+
+        http_streak    = COALESCE(i.http_streak, c.http_streak),
+        http_reachable = COALESCE(i.http_reachable, c.http_reachable),
+
+        -- A service earns its render once it has answered. The date is only
+        -- ever brought forward, so a baseline already due is not pushed back
+        -- by the pass that re-confirms the service.
+        next_fingerprint_at = CASE
+            WHEN i.next_fingerprint_at IS NULL OR c.scope_status <> 'in_scope' THEN c.next_fingerprint_at
+            ELSE LEAST(COALESCE(c.next_fingerprint_at, i.next_fingerprint_at), i.next_fingerprint_at) END,
+        -- Applied with the first schedule and never again. A baseline enters
+        -- low, and a pass that merely re-confirms the service must not push a
+        -- render somebody is waiting on back down to it.
+        fingerprint_priority = CASE
+            WHEN i.fingerprint_priority IS NULL OR c.next_fingerprint_at IS NOT NULL
+                THEN c.fingerprint_priority
+            ELSE i.fingerprint_priority END,
+
+        -- The timestamp is added here rather than by the probe. A date inside
+        -- the payload would differ on every pass, so a dangling CNAME probed
+        -- hourly would write a row an hour and defeat deduplication on exactly
+        -- the assets worth following. Comparing the finding without its date
+        -- is what keeps the original instant across confirmations.
+        attributes = CASE
+            WHEN i.takeover IS NOT NULL THEN
+                c.attributes || jsonb_build_object('takeover_candidate',
+                    i.takeover || jsonb_build_object('detected_at', COALESCE(
+                        CASE WHEN (c.attributes -> 'takeover_candidate') - 'detected_at' = i.takeover
+                             THEN c.attributes -> 'takeover_candidate' ->> 'detected_at' END,
+                        to_char(i.observed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))))
+            -- Cleared only by the layer that could have produced it. DNS sees
+            -- an orphan CNAME and HTTP sees an unclaimed service, and neither
+            -- has any business erasing the other's finding.
+            WHEN c.attributes -> 'takeover_candidate' ->> 'kind' = i.takeover_kind
+                THEN c.attributes - 'takeover_candidate'
+            ELSE c.attributes END,
+
+        last_seen       = GREATEST(c.last_seen, i.observed_at),
+        last_checked_at = GREATEST(c.last_checked_at, i.observed_at),
+        last_ok_at      = COALESCE(i.last_ok_at, c.last_ok_at),
+        -- Null on an asset that has never changed. Only an insertion is a
+        -- change: a confirmation of the same state is a probe, and a date that
+        -- moved on every probe would make every filter on recency return the
+        -- whole inventory.
+        last_changed_at = CASE WHEN EXISTS (SELECT 1 FROM inserted)
+                               THEN i.observed_at ELSE c.last_changed_at END
+      FROM input i
+     WHERE c.asset_id = i.asset_id
+    RETURNING c.asset_id
 )
 SELECT
     EXISTS (SELECT 1 FROM confirmed) AS deduplicated,
+    EXISTS (SELECT 1 FROM projected) AS projected,
     (SELECT h.data FROM head h WHERE NOT EXISTS (SELECT 1 FROM confirmed)) AS previous_data,
     (SELECT h.last_producer_version FROM head h WHERE NOT EXISTS (SELECT 1 FROM confirmed)) AS previous_producer_version;
 
@@ -302,11 +454,6 @@ INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline, target_co
 VALUES (@id::uuid, @org_id::uuid, @program_id::uuid, @kind::text, @scope::text,
         'pending', @deadline::timestamptz, sqlc.narg(target_count)::int);
 
--- name: AddRunTarget :exec
-INSERT INTO run_target (run_id, asset_id, org_id, key)
-VALUES (@run_id::uuid, @asset_id::uuid, @org_id::uuid, @key::text)
-ON CONFLICT (run_id, asset_id) DO NOTHING;
-
 -- CloseRun records what a run did.
 --
 -- started_at is written by the first report and never moved afterwards: it is
@@ -321,3 +468,74 @@ UPDATE run SET
     summary     = @summary::jsonb,
     error       = sqlc.narg(error)::text
  WHERE id = @run_id::uuid;
+
+-- RescheduleAsset moves an asset's due dates after a report answered for it.
+--
+-- Which dates move is decided by the run's scope. An asset due for full does
+-- not need a resolve run, because full runs every rung below it, and the
+-- reverse is not true: a resolve run learns nothing about a port.
+--
+-- A host the report never mentioned is not passed here at all. It gets no
+-- observation, no counter and no new due date, so the next tick selects it
+-- again. Silence is not a measurement, and turning it into one is how a
+-- truncated run archives live assets.
+--
+-- name: RescheduleAsset :exec
+UPDATE asset_current SET
+    -- An asset whose budget ran out ends archived rather than inactive. It is
+    -- not dead: it never existed, and the two readings call for opposite
+    -- things in a console.
+    lifecycle = CASE WHEN @archive::boolean THEN 'archived' ELSE lifecycle END,
+    next_resolve_at = CASE
+        WHEN @archive::boolean OR scope_status <> 'in_scope' THEN NULL
+        WHEN @move_resolve::boolean THEN sqlc.narg(next_resolve_at)::timestamptz
+        ELSE next_resolve_at END,
+    next_full_at = CASE
+        WHEN @archive::boolean OR scope_status <> 'in_scope' THEN NULL
+        WHEN @move_full::boolean THEN sqlc.narg(next_full_at)::timestamptz
+        ELSE next_full_at END,
+    next_fingerprint_at = CASE WHEN @archive::boolean THEN NULL ELSE next_fingerprint_at END,
+    backoff_tier = @backoff_tier::int,
+    -- Separates "given up after forty tries" from "never managed to test". The
+    -- second usually points at a local problem, a resolver or a banned
+    -- address, rather than at the target, and it has to stay visible.
+    total_attempts = total_attempts + 1
+ WHERE asset_id = @asset_id::uuid;
+
+-- ScheduleDeclaredURLs gives a declared path its render once its service has
+-- answered.
+--
+-- A URL has no liveness of its own: what answers is the service. So a hand
+-- entered URL earns nothing until the service it belongs to has been reached,
+-- and then it is rendered at the path as declared rather than at the service
+-- root. A scanned path is a byproduct; a declared one is an act.
+--
+-- One statement for a whole report rather than one per service: it reads a
+-- state the observations have already written.
+--
+-- name: ScheduleDeclaredURLs :exec
+UPDATE asset_current u SET
+    next_fingerprint_at  = @at::timestamptz,
+    fingerprint_priority = @priority::smallint
+  FROM asset a
+  JOIN asset_current s ON s.asset_id = a.parent_asset_id
+ WHERE u.asset_id = a.id
+   AND a.program_id = @program_id::uuid
+   AND a.kind = 'url'
+   AND u.scope_status = 'in_scope'
+   AND u.next_fingerprint_at IS NULL
+   AND s.http_state = 'healthy';
+
+-- PrincipalForToken resolves a console credential.
+--
+-- Only the hash is stored, so the value is printed once and never recoverable.
+-- The window and the revocation are checked in the statement rather than after
+-- it: a caller that forgot one of them would hold a credential nobody can take
+-- away.
+--
+-- name: PrincipalForToken :one
+SELECT t.id, t.org_id, t.created_by, t.scopes
+  FROM api_token t
+ WHERE t.token_hash = @token_hash::bytea
+   AND t.revoked_at IS NULL
+   AND (t.expires_at IS NULL OR t.expires_at > @at::timestamptz);

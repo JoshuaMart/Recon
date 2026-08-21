@@ -135,6 +135,7 @@ func (h *Reports) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		OrgID:     uuid.UUID(run.OrgID.Bytes),
 		ProgramID: uuid.UUID(run.ProgramID.Bytes),
 		Kind:      run.Kind,
+		Scope:     run.Scope,
 		Targets:   targets,
 		Due:       ingest.DefaultSchedule(h.now(), false),
 	}, set, report)

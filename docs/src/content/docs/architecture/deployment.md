@@ -22,13 +22,17 @@ A serverless job definition offers environment variables, which is exactly what 
 configurable through:
 
 ```
-FASTRECON_TARGETS_URL=https://recon.example/runs/01M0GH.../targets?exp=...&sig=...
+FASTRECON_TARGETS_URL=https://recon.example/runs/01M0GH.../targets?token=<targets token>
 FASTRECON_STAGES=resolve
 FASTRECON_PORTS=80,443,8080,...
+FASTRECON_SCAN_RATE=10
 FASTRECON_WEBHOOK_URL=https://recon.example/reports
 FASTRECON_WEBHOOK_HEADER=Authorization: Bearer <run token>
-FASTRECON_TIMEOUT=15m
+FASTRECON_TIMEOUT=30m
 ```
+
+The target list is served as plain text, one canonical host per line, because the consumer is a scanner
+reading a target file and the format has to be one it already accepts.
 
 **Two signed values, no table.** The targets URL and the report token are HMACs over
 `(run_id, purpose, expiry)`, computed with a server key. Nothing to store, nothing to revoke, nothing
@@ -50,7 +54,7 @@ CREATE TABLE run (
   state          text NOT NULL,   -- pending | running | completed | failed | expired
   deadline       timestamptz NOT NULL,
   created_at     timestamptz NOT NULL DEFAULT now(),
-  started_at     timestamptz,     -- written by the first report, see 9.8
+  started_at     timestamptz,     -- written when a scanner first reaches for the run, see 9.8
   finished_at    timestamptz,
   target_count   int,
   summary        jsonb,           -- stats, per source accounting, warnings
@@ -358,8 +362,11 @@ age, because two situations there call for opposite actions:
 - a run something has actually opened is a run to wait for;
 - a run nobody has claimed is a run whose provisioning failed.
 
-What separates them is `started_at`, written by the first report. It is the only thing that says a scanner
-actually opened the run rather than a provisioner having promised to.
+What separates them is `started_at`, written the first time a scanner reaches for the run. On a
+verification run that is the fetch of its target list, and on a discovery run, which has none, it is the
+report. It is the only thing that says a scanner actually opened the run rather than a provisioner having
+promised to, and taking it from the report alone would have left every verification run that died mid
+flight looking like one nothing ever started.
 
 ## 9.9 Reading the queue
 

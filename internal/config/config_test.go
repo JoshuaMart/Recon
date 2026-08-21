@@ -39,6 +39,7 @@ func TestTwoUnderscoresNestAndOneDoesNot(t *testing.T) {
 		Environ: environ(
 			"RECON_DATABASE__URL=postgres://app@localhost/recon",
 			"RECON_SECURITY__SIGNING_KEY=a-signing-key-long-enough-to-be-one",
+			"RECON_VERIFICATION__PUBLIC_URL=https://recon.example",
 			// One underscore inside a key, two between levels. If the
 			// transform confused the two, this would land nowhere and the
 			// default would survive.
@@ -69,6 +70,7 @@ func TestTheControlPlaneRefusesTheOwnerCredential(t *testing.T) {
 			"RECON_DATABASE__URL=postgres://app@localhost/recon",
 			"RECON_DATABASE__MIGRATION_URL=postgres://owner@localhost/recon",
 			"RECON_SECURITY__SIGNING_KEY=a-signing-key-long-enough-to-be-one",
+			"RECON_VERIFICATION__PUBLIC_URL=https://recon.example",
 		),
 	})
 	if err == nil {

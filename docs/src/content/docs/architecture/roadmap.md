@@ -125,32 +125,61 @@ list of changes rather than of probes.
 **Goal**: liveness on a direct target. Usable immediately on a hand entered list, which is what makes this
 phase testable before discovery exists.
 
-- [ ] [Run definitions](/architecture/deployment/#91-the-run-contract), signed target URL, signed report token
-- [ ] [Due date selection](/architecture/lifecycle/#63-scheduling-and-backoff) and the frozen target list as the lease
-- [ ] Deadline sweeper for runs, and the console refusal that names the run
-- [ ] [Backoff with jitter](/architecture/lifecycle/#backoff-curves), two curves
-- [ ] [Failure qualification](/architecture/lifecycle/#where-the-qualification-is-carried), informative against non informative
-- [ ] [The `lifecycle` state machine](/architecture/lifecycle/#62-state-machine), excluding `unobservable`, which depends on phase 3
-- [ ] [Projection onto `asset_current`](/architecture/lifecycle/#three-layers-one-lifecycle): layer states, promoted columns, reachability counters
-- [ ] [An open port becomes an asset](/architecture/verification/#an-open-port-becomes-an-asset), with its bound
-- [ ] [Dangling CNAME detection](/architecture/verification/#takeover-candidates) into a structured field
-- [ ] [Dead origin signatures behind a CDN](/architecture/verification/#dead-origin-behind-a-cdn) and `is_cdn` detection
-- [ ] Manual asset entry, under a scope action rather than the ingestion one: a host due for `full`, a URL scheduling the service it belongs to
+- [x] [Run definitions](/architecture/deployment/#91-the-run-contract), signed target URL, signed report token
+- [x] [Due date selection](/architecture/lifecycle/#63-scheduling-and-backoff) and the frozen target list as the lease
+- [x] Deadline sweeper for runs, and the console refusal that names the run
+- [x] [Backoff with jitter](/architecture/lifecycle/#backoff-curves), two curves
+- [x] [Failure qualification](/architecture/lifecycle/#where-the-qualification-is-carried), informative against non informative
+- [x] [The `lifecycle` state machine](/architecture/lifecycle/#62-state-machine), excluding `unobservable`, which depends on phase 3
+- [x] [Projection onto `asset_current`](/architecture/lifecycle/#three-layers-one-lifecycle): layer states, promoted columns, reachability counters
+- [x] [An open port becomes an asset](/architecture/verification/#an-open-port-becomes-an-asset), with its bound
+- [x] [Dangling CNAME detection](/architecture/verification/#takeover-candidates) into a structured field
+- [x] [Dead origin signatures behind a CDN](/architecture/verification/#dead-origin-behind-a-cdn) and `is_cdn` detection
+- [x] Manual asset entry, under a scope action rather than the ingestion one: a host due for `full`, a URL scheduling the service it belongs to
 
 ### Milestone 2
 
-- [ ] A hand entered list of 100 FQDNs produces a correct inventory
-- [ ] A hand entered host produces its open ports and their services on its **first** run, rather than a resolution alone
-- [ ] A hand entered URL earns no render until its service has answered, and is then rendered at the path as declared
-- [ ] An `nxdomain` confirmed 3 times over more than 24 h moves the asset to `INACTIVE`
-- [ ] An `nxdomain` confirmed 3 times in 90 minutes does **not**
-- [ ] A repeated timeout **never** produces an `INACTIVE`
-- [ ] An asset that comes back after a failure returns to `ACTIVE` on a single success
-- [ ] A host absent from a truncated report gets no observation and keeps its due date
-- [ ] A run killed mid flight blocks nothing: its targets are selected again on the next tick
-- [ ] Two concurrent runs never hold the same host
-- [ ] A port found open becomes a `service` asset, and 25 open ports on one host derive nothing
-- [ ] A dangling CNAME is recorded with `kind`, target, signature and timestamp, which is enough for phase 5 without recollecting anything
+- [x] A hand entered list of 100 FQDNs produces a correct inventory
+- [x] A hand entered host produces its open ports and their services on its **first** run, rather than a resolution alone
+- [x] A hand entered URL earns no render until its service has answered, and is then **scheduled** at the path as declared
+- [x] An `nxdomain` confirmed 3 times over more than 24 h moves the asset to `INACTIVE`
+- [x] An `nxdomain` confirmed 3 times in 90 minutes does **not**
+- [x] A repeated timeout **never** produces an `INACTIVE`
+- [x] An asset that comes back after a failure returns to `ACTIVE` on a single success
+- [x] A host absent from a truncated report gets no observation and keeps its due date
+- [x] A run killed mid flight blocks nothing: its targets are selected again on the next tick
+- [x] Two concurrent runs never hold the same host
+- [x] A port found open becomes a `service` asset, and 25 open ports on one host derive nothing
+- [x] A dangling CNAME is recorded with `kind`, target, signature and timestamp, which is enough for phase 5 without recollecting anything
+
+:::note[Measured]
+**Milestone 2 is closed**, and one assertion was corrected rather than met. It read "and is then
+**rendered** at the path as declared", which asks for the renderer, and the renderer is phase 3. What
+phase 2 owns is the schedule, so the assertion now says scheduled, and the render at the declared path
+is asserted where the render exists. That is the drafting error rule, not a relaxation.
+
+**The state machine is asserted on a clock the test owns.** Every threshold here is a shape rather than
+a count, "three failures over at least twenty four hours", and a suite that lets real time pass can
+only assert the count. Three nxdomains inside ninety minutes is the discriminating case, and it does
+not exist without an injected clock: removing the floor leaves the suite green in every other test and
+fails exactly that one.
+
+**2.33 round trips per observation**, up from 1.50 and against the same budget of three. The layer
+counters, the lifecycle and the promoted columns travel in the statement that writes the observation,
+so the transitions cost nothing extra; what the difference buys is the rescheduling of each host and one
+sweep per report for declared URLs.
+
+**The `tcp` layer concludes nothing yet, on purpose.** A report that lists only open ports cannot tell
+"nothing was open" from "nothing was tried", so the code reads the sweep counts when they are there and
+writes no observation when they are not
+([8.1](/architecture/verification/#what-the-port-sweep-can-conclude)). The scanner does not carry them
+today. `dns` and `http` conclude on their own evidence, which is what every assertion above rests on,
+and the day the counts arrive the layer starts speaking without a line changing here.
+
+**Four fixes were checked by removing them**: the lease exclusion, the silence of a truncated run, the
+downgrade of a degraded one, and the filtered-port guard. Each leaves the rest of the suite green and
+fails only its own assertion, which is the whole of what rule 8 asks.
+:::
 
 ## Phase 3: Fingerprinting
 

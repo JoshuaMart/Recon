@@ -101,6 +101,20 @@ type Host struct {
 	Sources []string `json:"sources,omitempty"`
 	CDN     []CDN    `json:"cdn,omitempty"`
 	Ports   []Port   `json:"ports,omitempty"`
+	// Scan is what the sweep actually tried. It is the only thing that lets
+	// the tcp layer conclude anything: a report listing open ports says
+	// nothing when the list is empty, and "nothing else is open" and "nothing
+	// else was tried" are the two readings that decide between a death and a
+	// silence. Absent until the scanner carries it, and absent is handled.
+	Scan *Scan `json:"scan,omitempty"`
+}
+
+// Scan is the port sweep's own accounting for one host.
+type Scan struct {
+	Scanned  int `json:"scanned"`
+	Open     int `json:"open"`
+	Refused  int `json:"refused"`
+	Filtered int `json:"filtered"`
 }
 
 // CDN records that some of a host's addresses sit behind an edge.

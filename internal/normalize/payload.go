@@ -103,20 +103,15 @@ var schemas = map[Layer]schema{
 
 	LayerTCP: {
 		required: []string{"open_ports"},
-		optional: []string{"addresses", "cdn", "scanned_ports", "closed_ports", "filtered_ports"},
+		// scan is what the sweep actually tried, as counts. It is the only
+		// thing that lets this layer conclude anything at all: a report
+		// listing open ports says nothing when the list is empty, and
+		// "nothing else is open" and "nothing else was tried" are the two
+		// readings that decide between a death and a silence.
+		optional: []string{"addresses", "cdn", "scan"},
 		apply: func(d map[string]any) {
 			sortNumbers(d, "open_ports")
 			sortStrings(d, "addresses")
-			// A hundred identical numbers on every asset are the probe's
-			// settings copied once per row. Their counts are another matter:
-			// "one open out of a hundred scanned" separates "nothing else is
-			// open" from "nothing else was tried".
-			for _, name := range []string{"scanned_ports", "closed_ports", "filtered_ports"} {
-				if list, ok := d[name]; ok {
-					d[name+"_count"] = length(list)
-					delete(d, name)
-				}
-			}
 		},
 	},
 
@@ -124,7 +119,12 @@ var schemas = map[Layer]schema{
 		required: []string{"scheme", "status_code"},
 		optional: []string{
 			"url", "final_url", "title", "server", "redirects",
-			"tech", "tls", "waf_detected", "waf_vendor",
+			"tech", "tls", "waf_detected", "waf_vendor", "waf_source",
+			// Derived at ingestion rather than reported. They live in the
+			// payload as well as in the projection because the journal has to
+			// stay readable on its own: an asset that was fronted last month
+			// and is not today is a change somebody will want to see.
+			"is_cdn", "cdn_provider", "origin_dead", "takeover_candidate",
 			// Both measure the request that just happened. A page carrying a
 			// CSRF token or a session id differs on every pass, and this is
 			// the busiest layer of the system.
@@ -396,14 +396,6 @@ func sortCommaList(value string) string {
 	}
 	sort.Strings(parts)
 	return strings.Join(parts, ", ")
-}
-
-func length(value any) int {
-	list, ok := value.([]any)
-	if !ok {
-		return 0
-	}
-	return len(list)
 }
 
 func toFloat(value any) (float64, bool) {

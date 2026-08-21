@@ -43,6 +43,34 @@ The derived asset is `CANDIDATE` with `last_checked_at` NULL. The port scan is a
 and `discovery_path` records which run found which port. Only a host derives services. A `service`
 asset makes its own port scanned and nothing else, so deriving from it would recreate itself.
 
+### What the port sweep can conclude
+
+A report that lists only open ports cannot conclude a death, and the reason is the same
+[P2](/architecture/principles/) one level down: an empty list reads as "nothing was open" and as "nothing
+was tried" at once, and those are opposite findings. A host behind a firewall that started dropping is
+indistinguishable from a host that closed everything.
+
+So the report carries what the sweep actually tried, as counts per host:
+
+```json
+{ "scan": { "scanned": 100, "open": 0, "refused": 100, "filtered": 0 } }
+```
+
+| Counts | Reading | `outcome` |
+|---|---|---|
+| `open > 0` | something listens | `ok` |
+| `open = 0`, `refused > 0`, `filtered = 0` | the host answers, nothing listens | **`fail`**, informative |
+| `open = 0`, any `filtered` | indistinguishable from a ban | `error` |
+| no counts at all | the sweep said nothing | **no observation** |
+
+**A single filtered port breaks the death**, and that is deliberate rather than cautious: what is
+filtered is exactly what could be hiding a service, and a verdict that ignores it would archive hosts on
+the strength of the ports that were *not* interesting.
+
+Until the scanner carries the counts the last line applies, so the `tcp` layer writes nothing rather than
+a verdict it cannot support. Nothing else degrades: `dns` and `http` conclude on their own evidence, and
+the layer that cannot speak stays silent.
+
 ### Dead origin behind a CDN
 
 Roughly a quarter of a real perimeter sits behind a CDN or a cloud edge, and on such an asset three
@@ -458,7 +486,7 @@ signature was seen, with its source:
 It serves display, filtering and pivots. Strategy is driven exclusively by the two reachability columns.
 `is_cdn` is unchanged: structural, observed identically by both observers, unambiguous.
 
-Signatures used at ingestion:
+Signatures used at ingestion, and what a raw report can actually carry them in:
 
 - **`is_cdn`**, the ASN and organization of the resolved address, the terminal CNAME (`*.edgekey.net`,
   `*.cloudfront.net`, `*.fastly.net`), and signature headers (`CF-RAY`, `X-Amz-Cf-Id`,
@@ -466,6 +494,13 @@ Signatures used at ingestion:
   report carries the provider name with a `scan_limited` marker.
 - **`waf_detected`**, mitigation headers and cookies (`cf_clearance`, `incap_ses_*`, `X-Sucuri-ID`), and
   recognizable challenge bodies.
+
+**The HTTP probe hands back a status, a server header, a title and a technology list, and no other
+header.** So the signatures the raw layer applies are the ones expressible in those four, which covers
+the origin errors and the interstitials, and not the header-only ones. The rest arrive with the render,
+which sees the body and every header, and that is the ordinary division between the detector and the
+enricher rather than a gap: a signature nobody can express writes nothing, and an unknown signature
+produces no signal rather than a weak one.
 
 Both are re-evaluated on every pass, never frozen. A target can move behind a WAF between two runs.
 

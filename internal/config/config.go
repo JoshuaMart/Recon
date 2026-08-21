@@ -63,7 +63,48 @@ type Config struct {
 	Enrich   Enrich   `koanf:"enrich"`
 	Security Security `koanf:"security"`
 
-	Maintenance Maintenance `koanf:"maintenance"`
+	Maintenance  Maintenance  `koanf:"maintenance"`
+	Verification Verification `koanf:"verification"`
+}
+
+// Verification is the loop that keeps the inventory honest, and the shape of
+// the runs it provisions.
+//
+// The cadences are configuration rather than constants because the stage ladder
+// is the cost knob: a resolve is one round trip to the resolver pool and a full
+// is a hundred connections per host, so the right numbers depend on the size of
+// a perimeter and on what the programme allows.
+type Verification struct {
+	Resolve     time.Duration `koanf:"resolve"`
+	Full        time.Duration `koanf:"full"`
+	Fingerprint time.Duration `koanf:"fingerprint"`
+	Inactive    time.Duration `koanf:"inactive"`
+	Jitter      time.Duration `koanf:"jitter"`
+	// BatchSize is how many hosts one run freezes. It is what actually bounds
+	// a pass: a due date decides eligibility, and this decides what goes out.
+	BatchSize int `koanf:"batch_size"`
+	// Timeout is a run's own budget, and it has to expire before the
+	// platform's. The outer bound sits on a job definition Recon does not
+	// control, so this value has to be set to match: a run killed from outside
+	// delivers nothing, where one that runs out of its own time still delivers
+	// a truncated report.
+	Timeout time.Duration `koanf:"timeout"`
+	// Grace is how long past the deadline a report is still worth ingesting.
+	// The data is valid either way; the run may simply have been
+	// re-dispatched.
+	Grace time.Duration `koanf:"grace"`
+	// SweepInterval is how often runs past their deadline are expired. A run
+	// nothing expires holds its targets forever.
+	SweepInterval time.Duration `koanf:"sweep_interval"`
+	// Ports is the curated list, and it is data rather than code. It travels
+	// in the run definition so discovery and verification scan the same ports:
+	// a second list configured on the scanner would be a second list to keep
+	// in agreement, and nothing would raise an error when the two diverged.
+	Ports string `koanf:"ports"`
+	// PublicURL is the base a run reaches this control plane on, for its
+	// target list and for its report. It is not derivable from the listen
+	// address: the scanner runs somewhere else entirely.
+	PublicURL string `koanf:"public_url"`
 }
 
 // Security holds the one secret the control plane signs with.
@@ -147,6 +188,25 @@ func Defaults() Config {
 			ConnectTimeout: 5 * time.Second,
 		},
 		Maintenance: Maintenance{Interval: time.Hour},
+		Verification: Verification{
+			Resolve:       24 * time.Hour,
+			Full:          72 * time.Hour,
+			Fingerprint:   21 * 24 * time.Hour,
+			Inactive:      7 * 24 * time.Hour,
+			Jitter:        15 * time.Minute,
+			BatchSize:     500,
+			Timeout:       30 * time.Minute,
+			Grace:         10 * time.Minute,
+			SweepInterval: time.Minute,
+			// Not nmap's top 100, which orders ports by how often they are
+			// open across the whole internet and therefore leads with mail and
+			// printing. The criterion here is that a port earns its place if
+			// it can carry a finding.
+			Ports: "80,443,8080,8443,8000,8090,9000,9443,3000,5000," +
+				"2375,2376,6443,10250,15672,5601,8983,9990,2083,2087," +
+				"3306,5432,27017,6379,9200,11211,9042,2379," +
+				"3389,5900,1080,3128",
+		},
 	}
 }
 
@@ -315,6 +375,33 @@ func (c *Config) Validate(role Role) error {
 		}
 		if c.Maintenance.Interval <= 0 {
 			fail("maintenance.interval must be positive, got %s", c.Maintenance.Interval)
+		}
+		for name, value := range map[string]time.Duration{
+			"resolve": c.Verification.Resolve, "full": c.Verification.Full,
+			"fingerprint": c.Verification.Fingerprint, "inactive": c.Verification.Inactive,
+			"timeout": c.Verification.Timeout, "sweep_interval": c.Verification.SweepInterval,
+		} {
+			if value <= 0 {
+				fail("verification.%s must be positive, got %s", name, value)
+			}
+		}
+		if c.Verification.Jitter < 0 {
+			fail("verification.jitter must not be negative, got %s", c.Verification.Jitter)
+		}
+		if c.Verification.BatchSize <= 0 {
+			fail("verification.batch_size must be positive, got %d", c.Verification.BatchSize)
+		}
+		if c.Verification.Ports == "" {
+			fail("verification.ports is required: the port list travels in the run " +
+				"definition so that discovery and verification scan the same ports")
+		}
+		// A run reaches this control plane from somewhere else entirely, so
+		// this cannot be derived from the listen address. Without it a run
+		// definition names nowhere, and the failure would surface as a scanner
+		// that cannot fetch its targets rather than as a missing setting.
+		if c.Verification.PublicURL == "" {
+			fail("verification.public_url is required: it is where a run fetches its " +
+				"target list and posts its report")
 		}
 
 	case RoleMigrate:

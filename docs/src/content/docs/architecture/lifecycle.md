@@ -137,12 +137,19 @@ service.
 |---|---|---|
 | `fqdn` | `dns`, `tcp` | its own run |
 | `ip` | `tcp` | the hosts that resolve to it |
-| `service` | `tcp`, `http` | its host's run |
+| `service` | `http` | its host's run |
 | `url` | `http` | its service's run, and a render of its own |
 
 An address is never a target of its own, and that is not a workaround: an address only ever enters this
 inventory as the answer to a name, so the name is where the schedule belongs
 ([7.2](/architecture/discovery/#what-the-list-may-contain-and-why-recon-satisfies-it-by-construction)).
+
+**A service carries no `tcp` layer of its own**, and the reason is the same one that makes it a
+candidate when it is derived: the port sweep is an observation about the *host*, so it fills the host's
+`tcp` layer and not the service's. What addresses the service is the HTTP probe, and a port carrying no
+HTTP service is a port nothing has spoken to. Writing the sweep's result onto the service as well would
+report every open port as a verified application, which is exactly the claim
+[8.1](/architecture/verification/#an-open-port-becomes-an-asset) refuses to make.
 
 ### The stage ladder is the cost knob
 

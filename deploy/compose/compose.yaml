@@ -177,6 +177,11 @@ services:
       # that looks the same either way.
       RECON_ENRICH__CITY_DATABASE: ${GEOIP_CITY_DATABASE:-}
       RECON_ENRICH__ASN_DATABASE: ${GEOIP_ASN_DATABASE:-}
+      # Where a run comes back to. Not derivable from the listen address: the
+      # scanner runs somewhere else entirely, and a definition that named
+      # nowhere would surface as a scanner unable to fetch its targets rather
+      # than as a missing setting.
+      RECON_VERIFICATION__PUBLIC_URL: ${PUBLIC_URL:-http://controlplane:8080}
     volumes:
       - ${GEOIP_DIR:-../../var/geoip}:/geoip:ro
     ports:

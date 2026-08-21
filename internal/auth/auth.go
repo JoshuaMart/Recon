@@ -161,3 +161,36 @@ func (s *Signer) sign(body string) string {
 	mac.Write([]byte(body))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
+
+// Hash is how a credential is stored and looked up.
+//
+// Only the hash lives in the database, so a token is printed once and never
+// recoverable. A plain SHA-256 rather than a password hash is right here and
+// would be wrong for a password: this value is generated with full entropy, so
+// there is no dictionary to slow down, and the lookup is on the hot path of
+// every console request.
+func Hash(token string) []byte {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
+	return sum[:]
+}
+
+// Actions turns the stored scopes into what a caller may do.
+//
+// An unknown scope is dropped rather than rejected. The list grows, and a token
+// issued by a newer release must not lock its holder out of everything it does
+// hold.
+func Actions(scopes []string) []Action {
+	known := map[string]Action{
+		string(ActionIngest):      ActionIngest,
+		string(ActionReadAssets):  ActionReadAssets,
+		string(ActionManageScope): ActionManageScope,
+		string(ActionManageJobs):  ActionManageJobs,
+	}
+	out := make([]Action, 0, len(scopes))
+	for _, scope := range scopes {
+		if action, ok := known[strings.TrimSpace(scope)]; ok {
+			out = append(out, action)
+		}
+	}
+	return out
+}

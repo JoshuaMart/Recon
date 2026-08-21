@@ -21,6 +21,7 @@ import (
 
 	"github.com/JoshuaMart/recon/internal/enrich"
 	"github.com/JoshuaMart/recon/internal/ingest"
+	"github.com/JoshuaMart/recon/internal/lifecycle"
 	"github.com/JoshuaMart/recon/internal/scope"
 	"github.com/JoshuaMart/recon/internal/store"
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
@@ -86,7 +87,7 @@ func newHarness(t *testing.T) *harness {
 		counter: counter,
 		org:     uuid.New(),
 		program: uuid.New(),
-		ing:     ingest.New(nil, quiet),
+		ing:     ingest.New(nil, lifecycle.DefaultCadence(), quiet),
 	}
 
 	exec(t, pool, `INSERT INTO org (id, name) VALUES ($1, 'tenant')`, h.org)
@@ -458,7 +459,7 @@ func TestTheOperatorReachesTheProjection(t *testing.T) {
 	ctx := context.Background()
 	set := h.scope(t, include("target.test"))
 
-	h.ing = ingest.New(fixedEnricher{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h.ing = ingest.New(fixedEnricher{}, lifecycle.DefaultCadence(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if _, err := h.ing.Report(ctx, h.queries, h.run(), set, oneHost("api.target.test")); err != nil {
 		t.Fatalf("report: %v", err)
 	}
@@ -515,7 +516,7 @@ func TestAFourByteOperatorNumberSurvives(t *testing.T) {
 	ctx := context.Background()
 	set := h.scope(t, include("target.test"))
 
-	h.ing = ingest.New(bigASNEnricher{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h.ing = ingest.New(bigASNEnricher{}, lifecycle.DefaultCadence(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if _, err := h.ing.Report(ctx, h.queries, h.run(), set, oneHost("api.target.test")); err != nil {
 		t.Fatalf("report: %v", err)
 	}

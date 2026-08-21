@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"math/rand/v2"
 	"net/netip"
 	"time"
 
@@ -14,8 +15,10 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/JoshuaMart/recon/internal/enrich"
+	"github.com/JoshuaMart/recon/internal/lifecycle"
 	"github.com/JoshuaMart/recon/internal/normalize"
 	"github.com/JoshuaMart/recon/internal/scope"
+	"github.com/JoshuaMart/recon/internal/signals"
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
@@ -40,6 +43,9 @@ type Run struct {
 	OrgID     uuid.UUID
 	ProgramID uuid.UUID
 	Kind      string
+	// Scope is the rung the run reached, and it decides which due dates its
+	// report moves.
+	Scope string
 	// Targets is the frozen list, keyed by canonical host. Nil on a discovery
 	// run, which has no list because it is the one allowed to find things.
 	Targets map[string]struct{}
@@ -68,30 +74,78 @@ type Summary struct {
 	// have been re-dispatched, and deduplication merges the two.
 	Late    bool
 	Derived int
-	Unknown map[string]int
+	// Takeovers counts the findings this report carried, so a run that found
+	// one says so in its own summary rather than only in a table nobody reads
+	// until an alert fires.
+	Takeovers int
+	Unknown   map[string]int
 }
 
 // Ingestor writes reports into the inventory.
 type Ingestor struct {
 	enricher enrich.Enricher
-	now      func() time.Time
-	log      *slog.Logger
+	cadence  lifecycle.Cadence
+	// random draws the jitter every delay is widened by. Without it the
+	// thousands of assets one run wrote share a due date and come back
+	// together forever. It is a field so that a test asserts a date rather
+	// than a range.
+	random func() float64
+	now    func() time.Time
+	log    *slog.Logger
+}
+
+// Option adjusts an ingestor.
+//
+// Two of the three inputs of a due date are a clock and a random draw, which
+// makes the arithmetic of scheduling untestable unless both can be handed in.
+// Asserting a range instead would pass on a function that returns a constant.
+type Option func(*Ingestor)
+
+// WithClock replaces the instant every observation is stamped with.
+func WithClock(now func() time.Time) Option {
+	return func(i *Ingestor) {
+		if now != nil {
+			i.now = now
+		}
+	}
+}
+
+// WithJitter replaces the draw every delay is widened by.
+func WithJitter(random func() float64) Option {
+	return func(i *Ingestor) {
+		if random != nil {
+			i.random = random
+		}
+	}
 }
 
 // New builds an ingestor.
-func New(enricher enrich.Enricher, log *slog.Logger) *Ingestor {
+func New(enricher enrich.Enricher, cadence lifecycle.Cadence, log *slog.Logger, opts ...Option) *Ingestor {
 	if enricher == nil {
 		enricher = enrich.Nothing()
 	}
-	return &Ingestor{enricher: enricher, now: time.Now, log: log}
+	if cadence.Resolve <= 0 {
+		cadence = lifecycle.DefaultCadence()
+	}
+	ingestor := &Ingestor{
+		enricher: enricher,
+		cadence:  cadence,
+		random:   rand.Float64,
+		now:      time.Now,
+		log:      log,
+	}
+	for _, opt := range opts {
+		opt(ingestor)
+	}
+	return ingestor
 }
 
 // Report writes a whole report inside one transaction.
 //
 // Everything that concludes something about a target is decided here rather
-// than believed: the scope, the outcome, and which assets a finding implies. A
-// scanner that lied about any of the three would be reclassified, requalified
-// and bounded on arrival.
+// than believed: the scope, the outcome, which assets a finding implies, and
+// what state the asset is now in. A scanner that lied about any of them would
+// be reclassified, requalified and bounded on arrival.
 func (i *Ingestor) Report(ctx context.Context, q *sqlcgen.Queries, run Run, set *scope.Set, report Report) (Summary, error) {
 	summary := Summary{Unknown: map[string]int{}}
 
@@ -116,21 +170,48 @@ func (i *Ingestor) Report(ctx context.Context, q *sqlcgen.Queries, run Run, set 
 			}
 		}
 
-		assetID, created, err := i.writeAsset(ctx, q, run, set, key, host, nil)
+		st, err := i.writeAsset(ctx, q, run, set, key, host, nil)
 		if err != nil {
 			return summary, err
 		}
 		summary.Assets++
-		if created {
+		if st.created {
 			summary.Created++
 		}
 
-		if err := i.writeHostObservations(ctx, q, run, report, assetID, host, &summary); err != nil {
+		// Whether an asset sits behind an edge is structural, seen identically
+		// by every observer, so it is decided once for the host and carried to
+		// the services it derives.
+		edge := i.edge(host)
+
+		answered, err := i.writeHostObservations(ctx, q, run, report, st, host, edge, &summary)
+		if err != nil {
 			return summary, err
 		}
-		if err := i.writeServices(ctx, q, run, set, report, key, assetID, host, &summary); err != nil {
+		if err := i.writeServices(ctx, q, run, set, report, key, st, host, edge, &summary); err != nil {
 			return summary, err
 		}
+
+		// A host the report did not answer for keeps its due date, so the next
+		// tick selects it again. Silence is not a measurement, and turning it
+		// into one is how a truncated run archives live assets.
+		if !answered {
+			continue
+		}
+		if err := i.reschedule(ctx, q, run, st); err != nil {
+			return summary, err
+		}
+	}
+
+	// A declared path earns its render once the service it belongs to has
+	// answered. One statement for the whole report rather than one per
+	// service: it reads a state the observations above have already written.
+	if err := q.ScheduleDeclaredURLs(ctx, sqlcgen.ScheduleDeclaredURLsParams{
+		ProgramID: uuidTo(run.ProgramID),
+		At:        stamp(i.now()),
+		Priority:  lifecycle.PriorityBaseline,
+	}); err != nil {
+		return summary, fmt.Errorf("schedule declared urls: %w", err)
 	}
 
 	return summary, nil
@@ -145,16 +226,35 @@ func hostKey(raw string) (normalize.Key, error) {
 	return normalize.FQDN(raw)
 }
 
+// edge decides whether a host sits behind a CDN, and which one.
+func (i *Ingestor) edge(host Host) promoted {
+	var provider string
+	for _, cdn := range host.CDN {
+		if cdn.Name != "" {
+			provider = cdn.Name
+			break
+		}
+	}
+
+	var operator string
+	if addrs := addresses(host.Addresses); len(addrs) > 0 {
+		operator = i.enricher.Lookup(addrs[0]).ASNOrg
+	}
+
+	fronted, name := signals.CDN(provider, host.CNAME, operator)
+	return promoted{IsCDN: &fronted, CDNProvider: text(name)}
+}
+
 func (i *Ingestor) writeAsset(
 	ctx context.Context, q *sqlcgen.Queries, run Run, set *scope.Set,
 	key normalize.Key, host Host, parent *uuid.UUID,
-) (uuid.UUID, bool, error) {
+) (*state, error) {
 	target := scope.Target{Key: key, Addresses: addresses(host.Addresses)}
 	status := set.Classify(target)
 
 	path, err := lineage(run, host)
 	if err != nil {
-		return uuid.Nil, false, err
+		return nil, err
 	}
 
 	params := sqlcgen.UpsertAssetAndProjectionParams{
@@ -181,17 +281,19 @@ func (i *Ingestor) writeAsset(
 		params.DiscoveryPath = path
 	}
 	i.enrichInto(&params, target.Addresses)
-	// Only in-scope assets are scheduled, which the statement enforces too.
-	if status == scope.InScope {
+	// Only in-scope assets are scheduled, and only hosts carry these two. A
+	// service is observed through its host's run, so a resolve date on one
+	// would put it in a queue nothing dispatches from.
+	if status == scope.InScope && (key.Kind == normalize.KindFQDN || key.Kind == normalize.KindIP) {
 		params.NextResolveAt = stampPtr(run.Due.Resolve)
 		params.NextFullAt = stampPtr(run.Due.Full)
 	}
 
 	row, err := q.UpsertAssetAndProjection(ctx, params)
 	if err != nil {
-		return uuid.Nil, false, fmt.Errorf("upsert asset %s: %w", key.Value, err)
+		return nil, fmt.Errorf("upsert asset %s: %w", key.Value, err)
 	}
-	return uuid.UUID(row.AssetID.Bytes), row.Created, nil
+	return newState(row, key.Kind)
 }
 
 // enrichInto turns the address a run connected to into an operator and a place.
@@ -221,15 +323,17 @@ func (i *Ingestor) enrichInto(params *sqlcgen.UpsertAssetAndProjectionParams, ad
 	params.City = text(found.City)
 }
 
+// writeHostObservations writes what a run learned about a name. It reports
+// whether the run answered for the host at all.
 func (i *Ingestor) writeHostObservations(
 	ctx context.Context, q *sqlcgen.Queries, run Run, report Report,
-	assetID uuid.UUID, host Host, summary *Summary,
-) error {
+	st *state, host Host, edge promoted, summary *Summary,
+) (bool, error) {
 	// A host the run never reached produces nothing. Inventing a verdict for
 	// one that was never queried would be worse than admitting the gap, and it
 	// is how a truncated run archives live assets.
 	if host.Status == StatusDiscovered {
-		return nil
+		return false, nil
 	}
 
 	dns := map[string]any{"status": host.Status}
@@ -242,24 +346,54 @@ func (i *Ingestor) writeHostObservations(
 	if len(host.CNAME) > 0 {
 		dns["cname"] = anySlice(host.CNAME)
 	}
-	if err := i.write(ctx, q, run, report, assetID, normalize.LayerDNS, dnsOutcome(host), dns, summary); err != nil {
-		return err
+
+	// A name pointing at a name that no longer exists. The dangling pointer
+	// and its proof arrive in one query, because a recursive resolver follows
+	// the chain itself and returns nxdomain with the CNAME still in the answer
+	// section.
+	takeover := signals.Dangling(host.Status, host.Reason, host.CNAME)
+	if takeover != nil {
+		dns["takeover_candidate"] = takeover.Map()
+		summary.Takeovers++
 	}
 
-	if len(host.Ports) > 0 {
-		tcp := map[string]any{"open_ports": ports(host.Ports)}
-		if len(host.Addresses) > 0 {
-			tcp["addresses"] = anySlice(host.Addresses)
-		}
-		if len(host.CDN) > 0 {
-			tcp["cdn"] = jsonAny(host.CDN)
-		}
-		if err := i.write(ctx, q, run, report, assetID, normalize.LayerTCP, OutcomeOK, tcp, summary); err != nil {
-			return err
-		}
+	if err := i.apply(ctx, q, run, report, st, observation{
+		layer:        normalize.LayerDNS,
+		outcome:      dnsOutcome(host),
+		data:         dns,
+		promoted:     edge,
+		takeover:     takeover,
+		takeoverKind: signals.KindOrphanCNAME,
+	}, summary); err != nil {
+		return true, err
 	}
 
-	return nil
+	outcome := tcpOutcome(host)
+	if outcome == "" {
+		return true, nil
+	}
+
+	tcp := map[string]any{"open_ports": ports(host.Ports)}
+	if len(host.Addresses) > 0 {
+		tcp["addresses"] = anySlice(host.Addresses)
+	}
+	if len(host.CDN) > 0 {
+		tcp["cdn"] = jsonAny(host.CDN)
+	}
+	if host.Scan != nil {
+		tcp["scan"] = jsonAny(host.Scan)
+	}
+	if err := i.apply(ctx, q, run, report, st, observation{
+		layer:        normalize.LayerTCP,
+		outcome:      outcome,
+		data:         tcp,
+		promoted:     edge,
+		takeoverKind: signals.KindOrphanCNAME,
+	}, summary); err != nil {
+		return true, err
+	}
+
+	return true, nil
 }
 
 // writeServices turns every open port into an asset.
@@ -270,20 +404,20 @@ func (i *Ingestor) writeHostObservations(
 // probe that finds it would have no way to put it in the inventory.
 func (i *Ingestor) writeServices(
 	ctx context.Context, q *sqlcgen.Queries, run Run, set *scope.Set, report Report,
-	hostKey normalize.Key, hostID uuid.UUID, host Host, summary *Summary,
+	hostKey normalize.Key, host *state, reported Host, edge promoted, summary *Summary,
 ) error {
 	// Only a host derives services. A service makes its own port scanned and
 	// nothing else, so deriving from one would recreate itself.
 	if hostKey.Kind != normalize.KindFQDN && hostKey.Kind != normalize.KindIP {
 		return nil
 	}
-	if len(host.Ports) > maxDerivedPorts {
+	if len(reported.Ports) > maxDerivedPorts {
 		i.log.WarnContext(ctx, "too many open ports to derive services",
-			"host", hostKey.Value, "open", len(host.Ports), "bound", maxDerivedPorts)
+			"host", hostKey.Value, "open", len(reported.Ports), "bound", maxDerivedPorts)
 		return nil
 	}
 
-	for _, port := range host.Ports {
+	for _, port := range reported.Ports {
 		// The host of the derived key is the host of the observed asset, never
 		// a field of the payload. A scanner given one target cannot manufacture
 		// services on another.
@@ -293,81 +427,141 @@ func (i *Ingestor) writeServices(
 			continue
 		}
 
-		serviceID, created, err := i.writeAsset(ctx, q, run, set, key, host, &hostID)
+		service, err := i.writeAsset(ctx, q, run, set, key, reported, &host.id)
 		if err != nil {
 			return err
 		}
 		summary.Assets++
 		summary.Derived++
-		if created {
+		if service.created {
 			summary.Created++
 		}
 
-		tcp := map[string]any{"open_ports": []any{float64(port.Port)}}
-		if len(port.Addresses) > 0 {
-			tcp["addresses"] = anySlice(port.Addresses)
+		// A derived service stays a candidate until something addresses the
+		// service itself. The port scan is an observation about the host, and
+		// reading it as one about the service would report every open port as
+		// a verified application.
+		if port.HTTP == nil {
+			continue
 		}
-		if err := i.write(ctx, q, run, report, serviceID, normalize.LayerTCP, OutcomeOK, tcp, summary); err != nil {
+		if err := i.writeService(ctx, q, run, report, service, port, edge, summary); err != nil {
 			return err
-		}
-
-		if port.HTTP != nil {
-			payload, err := toMap(port.HTTP)
-			if err != nil {
-				return err
-			}
-			if err := i.write(ctx, q, run, report, serviceID, normalize.LayerHTTP, OutcomeOK, payload, summary); err != nil {
-				return err
-			}
 		}
 	}
 
 	return nil
 }
 
-// write normalizes and stores one observation.
-func (i *Ingestor) write(
+// writeService records what the HTTP probe got out of one port.
+func (i *Ingestor) writeService(
 	ctx context.Context, q *sqlcgen.Queries, run Run, report Report,
-	assetID uuid.UUID, layer normalize.Layer, outcome string,
-	data map[string]any, summary *Summary,
+	service *state, port Port, edge promoted, summary *Summary,
 ) error {
-	result, err := normalize.Payload(layer, data)
+	payload, err := toMap(port.HTTP)
 	if err != nil {
-		return fmt.Errorf("normalize %s: %w", layer, err)
-	}
-	for _, name := range result.Unknown {
-		summary.Unknown[string(layer)+"."+name]++
+		return err
 	}
 
-	encoded, err := json.Marshal(result.Data)
-	if err != nil {
-		return fmt.Errorf("encode %s payload: %w", layer, err)
+	verdict := signals.Read(signals.Response{
+		StatusCode: port.HTTP.StatusCode,
+		Server:     port.HTTP.Server,
+		Title:      port.HTTP.Title,
+		Tech:       port.HTTP.Tech,
+		Fronted:    edge.IsCDN != nil && *edge.IsCDN,
+		Provider:   derefString(edge.CDNProvider),
+	})
+
+	// The presence of a response is not liveness. On a fronted target the edge
+	// always answers, with no refusal and no nxdomain, so an asset whose origin
+	// is dead would stay active forever. Death there is readable only in the
+	// semantics of the response.
+	outcome := OutcomeOK
+	if verdict.Dead != "" {
+		outcome = OutcomeFail
+		payload["origin_dead"] = verdict.Dead
 	}
 
-	params := sqlcgen.WriteObservationParams{
-		OrgID:      uuidTo(run.OrgID),
-		AssetID:    uuidTo(assetID),
-		ObservedAt: stamp(i.now()),
-		RunID:      uuidTo(run.ID),
-		Source:     "fastrecon",
-		Layer:      string(layer),
-		Outcome:    qualify(outcome, report),
-		Data:       encoded,
+	// Orthogonal to the outcome. A 403 carrying a mitigation signature is a
+	// target that answered and is there, and a probe that learned nothing.
+	usable := verdict.Usable()
+	if verdict.Challenge != "" {
+		payload["waf_detected"] = true
+		payload["waf_source"] = "http"
+		if verdict.Vendor != "" {
+			payload["waf_vendor"] = verdict.Vendor
+		}
 	}
-	if report.Run.Version != "" {
-		params.ProducerVersion = text(report.Run.Version)
+	if edge.IsCDN != nil {
+		payload["is_cdn"] = *edge.IsCDN
 	}
-
-	row, err := q.WriteObservation(ctx, params)
-	if err != nil {
-		return fmt.Errorf("write %s observation: %w", layer, err)
+	if edge.CDNProvider != nil {
+		payload["cdn_provider"] = *edge.CDNProvider
 	}
 
-	summary.Observations++
-	if row.Deduplicated {
-		summary.Deduplicated++
+	takeover := signals.Unclaimed(port.HTTP.URL, verdict)
+	if takeover != nil {
+		payload["takeover_candidate"] = takeover.Map()
+		summary.Takeovers++
 	}
-	return nil
+
+	columns := edge
+	columns.StatusCode = portPtr(port.HTTP.StatusCode)
+	columns.FinalURL = text(port.HTTP.FinalURL)
+	columns.Title = text(port.HTTP.Title)
+	columns.Server = text(port.HTTP.Server)
+	columns.Technologies = port.HTTP.Tech
+	if verdict.Challenge != "" {
+		detected := true
+		columns.WAFDetected = &detected
+		columns.WAFVendor = text(verdict.Vendor)
+	}
+
+	// The service answered, so its baseline is earned. It enters at the low
+	// priority: a first render of something nobody has looked at yet must not
+	// queue ahead of a change somebody is waiting on.
+	baseline := i.now()
+
+	return i.apply(ctx, q, run, report, service, observation{
+		layer:        normalize.LayerHTTP,
+		outcome:      outcome,
+		data:         payload,
+		promote:      true,
+		promoted:     columns,
+		usable:       &usable,
+		takeover:     takeover,
+		takeoverKind: signals.KindUnclaimedService,
+		fingerprint:  &baseline,
+	}, summary)
+}
+
+// tcpOutcome reads what the port sweep proved, and it is empty when the sweep
+// proved nothing.
+//
+// A report that lists only open ports cannot conclude a death: an empty list is
+// "nothing was open" and "nothing was tried" at once, and those are opposite
+// findings. The counts are what separate them, and until a report carries them
+// this layer writes nothing rather than a verdict it cannot support.
+func tcpOutcome(host Host) string {
+	if len(host.Ports) > 0 {
+		return OutcomeOK
+	}
+	if host.Scan == nil || host.Scan.Scanned == 0 {
+		return ""
+	}
+	// The host answers and nothing listens. A single filtered port breaks it:
+	// what is filtered is indistinguishable from what is banned, and a service
+	// could be sitting behind it.
+	if host.Scan.Refused > 0 && host.Scan.Filtered == 0 {
+		return OutcomeFail
+	}
+	return OutcomeError
+}
+
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // Outcomes, which are not "succeeded, failed, crashed" but what was learned

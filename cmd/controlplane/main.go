@@ -28,6 +28,7 @@ import (
 	"github.com/JoshuaMart/recon/internal/ingest"
 	"github.com/JoshuaMart/recon/internal/maintenance"
 	"github.com/JoshuaMart/recon/internal/obs"
+	"github.com/JoshuaMart/recon/internal/runs"
 	"github.com/JoshuaMart/recon/internal/store"
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
@@ -82,13 +83,20 @@ func run() error {
 	defer func() { _ = enricher.Close() }()
 	log.InfoContext(ctx, "enrichment", "configured", enricher.Configured())
 
+	scheduler := runs.New(signer, cfg.Verification, log)
+	ingestor := ingest.New(enricher, scheduler.Cadence(), log)
+
 	// Started unconditionally, and before anything can write: a partition job
 	// behind a toggle is an ingestion outage three months later.
 	go maintenance.New(sqlcgen.New(pool), cfg.Maintenance.Interval, log).Run(ctx)
+	// The other loop that must not be optional. A run nothing expires holds
+	// its targets forever, and the assets it froze are invisible to every
+	// later tick.
+	go runs.NewSweeper(scheduler, sqlcgen.New(pool), cfg.Verification.SweepInterval, log).Run(ctx)
 
 	srv := &http.Server{
 		Addr:              cfg.HTTP.Addr,
-		Handler:           routes(pool, signer, ingest.New(enricher, log), log),
+		Handler:           routes(pool, signer, scheduler, ingestor, log),
 		ReadHeaderTimeout: cfg.HTTP.ReadTimeout,
 	}
 
@@ -145,12 +153,27 @@ func probe() error {
 	return nil
 }
 
-func routes(pool *pgxpool.Pool, signer *auth.Signer, ingestor *ingest.Ingestor, log *slog.Logger) http.Handler {
+func routes(
+	pool *pgxpool.Pool, signer *auth.Signer, scheduler *runs.Scheduler,
+	ingestor *ingest.Ingestor, log *slog.Logger,
+) http.Handler {
 	mux := http.NewServeMux()
 
 	// Where a run's report lands. It authenticates before reading anything
 	// else, and the run comes from the credential rather than from the body.
 	mux.Handle("POST /reports", api.NewReports(pool, signer, ingestor, log))
+
+	// The only thing a run is given about the inventory, scoped to that run.
+	mux.Handle("GET /runs/{run}/targets", api.NewTargets(pool, signer, log))
+
+	// The console surface. Every route goes through one authorization layer
+	// that produces a principal, even while there is one kind of caller.
+	guard := api.NewGuard(pool, log)
+	programs := api.NewPrograms(pool, scheduler, ingestor, log)
+	mux.Handle("POST /programs/{program}/runs", guard.Require(auth.ActionManageJobs, programs.StartRun))
+	// Entering an asset by hand is an assertion about the perimeter, which is
+	// a different privilege from writing what a scanner found.
+	mux.Handle("POST /programs/{program}/assets", guard.Require(auth.ActionManageScope, programs.EnterAssets))
 
 	// Liveness. It touches nothing, because a probe that queries the database
 	// turns a slow database into a restarted process.
