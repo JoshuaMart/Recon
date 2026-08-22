@@ -166,7 +166,7 @@ func run() error {
 
 	srv := &http.Server{
 		Addr:              cfg.HTTP.Addr,
-		Handler:           routes(cfg, scoped, system, signer, scheduler, ingestor, log),
+		Handler:           routes(cfg, scoped, system, signer, scheduler, ingestor, enricher.Configured(), log),
 		ReadHeaderTimeout: cfg.HTTP.ReadTimeout,
 	}
 
@@ -244,7 +244,7 @@ func probe() error {
 
 func routes(
 	cfg *config.Config, scoped *store.Scoped, system *pgxpool.Pool, signer *auth.Signer,
-	scheduler *runs.Scheduler, ingestor *ingest.Ingestor, log *slog.Logger,
+	scheduler *runs.Scheduler, ingestor *ingest.Ingestor, enriched bool, log *slog.Logger,
 ) http.Handler {
 	mux := http.NewServeMux()
 
@@ -275,12 +275,43 @@ func routes(
 	// The inventory itself. read_assets and never ingest: a run holds ingest
 	// and everything it needs is in its definition, so a compromised one cannot
 	// exfiltrate a perimeter.
-	assets := api.NewAssets(scoped, log)
+	assets := api.NewAssets(scoped, enriched, log)
 	mux.Handle("POST /assets/search", guard.Require(auth.ActionReadAssets, assets.Search))
+	// The folded list, which is the one the console renders. A route of its own
+	// rather than a flag, because the two hand out cursors that mean different
+	// columns and swapping them has to be a refusal.
+	mux.Handle("POST /assets/hosts", guard.Require(auth.ActionReadAssets, assets.Hosts))
 	mux.Handle("POST /assets/facets", guard.Require(auth.ActionReadAssets, assets.Facets))
 	mux.Handle("POST /assets/export", guard.Require(auth.ActionReadAssets, assets.Export))
-	// What the search accepts, served rather than deduced.
+	// The one read path that touches the journal, on one asset and on demand.
+	mux.Handle("GET /assets/{asset}", guard.Require(auth.ActionReadAssets, assets.Get))
+	// What the search accepts and what this deployment can do, served rather
+	// than deduced. A console that learns its vocabulary against 400s learns it
+	// wrong, and one that deduces the enrichment state from missing data
+	// guesses.
 	mux.Handle("GET /assets/fields", guard.Require(auth.ActionReadAssets, assets.Fields))
+
+	// The live feed. Polling with a cursor, so nothing pins a connection
+	// between rounds and the tenant filter is the one every other read uses.
+	feed := api.NewFeed(scoped, log)
+	mux.Handle("GET /feed", guard.Require(auth.ActionReadAssets, feed.Stream))
+
+	// Perimeters, rules and the queue. The reads are the inventory's action and
+	// the writes are the scope one: entering a perimeter is an assertion about
+	// what may be scanned, which is a different privilege from reading what was
+	// found.
+	console := api.NewConsole(scoped, ingestor, log)
+	mux.Handle("GET /programs", guard.Require(auth.ActionReadAssets, console.ListPrograms))
+	mux.Handle("GET /programs/{program}", guard.Require(auth.ActionReadAssets, console.GetProgram))
+	mux.Handle("POST /programs", guard.Require(auth.ActionManageScope, console.CreateProgram))
+	mux.Handle("PATCH /programs/{program}", guard.Require(auth.ActionManageScope, console.UpdateProgram))
+	// The rule routes are nested and not reachable on their own. A rule
+	// identifier alone would need its own ownership check, and a second place
+	// deciding who may touch what is a second place to get it wrong.
+	mux.Handle("POST /programs/{program}/rules", guard.Require(auth.ActionManageScope, console.CreateRule))
+	mux.Handle("PATCH /programs/{program}/rules/{rule}", guard.Require(auth.ActionManageScope, console.UpdateRule))
+	// Read from a console, never from what consumes it.
+	mux.Handle("GET /queue", guard.Require(auth.ActionReadAssets, console.Queue))
 
 	// Liveness. It touches nothing, because a probe that queries the database
 	// turns a slow database into a restarted process.

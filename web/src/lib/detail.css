@@ -1,0 +1,274 @@
+/*
+ * The shared vocabulary of the asset view.
+ *
+ * Global rather than scoped, and prefixed `dv-` because the panels are six components
+ * that must not each keep their own copy of a badge. The prefix also keeps them clear of
+ * the list's own row vocabulary, which is scoped to its components: an unprefixed
+ * `.badge` shared between the two would half-merge on specificity, which is the kind of
+ * defect that only shows on one screen out of two.
+ *
+ * The tokens are app.css's. Nothing here invents a colour.
+ */
+
+.dv-panel {
+	background: var(--card);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-card);
+	box-shadow: var(--card-shadow);
+	min-width: 0;
+}
+
+.dv-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 10px 16px;
+	border-bottom: 1px solid var(--border-2);
+	min-width: 0;
+}
+
+.dv-head h2 {
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 0.07em;
+	color: var(--ink-3);
+	font-weight: 600;
+	margin: 0;
+	flex: none;
+}
+
+.dv-body {
+	padding: 13px 16px 15px;
+}
+
+/* The layer chip. The same object as the timeline's, because it names the same thing. */
+.dv-layer {
+	font-family: var(--font-mono);
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	background: var(--canvas);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-control);
+	padding: 1px 5px;
+	color: var(--ink-2);
+	flex: none;
+}
+
+.dv-src {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--ink-3);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.dv-outcome {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--code-4xx);
+	flex: none;
+}
+
+.dv-lbl {
+	font-size: 10.5px;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	color: var(--ink-3);
+	font-weight: 600;
+}
+
+.dv-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+	min-width: 0;
+}
+
+.dv-divide {
+	border-top: 1px solid var(--border-2);
+	margin: 12px 0;
+}
+
+.dv-note {
+	margin: 0;
+	font-size: 12px;
+	color: var(--ink-3);
+}
+
+.dv-said {
+	margin: 0;
+	font-size: 12px;
+	color: var(--ink-2);
+}
+
+.dv-said + .dv-said {
+	margin-top: 6px;
+}
+
+.dv-said .q {
+	color: var(--ink-3);
+	display: inline-block;
+	min-width: 74px;
+}
+
+/* Badges. The card's three families, minus the counters it needs and this view
+   spells out in words beside the value. */
+.dv-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	border-radius: var(--radius-control);
+	padding: 2px 6px;
+	font-size: 11.5px;
+	border: 1px solid transparent;
+	background: var(--canvas);
+	color: var(--ink-2);
+	max-width: 100%;
+	text-decoration: none;
+}
+
+a.dv-badge:hover {
+	border-color: var(--ink-3);
+}
+
+.dv-badge .v {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.dv-badge .k {
+	font-size: 10.5px;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	opacity: 0.65;
+}
+
+.dv-badge .n {
+	font-family: var(--font-mono);
+	font-size: 10.5px;
+	font-weight: 600;
+	background: #fff;
+	border: 1px solid var(--border);
+	border-radius: 2px;
+	padding: 0 4px;
+	color: var(--ink-2);
+}
+
+.dv-badge.hash {
+	background: var(--signal-bg);
+	color: #0a7a58;
+}
+
+.dv-badge.hash .n {
+	border-color: #c6ecdd;
+	color: #0a7a58;
+}
+
+.dv-badge.plain {
+	background: #fff;
+	border-color: var(--border);
+}
+
+/* An absence, written as one. Dashed and italic, never red: nothing here is a fault. */
+.dv-badge.absent {
+	background: transparent;
+	border: 1px dashed var(--border);
+	color: var(--ink-3);
+	font-style: italic;
+}
+
+.dv-badge.unobs {
+	background: var(--unobs-bg);
+	color: #7c3fa0;
+}
+
+/* Status codes, in the families of app.css. */
+.dv-code {
+	font-family: var(--font-mono);
+	font-weight: 600;
+	border-radius: var(--radius-control);
+	padding: 2px 6px;
+	font-size: 12px;
+	color: var(--ink-3);
+	background: var(--canvas);
+	flex: none;
+}
+
+.dv-code[data-code='2xx'] {
+	color: var(--code-2xx);
+	background: var(--code-2xx-bg);
+}
+
+.dv-code[data-code='3xx'] {
+	color: var(--code-3xx);
+	background: var(--code-3xx-bg);
+}
+
+.dv-code[data-code='4xx'] {
+	color: var(--code-4xx);
+	background: var(--code-4xx-bg);
+}
+
+.dv-code[data-code='5xx'] {
+	color: var(--code-5xx);
+	background: var(--code-5xx-bg);
+}
+
+/* Key/value blocks. One column of names, one of values, both able to wrap. */
+.dv-kv {
+	display: grid;
+	grid-template-columns: 104px minmax(0, 1fr);
+	gap: 5px 12px;
+	margin: 0;
+	font-size: 12px;
+}
+
+.dv-kv dt {
+	color: var(--ink-3);
+}
+
+.dv-kv dd {
+	margin: 0;
+	color: var(--ink-2);
+	font-family: var(--font-mono);
+	font-size: 11.5px;
+	overflow-wrap: anywhere;
+}
+
+.dv-kv dd.plain {
+	font-family: var(--font-sans);
+	font-size: 12px;
+}
+
+.dv-kv dd.none {
+	font-family: var(--font-sans);
+	font-style: italic;
+	color: var(--ink-3);
+}
+
+/* A progress track, used by the certificate window and nothing else so far. */
+.dv-bar {
+	height: 3px;
+	border-radius: 2px;
+	background: var(--border);
+	overflow: hidden;
+}
+
+.dv-bar i {
+	display: block;
+	height: 100%;
+	background: var(--signal);
+}
+
+.dv-bar.soon i {
+	background: var(--code-4xx);
+}
+
+.dv-bar.gone i {
+	background: var(--code-5xx);
+}

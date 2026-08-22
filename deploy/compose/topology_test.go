@@ -195,3 +195,66 @@ func TestTheRenderingSideHoldsNoCredential(t *testing.T) {
 		}
 	}
 }
+
+// The console holds no database credential, and it is checked here rather than
+// intended.
+//
+// That is the whole reason the interface is a process of its own rather than
+// pages served by the control plane: server templates would put the rendering
+// of the interface inside the process holding the database credentials, and a
+// process that renders pages and can write to the inventory is one bug away
+// from being the whole system.
+//
+// It reaches the control plane over HTTP with the organization's token, like
+// any other API client, so the only variable it needs is an address.
+func TestTheConsoleHoldsNoDatabaseCredential(t *testing.T) {
+	file := load(t)
+
+	service, ok := file.Services["console"]
+	if !ok {
+		t.Fatal("the console is not in the compose file")
+	}
+
+	forbidden := []string{"PASSWORD", "SECRET", "SIGNING_KEY", "DATABASE", "POSTGRES", "DSN"}
+	for key, value := range service.Environment {
+		upper := strings.ToUpper(key)
+		for _, pattern := range forbidden {
+			if strings.Contains(upper, pattern) {
+				t.Errorf("the console is given %s, and it is meant to hold none: it reaches "+
+					"the control plane over HTTP like any other API client", key)
+			}
+		}
+		if strings.Contains(strings.ToLower(value), "postgres") {
+			t.Errorf("the console is given %s=%s, which names the database", key, value)
+		}
+	}
+}
+
+// ORIGIN is set, and the reason it is checked in the file is that its absence
+// does not fail at startup in every deployment shape: it fails at the first
+// form, which is the worst moment and the hardest one to attribute.
+func TestTheConsoleIsGivenAnOrigin(t *testing.T) {
+	file := load(t)
+
+	if _, set := file.Services["console"].Environment["ORIGIN"]; !set {
+		t.Error("the console is given no ORIGIN: without it the node adapter rejects every " +
+			"legitimate form POST, the login screen included")
+	}
+}
+
+// The console is on the control network and never on the rendering one. It is
+// the one component besides the control plane that holds a credential, and the
+// browser side is the one component that must reach nothing.
+func TestTheConsoleSharesNoNetworkWithTheRenderingSide(t *testing.T) {
+	file := load(t)
+
+	for _, network := range networksOf(t, file, "console") {
+		for _, name := range isolated {
+			for _, other := range networksOf(t, file, name) {
+				if network == other {
+					t.Errorf("the console and %s share network %q", name, network)
+				}
+			}
+		}
+	}
+}

@@ -68,11 +68,42 @@ func TestACompilationWithNoOrganizationIsRefused(t *testing.T) {
 func TestTheTenantCannotBeExpressed(t *testing.T) {
 	t.Parallel()
 
-	for _, name := range []string{"org_id", "org", "program_id", "tenant"} {
+	for _, name := range []string{"org_id", "org", "tenant", "organization"} {
 		_, err := Parse([]byte(`{"op":"eq","field":"` + name + `","value":"x"}`))
 		if err == nil {
 			t.Errorf("%q is a field the registry accepts", name)
 		}
+	}
+}
+
+// A programme is not the tenant wearing another name, and the difference is
+// what decides whether it belongs in the vocabulary.
+//
+// The organization is emitted by the compiler on every compilation, so a query
+// can neither name it nor omit it. A programme is a perimeter inside one
+// organization, the switcher on every screen filters on it, and the tenant
+// clause is still emitted beside it: naming somebody else's programme returns
+// nothing rather than their inventory.
+func TestAProgrammeIsAFilterAndTheTenantIsStillEmitted(t *testing.T) {
+	t.Parallel()
+
+	org := uuid.New()
+	program := uuid.New()
+	compiled, err := Compile(org, parse(t,
+		`{"op":"eq","field":"program_id","value":"`+program.String()+`"}`))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if !strings.Contains(compiled.SQL, "c.org_id = $1") {
+		t.Errorf("SQL = %q, and the tenant clause is not in it", compiled.SQL)
+	}
+	// Bound and cast, never interpolated. The cast is what refuses a malformed
+	// identifier, with the value still a parameter.
+	if !strings.Contains(compiled.SQL, "c.program_id = $2::uuid") {
+		t.Errorf("SQL = %q, want the programme bound and cast", compiled.SQL)
+	}
+	if len(compiled.Args) != 2 || compiled.Args[0] != org || compiled.Args[1] != program.String() {
+		t.Errorf("args = %v, want the organization then the programme", compiled.Args)
 	}
 }
 

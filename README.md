@@ -5,7 +5,7 @@
 </p>
 
 > [!WARNING]
-> Work in progress. Foundations are in; the inventory is not.
+> Work in progress. The inventory, the search and the console are in; certificate transparency is not.
 
 Attack surface management for bug bounty. Find assets the others miss, and find them first.
 
@@ -29,14 +29,18 @@ authorization live in the control plane, which is where the value is.
 
 ```sh
 cp .env.example .env    # local credentials, never committed
-make up                 # postgres, migrations, roles, control plane, renderer
+make up                 # postgres, migrations, roles, control plane, renderer, console
+make bootstrap ORG="Name" EMAIL=you@example.com   # prints a token, once
 make help               # everything else
 ```
+
+The console is on <http://localhost:3000>. It asks for that token once and keeps it in an httpOnly
+cookie: the browser never sees it again, and the console holds no database credential of any kind.
 
 What a pull request has to pass, which is also what CI runs:
 
 ```sh
-make check              # vet, lint, unit tests
+make check              # vet, lint, unit tests, and the console's own three
 make test-integration   # needs Docker
 ```
 
@@ -50,8 +54,9 @@ cd docs && pnpm install && pnpm dev
 
 | Directory | Contents |
 |---|---|
-| `cmd/` | The binaries: `controlplane`, `migrate` |
+| `cmd/` | The binaries: `controlplane`, `migrate`, `recon` |
 | `internal/` | The control plane's own code |
+| `web/` | The console (SvelteKit), which holds a token and never a database credential |
 | `db/` | Migrations, embedded into the binary |
 | `deploy/compose/` | The local stack, and the checks that guard its topology |
 | `docs/` | The design record (Astro and Starlight) |

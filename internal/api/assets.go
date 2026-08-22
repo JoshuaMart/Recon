@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/JoshuaMart/recon/internal/auth"
 	"github.com/JoshuaMart/recon/internal/search"
@@ -27,13 +28,20 @@ const maxQueryBytes = 1 << 20
 // produces the same tree, which is what avoids freezing a syntax before anybody
 // knows what actually gets filtered.
 type Assets struct {
-	db  *store.Scoped
-	log *slog.Logger
+	db *store.Scoped
+	// enriched is what this deployment can do, not what it has found. A
+	// deployment without a MaxMind database is a normal one, and the console
+	// cannot tell that from "enriched with no match" by looking at the data:
+	// no asset carries an ASN in either case. So the server says it, and
+	// deducing it from missing data would be guessing.
+	enriched bool
+	now      func() time.Time
+	log      *slog.Logger
 }
 
 // NewAssets builds it.
-func NewAssets(db *store.Scoped, log *slog.Logger) *Assets {
-	return &Assets{db: db, log: log}
+func NewAssets(db *store.Scoped, enriched bool, log *slog.Logger) *Assets {
+	return &Assets{db: db, enriched: enriched, now: time.Now, log: log}
 }
 
 // query is the body every route here takes.
@@ -74,6 +82,80 @@ func (h *Assets) Search(w http.ResponseWriter, r *http.Request, principal auth.P
 		return
 	}
 	writeJSON(w, http.StatusOK, page)
+}
+
+// Hosts answers one page of the folded list.
+//
+// The list the console renders, and a route of its own rather than a flag on
+// the one above. The two hand out cursors that mean different columns, so
+// behind one route a client that kept the cursor and flipped the flag would get
+// a walk that restarts or skips, and neither says anything.
+func (h *Assets) Hosts(w http.ResponseWriter, r *http.Request, principal auth.Principal) {
+	ctx := r.Context()
+
+	body, filter, ok := h.read(w, r)
+	if !ok {
+		return
+	}
+	cursor, err := search.ParseGroupCursor(body.Cursor)
+	if err != nil {
+		fail(w, http.StatusBadRequest, "bad_cursor", err.Error())
+		return
+	}
+
+	tx, err := h.db.Begin(ctx, principal.OrgID)
+	if err != nil {
+		h.log.ErrorContext(ctx, "begin failed", "error", err)
+		fail(w, http.StatusInternalServerError, "unavailable", "the search could not be run")
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	page, err := search.ListGrouped(ctx, tx, principal.OrgID, search.GroupRequest{
+		Filter: filter, Limit: body.Limit, Cursor: cursor,
+	})
+	if err != nil {
+		h.answerError(ctx, w, "grouped search failed", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+// Get answers one asset, with its evidence and its timeline.
+//
+// The only read path here that touches the journal, and the boundary is
+// demonstrated from both sides: with SELECT ON observation revoked, the list,
+// the facets and the export must work and this must fail. Without the second
+// half the boundary can move in silence.
+func (h *Assets) Get(w http.ResponseWriter, r *http.Request, principal auth.Principal) {
+	ctx := r.Context()
+
+	assetID, ok := pathUUID(w, r, "asset")
+	if !ok {
+		return
+	}
+
+	tx, err := h.db.Begin(ctx, principal.OrgID)
+	if err != nil {
+		h.log.ErrorContext(ctx, "begin failed", "error", err)
+		fail(w, http.StatusInternalServerError, "unavailable", "the asset could not be read")
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	detail, err := search.Get(ctx, tx, principal.OrgID, assetID, h.now())
+	if errors.Is(err, search.ErrNoAsset) {
+		// The same answer for an asset that does not exist and one belonging to
+		// another organization. The difference between them enumerates what
+		// exists, and one bit is enough.
+		fail(w, http.StatusNotFound, "not_found", "no such asset")
+		return
+	}
+	if err != nil {
+		h.answerError(ctx, w, "asset read failed", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
 }
 
 // Facets aggregates over the filtered result rather than over the inventory.
@@ -172,6 +254,11 @@ func (h *Assets) Fields(w http.ResponseWriter, _ *http.Request, _ auth.Principal
 		"facets":       search.FacetLimit,
 		"page_limit":   search.MaxLimit,
 		"page_default": search.DefaultLimit,
+		// What this deployment can do, which the console cannot deduce. With no
+		// database configured the infrastructure family is not shown rather
+		// than shown empty: an empty area reads as a broken interface, and
+		// somebody goes looking for a fault where there is none.
+		"enrichment": map[string]any{"configured": h.enriched},
 	})
 }
 

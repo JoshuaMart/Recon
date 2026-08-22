@@ -60,9 +60,36 @@ jobs:
       - run: go build -trimpath -o bin/ ./cmd/...
       - name: Images
         run: |
-          for target in controlplane migrate; do
+          for target in controlplane migrate recon; do
             docker build --target "$target" -f deploy/compose/Dockerfile -t "recon-$target:ci" .
           done
+
+  # The console is a second toolchain in the same repository, so it gets a job
+  # of its own rather than a step somebody has to remember. Its type check is
+  # the only thing standing between the Go contract and the shapes the pages
+  # render: nothing generates one from the other today, so a field renamed in Go
+  # arrives in the browser as `undefined` and draws an empty badge.
+  console:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run check
+      - run: pnpm run lint
+      - run: pnpm test
+      - run: pnpm run build
+      - name: Image
+        working-directory: .
+        run: docker build -f web/Dockerfile -t recon-console:ci .
 
   secrets:
     runs-on: ubuntu-latest

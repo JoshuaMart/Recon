@@ -128,6 +128,8 @@ func (b *builder) leaf(n Node) (string, error) {
 		return b.array(entry, n)
 	case kindInet:
 		return b.address(entry, n)
+	case kindUUID:
+		return b.identifier(entry, n)
 	case kindTimestamp:
 		return b.instant(entry, n)
 	case kindBool:
@@ -259,6 +261,31 @@ func (b *builder) number(entry field, n Node) (string, error) {
 		return "", refuse("%q takes a number, got %v", n.Field, n.Value)
 	}
 	return entry.expr + " " + comparison(n.Op) + " " + b.bind(number), nil
+}
+
+// identifier compiles an equality or a membership over a uuid column.
+//
+// The value is bound as text and cast at the placeholder rather than parsed
+// here. Parsing it would put a second definition of "is this a uuid" in this
+// package, and the cast is what refuses a malformed one: the statement fails
+// with the value still a parameter, so nothing a caller sends reaches the SQL.
+func (b *builder) identifier(entry field, n Node) (string, error) {
+	switch n.Op {
+	case OpIn:
+		values, err := stringList(n)
+		if err != nil {
+			return "", err
+		}
+		return entry.expr + " = ANY(" + b.bind(values) + "::uuid[])", nil
+	case OpEq:
+		value, ok := n.Value.(string)
+		if !ok || value == "" {
+			return "", refuse("%q takes an identifier", n.Field)
+		}
+		return entry.expr + " = " + b.bind(value) + "::uuid", nil
+	default:
+		return "", refuse("%q does not take %q", n.Field, n.Op)
+	}
 }
 
 func (b *builder) text(entry field, n Node) (string, error) {

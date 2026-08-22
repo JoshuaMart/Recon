@@ -115,15 +115,22 @@ type Pivot struct {
 
 // Row is one asset, as the list and the export read it.
 type Row struct {
-	AssetID     uuid.UUID      `json:"asset_id"`
-	ProgramID   uuid.UUID      `json:"program_id"`
-	Kind        string         `json:"kind"`
-	Key         string         `json:"key"`
-	Host        *string        `json:"host,omitempty"`
-	Port        *int32         `json:"port,omitempty"`
-	Scheme      *string        `json:"scheme,omitempty"`
-	Lifecycle   string         `json:"lifecycle"`
-	ScopeStatus string         `json:"scope_status"`
+	AssetID     uuid.UUID `json:"asset_id"`
+	ProgramID   uuid.UUID `json:"program_id"`
+	Kind        string    `json:"kind"`
+	Key         string    `json:"key"`
+	Host        *string   `json:"host,omitempty"`
+	Port        *int32    `json:"port,omitempty"`
+	Scheme      *string   `json:"scheme,omitempty"`
+	Lifecycle   string    `json:"lifecycle"`
+	ScopeStatus string    `json:"scope_status"`
+	// The three layer verdicts, because death is a property of a layer rather
+	// than of an asset and the row has to say which. "The name no longer
+	// resolves" and "every probe failed" are two different sentences, and a row
+	// carrying only the lifecycle can write neither.
+	DNSState    *string        `json:"dns_state,omitempty"`
+	TCPState    *string        `json:"tcp_state,omitempty"`
+	HTTPState   *string        `json:"http_state,omitempty"`
 	StatusCode  *int32         `json:"status_code,omitempty"`
 	StatusChain []int32        `json:"status_chain,omitempty"`
 	FinalURL    *string        `json:"final_url,omitempty"`
@@ -172,7 +179,8 @@ type Page struct {
 // its place.
 const selectColumns = `
     c.asset_id, c.program_id, c.kind, c.key, c.host, c.port, c.scheme,
-    c.lifecycle, c.scope_status, c.status_code, c.status_chain, c.final_url,
+    c.lifecycle, c.scope_status, c.dns_state, c.tcp_state, c.http_state,
+    c.status_code, c.status_chain, c.final_url,
     c.title, c.server, c.ip, c.asn, c.asn_org, c.country, c.city,
     c.is_cdn, c.cdn_provider, c.waf_detected, c.waf_vendor,
     c.technologies, c.attributes,
@@ -285,7 +293,8 @@ func scanRow(rows pgx.Rows) (Row, error) {
 	var attributes []byte
 	err := rows.Scan(
 		&row.AssetID, &row.ProgramID, &row.Kind, &row.Key, &row.Host, &row.Port, &row.Scheme,
-		&row.Lifecycle, &row.ScopeStatus, &row.StatusCode, &row.StatusChain, &row.FinalURL,
+		&row.Lifecycle, &row.ScopeStatus, &row.DNSState, &row.TCPState, &row.HTTPState,
+		&row.StatusCode, &row.StatusChain, &row.FinalURL,
 		&row.Title, &row.Server, &row.IP, &row.ASN, &row.ASNOrg, &row.Country, &row.City,
 		&row.IsCDN, &row.CDNProvider, &row.WAFDetected, &row.WAFVendor,
 		&row.Tech, &attributes, &row.Volatility, &pivots,

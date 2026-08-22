@@ -8,6 +8,11 @@ const (
 	kindInt
 	kindBool
 	kindInet
+	// kindUUID is bound as text and cast at the placeholder. Bound as a Go
+	// string against a uuid column, pgx sends it as text and PostgreSQL refuses
+	// the comparison; casting in the SQL is what keeps the value a parameter
+	// rather than something this layer has to parse to prove it is one.
+	kindUUID
 	kindTextArray
 	kindTimestamp
 	// kindJSONText is a scalar key of the attributes object, and it compiles to
@@ -66,6 +71,15 @@ var registry = map[string]field{
 	// by the expression index on reverse(key).
 	"key":  {expr: Alias + ".key", kind: kindText, ops: ops(OpEq, OpPrefix, OpSuffix)},
 	"host": {expr: Alias + ".host", kind: kindText, ops: ops(OpEq, OpPrefix, OpSuffix)},
+
+	// The one identifier in the vocabulary, and it is not the tenant wearing
+	// another name. org_id is absent because the compiler emits it and a query
+	// must not be able to name it in either direction; a programme is a
+	// perimeter inside one organization, the switcher on every screen is a
+	// filter on it, and the policy behind it still decides which programmes
+	// exist. It reads the leading columns of the index the projection already
+	// carries.
+	"program_id": {expr: Alias + ".program_id", kind: kindUUID, ops: ops(OpEq, OpIn)},
 
 	"kind":         {expr: Alias + ".kind", kind: kindText, ops: ops(OpEq, OpIn)},
 	"lifecycle":    {expr: Alias + ".lifecycle", kind: kindText, ops: ops(OpEq, OpIn)},

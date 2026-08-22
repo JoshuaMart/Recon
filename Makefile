@@ -34,8 +34,20 @@ test: ## Unit tests, with the race detector
 test-integration: ## Tests that need a container
 	$(GO) test -tags integration -count=1 ./...
 
+.PHONY: console
+console: ## Type check, lint and test the console
+	cd web && pnpm install --frozen-lockfile && pnpm run check && pnpm run lint && pnpm test
+
+.PHONY: bootstrap
+bootstrap: ## Create the first organization and print its token
+	@if [ -z "$(ORG)" ] || [ -z "$(EMAIL)" ]; then \
+		echo "usage: make bootstrap ORG=\"Name\" EMAIL=person@example.com"; \
+		exit 1; \
+	fi
+	$(COMPOSE) run --rm --build recon bootstrap -org "$(ORG)" -email "$(EMAIL)"
+
 .PHONY: check
-check: lint test ## What a pull request has to pass
+check: lint test console ## What a pull request has to pass
 
 .PHONY: up
 up: .env no-stray-env ## Start the local stack

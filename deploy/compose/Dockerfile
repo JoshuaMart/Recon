@@ -16,7 +16,10 @@ RUN CGO_ENABLED=0 go build -trimpath \
       -o /out/controlplane ./cmd/controlplane && \
     CGO_ENABLED=0 go build -trimpath \
       -ldflags="-s -w -X main.version=${VERSION}" \
-      -o /out/migrate ./cmd/migrate
+      -o /out/migrate ./cmd/migrate && \
+    CGO_ENABLED=0 go build -trimpath \
+      -ldflags="-s -w -X main.version=${VERSION}" \
+      -o /out/recon ./cmd/recon
 
 FROM gcr.io/distroless/static-debian12:nonroot AS controlplane
 COPY --from=builder /out/controlplane /controlplane
@@ -26,3 +29,11 @@ ENTRYPOINT ["/controlplane"]
 FROM gcr.io/distroless/static-debian12:nonroot AS migrate
 COPY --from=builder /out/migrate /migrate
 ENTRYPOINT ["/migrate"]
+
+# The operational command line. It holds the owner credential, which is why it
+# is neither the control plane nor a route: an endpoint that creates an
+# organization could not be authenticated, since there is no tenant to attach
+# the caller to before one exists.
+FROM gcr.io/distroless/static-debian12:nonroot AS recon
+COPY --from=builder /out/recon /recon
+ENTRYPOINT ["/recon"]

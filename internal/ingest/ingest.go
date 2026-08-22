@@ -68,23 +68,28 @@ type Schedule struct {
 }
 
 // Summary is what one report changed.
+//
+// Every field is tagged, and that is not style. This structure is serialized
+// into run.summary and read back by the queue view, so the field names are a
+// wire contract: without tags they would be Go identifiers, and renaming one
+// would change what a console reads with nothing failing to compile.
 type Summary struct {
-	Hosts        int
-	Assets       int
-	Created      int
-	Observations int
-	Deduplicated int
-	Rejected     int
-	Skipped      int
+	Hosts        int `json:"hosts"`
+	Assets       int `json:"assets"`
+	Created      int `json:"created"`
+	Observations int `json:"observations"`
+	Deduplicated int `json:"deduplicated"`
+	Rejected     int `json:"rejected"`
+	Skipped      int `json:"skipped"`
 	// Late marks a report that arrived after its run's deadline. The data is
 	// still valid, so it is recorded rather than refused: the run may simply
 	// have been re-dispatched, and deduplication merges the two.
-	Late    bool
-	Derived int
+	Late    bool `json:"late"`
+	Derived int  `json:"derived"`
 	// Takeovers counts the findings this report carried, so a run that found
 	// one says so in its own summary rather than only in a table nobody reads
 	// until an alert fires.
-	Takeovers int
+	Takeovers int `json:"takeovers"`
 	// Sources is the per source accounting the scanner reported, kept because
 	// the failure it describes does not look like one. Without a credential a
 	// keyed source disables itself, the run starts, finishes correctly, and
@@ -100,8 +105,8 @@ type Summary struct {
 	// write time with the payload for the same reason.
 	grace notify.Grace
 	// suppressedCount is what the summary says about a first run.
-	Suppressed int
-	Unknown    map[string]int
+	Suppressed int            `json:"suppressed"`
+	Unknown    map[string]int `json:"unknown,omitempty"`
 }
 
 // SourceReport is one enumeration source and how it went.

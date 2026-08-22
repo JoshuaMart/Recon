@@ -136,6 +136,26 @@ func newHarness(t *testing.T) *harness {
 	renders := api.NewRenders(scoped, 72*time.Hour, quiet)
 	mux.Handle("POST /assets/{asset}/render", guard.Require(auth.ActionManageJobs, renders.Request))
 	mux.Handle("POST /renders/replan", guard.Require(auth.ActionManageJobs, renders.Replan))
+	// The console surface, registered here so a route reachable in a test is a
+	// route the binary serves. enriched is false, which is the deployment the
+	// three states of enrichment call the normal one.
+	assets := api.NewAssets(scoped, false, quiet)
+	mux.Handle("POST /assets/search", guard.Require(auth.ActionReadAssets, assets.Search))
+	mux.Handle("POST /assets/hosts", guard.Require(auth.ActionReadAssets, assets.Hosts))
+	mux.Handle("POST /assets/facets", guard.Require(auth.ActionReadAssets, assets.Facets))
+	mux.Handle("GET /assets/{asset}", guard.Require(auth.ActionReadAssets, assets.Get))
+	mux.Handle("GET /assets/fields", guard.Require(auth.ActionReadAssets, assets.Fields))
+	console := api.NewConsole(scoped, ingestor, quiet)
+	mux.Handle("GET /programs", guard.Require(auth.ActionReadAssets, console.ListPrograms))
+	mux.Handle("GET /programs/{program}", guard.Require(auth.ActionReadAssets, console.GetProgram))
+	mux.Handle("POST /programs", guard.Require(auth.ActionManageScope, console.CreateProgram))
+	mux.Handle("PATCH /programs/{program}", guard.Require(auth.ActionManageScope, console.UpdateProgram))
+	mux.Handle("POST /programs/{program}/rules", guard.Require(auth.ActionManageScope, console.CreateRule))
+	mux.Handle("PATCH /programs/{program}/rules/{rule}",
+		guard.Require(auth.ActionManageScope, console.UpdateRule))
+	mux.Handle("GET /queue", guard.Require(auth.ActionReadAssets, console.Queue))
+	feed := api.NewFeed(scoped, quiet)
+	mux.Handle("GET /feed", guard.Require(auth.ActionReadAssets, feed.Stream))
 
 	h.server = httptest.NewServer(mux)
 	t.Cleanup(h.server.Close)
@@ -217,8 +237,10 @@ func report(name string, completed bool) ingest.Report {
 		Hosts: []ingest.Host{{
 			Host: name, Status: ingest.StatusLive,
 			Addresses: []string{"93.184.216.34"},
-			Ports: []ingest.Port{{Port: 443, Protocol: "tcp", State: "open",
-				HTTP: &ingest.HTTP{URL: "https://" + name, Scheme: "https", StatusCode: 200}}},
+			Ports: []ingest.Port{{
+				Port: 443, Protocol: "tcp", State: "open",
+				HTTP: &ingest.HTTP{URL: "https://" + name, Scheme: "https", StatusCode: 200},
+			}},
 		}},
 	}
 }
@@ -344,7 +366,10 @@ func TestALateReportIsAcceptedAndMarked(t *testing.T) {
 		`SELECT summary FROM run WHERE id = $1`, runID).Scan(&summary); err != nil {
 		t.Fatalf("read run: %v", err)
 	}
-	if summary["Late"] != true {
+	// The stored keys are the struct's tags rather than its Go identifiers,
+	// because the queue view reads this document back: without tags a renamed
+	// field would change what a console reads with nothing failing to compile.
+	if summary["late"] != true {
 		t.Errorf("the report was not marked late: %v", summary)
 	}
 }

@@ -1,0 +1,172 @@
+/*
+ * The console's art direction, carried over from the validated search-view
+ * mockup of 17 August 2026.
+ *
+ * Two rules that the mockup found the hard way and that are cheap to keep:
+ *
+ *   - Every icon is an inline SVG with a viewBox and no intrinsic size, and one
+ *     of those fills whatever box it lands in. The base size below is set once,
+ *     so a context rule nobody wrote costs a wrong size and never a full-card
+ *     arrow.
+ *   - Rounded cards over sharp controls. The radii are tokens because mixing
+ *     the two by hand is what makes an interface look assembled.
+ */
+
+:root {
+	--signal: #06c68a;
+	--signal-bg: #e0f8ef;
+	--canvas: #f4f5f6;
+	--card: #ffffff;
+	--ink: #141719;
+	--ink-2: #4a5257;
+	--ink-3: #7b858b;
+	--border: #e4e7e9;
+	--border-2: #eef0f1;
+
+	--radius-card: 14px;
+	--radius-control: 3px;
+	--card-shadow: 0 1px 2px rgba(20, 23, 25, 0.04), 0 1px 10px rgba(20, 23, 25, 0.04);
+
+	--code-2xx: #04a870;
+	--code-2xx-bg: #e3f7ee;
+	--code-3xx: #2f7fe4;
+	--code-3xx-bg: #e6effc;
+	--code-4xx: #c07d16;
+	--code-4xx-bg: #fbf1de;
+	--code-5xx: #e5484d;
+	--code-5xx-bg: #fdeaea;
+
+	--cdn: #7c5cff;
+	--cdn-bg: #efeaff;
+	--dead: #a8b0b5;
+	/* unobservable is not a shade of dead. the three absences: one is an absence of
+	   measurement, the other is a measurement. */
+	--unobs: #b06ad8;
+	--unobs-bg: #f6ecfc;
+	--temporal-bg: #fbf9f2;
+
+	--font-sans: 'Space Grotesk', system-ui, sans-serif;
+	--font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+html,
+body {
+	margin: 0;
+	padding: 0;
+}
+
+body {
+	background: var(--canvas);
+	color: var(--ink);
+	font-family: var(--font-sans);
+	font-size: 13px;
+	line-height: 1.45;
+	-webkit-font-smoothing: antialiased;
+}
+
+button {
+	font: inherit;
+	color: inherit;
+	cursor: pointer;
+}
+
+a {
+	color: inherit;
+}
+
+svg {
+	width: 14px;
+	height: 14px;
+	flex: none;
+}
+
+.mono {
+	font-family: var(--font-mono);
+}
+
+.dim {
+	color: var(--ink-3);
+}
+
+.spacer {
+	flex: 1;
+}
+
+/* Shared controls. Sharp, against the rounded cards. */
+
+.btn {
+	background: var(--card);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-control);
+	padding: 5px 10px;
+	font-size: 12px;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	box-shadow: var(--card-shadow);
+	text-decoration: none;
+}
+
+.btn:hover {
+	border-color: var(--ink-3);
+}
+
+.btn svg {
+	width: 13px;
+	height: 13px;
+}
+
+.btn-signal {
+	background: var(--signal);
+	border-color: transparent;
+	color: #fff;
+	font-weight: 500;
+}
+
+.btn-signal:hover {
+	border-color: transparent;
+	filter: brightness;
+}
+
+.link {
+	background: none;
+	border: 0;
+	padding: 0;
+	color: var(--ink-3);
+	font-size: 12px;
+	text-decoration: underline;
+	text-decoration-color: var(--border);
+}
+
+.link:hover {
+	color: var(--ink);
+}
+
+.field {
+	font-family: var(--font-mono);
+	font-size: 13px;
+	background: var(--card);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-control);
+	padding: 8px 10px;
+	width: 100%;
+	color: var(--ink);
+}
+
+.field:focus {
+	outline: 2px solid var(--signal-bg);
+	border-color: var(--signal);
+}
+
+.notice {
+	border-radius: var(--radius-control);
+	padding: 7px 10px;
+	font-size: 12px;
+	background: var(--code-5xx-bg);
+	color: #8f2529;
+	border-left: 2px solid var(--code-5xx);
+}

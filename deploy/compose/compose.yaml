@@ -153,6 +153,27 @@ services:
         condition: service_completed_successfully
     restart: "no"
 
+  # The operational command line, run rather than served. Behind a profile so
+  # `make up` does not start it: it is a command somebody invokes, and a
+  # container that exits immediately in the middle of a stack reads as a crash.
+  #
+  # It holds the owner credential, which is the whole reason it is not a route.
+  recon:
+    profiles: [tools]
+    networks: [control]
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+      target: recon
+    environment:
+      RECON_LOG__FORMAT: text
+      RECON_DATABASE__MIGRATION_URL: >-
+        postgres://${POSTGRES_USER:-asm_owner}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-recon}?sslmode=disable
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
   controlplane:
     networks: [control]
     # The control plane calls the rendering service and the rendering service
@@ -228,6 +249,40 @@ services:
       timeout: 3s
       retries: 5
       start_period: 2s
+    restart: unless-stopped
+
+  # The console. On the control network and nowhere near the rendering one: it
+  # is the only other process that talks to the control plane, and it holds a
+  # credential where the renderer holds none.
+  #
+  # It holds no database credential either, which is the decision behind the
+  # whole component. It reaches the control plane over HTTP with the
+  # organization's token, like any other API client, so a bug here cannot become
+  # a write to the inventory.
+  console:
+    networks: [control]
+    build:
+      context: ../..
+      dockerfile: web/Dockerfile
+    environment:
+      # Where the proxy sends everything. The browser never calls this address:
+      # every request goes through the console's own server, which adds the
+      # Authorization header.
+      RECON_API_URL: http://controlplane:8080
+      # Required outside development, and the process refuses to start without
+      # it. The node adapter compares the Origin header of a POST against the
+      # origin it believes it serves, and without this it infers it badly: it
+      # then rejects legitimate POSTs, the login screen included, and the fault
+      # shows at the first form rather than at startup.
+      ORIGIN: ${CONSOLE_ORIGIN:-http://localhost:3000}
+      # Development, because that is what this file is. Production sets NODE_ENV
+      # and the check above becomes the one that matters.
+      PORT: "3000"
+    ports:
+      - "${CONSOLE_BIND:-127.0.0.1}:${CONSOLE_PORT:-3000}:3000"
+    depends_on:
+      controlplane:
+        condition: service_healthy
     restart: unless-stopped
 
   # The browser the rendering service drives over CDP. One instance locally:
