@@ -517,3 +517,72 @@ func TestAnUnrenderableAssetDoesNotLivelock(t *testing.T) {
 		t.Fatalf("the next attempt is at %s, which is still a loop", due)
 	}
 }
+
+// A funded programme drains its queue in one pass, and this is the assertion
+// the suite was missing.
+//
+// The test beside it asks whether one programme running dry stops another, and
+// answers yes, correctly. Neither asked the simpler question: does a single
+// programme with budget to spare render more than one asset. It did not. Every
+// worker on a programme computes the same wait, they wake together, the bucket
+// holds exactly one render's worth, so one won and the other seven reported
+// starvation, which marked the whole programme done for the pass. A deployment
+// with one programme rendered two assets a minute with an idle browser and a
+// full queue.
+func TestAFundedProgrammeDrainsItsQueueInOnePass(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	// Generous, and deliberately so: the question is what the pass does when
+	// the budget is not the constraint. At this rate a render is affordable
+	// several times a second.
+	h.exec(t, `UPDATE program SET rate_limit_rps = 1000 WHERE id = $1`, h.program)
+
+	const assets = 12
+	due := time.Now().Add(-time.Hour)
+	for port := 8000; port < 8000+assets; port++ {
+		h.service(t, key(port), port, lifecycle.PriorityBaseline, due)
+	}
+
+	// The service answers every target, so nothing here refuses.
+	var served atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		served.Add(1)
+		var body struct {
+			URL string `json:"url"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		writeRender(w, body.URL)
+	}))
+	defer server.Close()
+
+	pass := render.New(h.pool,
+		fingerprint.New(server.URL, 5*time.Second, permissive()),
+		ingest.New(nil, lifecycle.DefaultCadence(), quiet()),
+		render.NewBudget(30, nil),
+		render.Options{
+			Batch: 50, Concurrency: 8,
+			MaxWait: 5 * time.Second,
+		}, quiet())
+
+	summary, err := pass.Once(ctx)
+	if err != nil {
+		t.Fatalf("pass: %v", err)
+	}
+
+	if summary.Rendered != assets {
+		t.Errorf("rendered %d of %d selected, skipped %d, starved=%v: a programme funded for "+
+			"several renders a second reached %d of them, which is the pass throttling itself "+
+			"rather than the target",
+			summary.Rendered, summary.Selected, summary.Skipped, summary.Starved, summary.Rendered)
+	}
+	// Starvation is the programme's rate being unable to feed a render. At a
+	// thousand requests a second it is not, so claiming it would be the pass
+	// misreporting a race it lost against itself.
+	if summary.Starved {
+		t.Error("the pass reported starvation on a programme with budget to spare")
+	}
+	if got := served.Load(); got != assets {
+		t.Errorf("the service was asked %d times for %d assets", got, assets)
+	}
+}

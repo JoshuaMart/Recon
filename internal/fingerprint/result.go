@@ -60,9 +60,16 @@ type Script struct {
 
 // Metadata is what the render found beside the page.
 type Metadata struct {
-	RobotsTxt bool  `json:"robots_txt"`
-	LLMsTxt   bool  `json:"llms_txt"`
-	Sitemap   *bool `json:"sitemap"`
+	RobotsTxt bool `json:"robots_txt"`
+	LLMsTxt   bool `json:"llms_txt"`
+	// Sitemap is where one was found, not whether one exists. The two
+	// neighbours above are booleans and this one is not, which is what made it
+	// look like a third of the same kind: it came back as a URL, the decode
+	// failed on the whole document, and every render of a host that publishes a
+	// sitemap was lost with it. A render that cannot be decoded writes nothing
+	// at all, so the asset stayed exactly as it was and the failure was a line
+	// in a log.
+	Sitemap *string `json:"sitemap"`
 	// Favicon is the bytes as a data URI, null past the inline size bound. A
 	// null here and a null in FaviconURL do not mean the same thing: the first
 	// says the icon was too large, the second that it was inline, and a
@@ -77,9 +84,13 @@ type Metadata struct {
 // producer for a value it does not own cannot agree with the first on a geo
 // balanced name.
 type Network struct {
-	Host  string   `json:"host"`
-	IPs   []string `json:"ips"`
-	CNAME []string `json:"cname,omitempty"`
+	Host string   `json:"host"`
+	IPs  []string `json:"ips"`
+	// One canonical name and not a chain. The service resolves the target host
+	// and reports the name it lands on, where the scanner reports the chain it
+	// walked, and the two carry the same key with different shapes. Read as a
+	// list it failed to decode, and it took the whole render with it.
+	CNAME string `json:"cname,omitempty"`
 }
 
 // Final is the last hop, which is the page that was actually obtained.

@@ -273,12 +273,35 @@ func (p *Pass) render(ctx context.Context, row sqlcgen.SelectDueRendersRow) atte
 	// A render takes seconds and the budget refills while it runs, so a short
 	// wait is the ordinary case rather than a failure. What ends a pass is a
 	// wait long enough to say the programme's rate cannot support one now.
-	taken, wait := p.budget.Reserve(program, int(row.RateLimitRps))
-	if !taken {
-		if wait > p.maxWait || !p.sleep(ctx, wait) {
+	//
+	// Waited for in a loop, and one retry was not enough. The reason is the
+	// shape of the race rather than the length of any wait: every worker on a
+	// programme computes the same wait, they all wake together, and the bucket
+	// holds one render's worth at most, so exactly one wins and the rest called
+	// that starvation. On a deployment with a single programme that ends the
+	// pass, because per-programme starvation and per-pass starvation are the
+	// same thing there. It ran a full minute apart on real data and said so
+	// every tick: selected=28, rendered=0, skipped=26, starved=true, on a
+	// programme whose own rate limit afforded a render every three tenths of a
+	// second. The service was idle and the queue never drained.
+	//
+	// Starvation is the programme's published rate being unable to feed a
+	// render, which is what the wait measures. Losing a race to a sibling
+	// worker is the budget working, so it is waited out rather than reported.
+	//
+	// Bounded in total rather than per attempt, so a programme that genuinely
+	// cannot feed this worker still ends its share of the pass instead of
+	// holding a slot for as long as rows keep arriving.
+	deadline := p.now().Add(p.maxWait)
+	for {
+		taken, wait := p.budget.Reserve(program, int(row.RateLimitRps))
+		if taken {
+			break
+		}
+		if wait > p.maxWait || !p.now().Before(deadline) {
 			return attempt{kind: starved}
 		}
-		if taken, _ = p.budget.Reserve(program, int(row.RateLimitRps)); !taken {
+		if !p.sleep(ctx, wait) {
 			return attempt{kind: starved}
 		}
 	}
