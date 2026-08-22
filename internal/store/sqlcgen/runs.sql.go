@@ -431,7 +431,15 @@ SELECT p.id, p.org_id, p.name,
    AND (c.next_full_at <= $1::timestamptz OR c.next_resolve_at <= $1::timestamptz)
    AND NOT EXISTS (
         SELECT 1 FROM run r
-         WHERE r.program_id = p.id AND r.kind = 'verification'
+         WHERE r.program_id = p.id
+           -- Either kind. A live verification is the bound the unique index
+           -- keeps; a live discovery is the perimeter being walked right now,
+           -- and it freezes no targets because it is the one allowed to find
+           -- things, so nothing else can see the hosts it is scanning. Waking a
+           -- programme in that state would select assets whose report has not
+           -- landed yet, and send a second scanner at hosts the first one is
+           -- connected to.
+           AND r.kind IN ('verification', 'discovery')
            AND r.state IN ('pending', 'running'))
  GROUP BY p.id, p.org_id, p.name
  ORDER BY p.id

@@ -419,6 +419,21 @@ finds nothing due starts nothing, so a short interval costs a query rather than 
 makes a declared asset go out at once, since [entering one](/architecture/scope/#entering-an-asset-by-hand)
 writes a due date of now: somebody is waiting.
 
+**No verification while an enumeration is walking the same perimeter**, and the frozen list cannot express
+that. A discovery run freezes nothing, because it is the one allowed to find things, so the lease has no way
+to see the hosts it is scanning. The window is the run itself: its report has not landed, every asset it
+touches still carries the due date it had before, and a verification starting a minute in sends a second
+scanner at hosts the first one is connected to. The check sits at the definition rather than only in the
+selection, because the console reaches it directly and never passes the selection.
+
+**It is one directional.** Discovery is rare and its cadence is a promise, so it wins; verification
+re-selects on the next tick and loses nothing but the length of a run. The symmetric rule would be a
+starvation: during a drain a verification is in flight most minutes, and the enumeration would never go out.
+
+**What it does not cover** is two programs whose perimeters overlap. The bound is per program, so the same
+name held by two of them is two assets and two runs, and nothing joins them. Saying so is cheaper than
+discovering it.
+
 **The authorization window is checked in the selection as well as at the run**, and what the first one buys
 is worth stating exactly. Nothing is billed either way, because the run is refused before the platform is
 called. What it prevents is the pass waking an expired program, walking its due assets, freezing nothing and

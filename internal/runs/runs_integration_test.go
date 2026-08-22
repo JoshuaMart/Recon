@@ -164,7 +164,17 @@ func TestTwoConcurrentRunsNeverHoldTheSameHost(t *testing.T) {
 
 	// And the hosts it froze are invisible to a selection, which is what the
 	// exclusion in the statement is for rather than the refusal above.
-	exec(t, h.pool, `UPDATE run SET kind = 'discovery' WHERE id = $1`, first.RunID)
+	//
+	// The run is moved to another programme rather than disguised as a
+	// discovery, which is how this read before a live enumeration became a
+	// blocker of its own. Moving it is the sharper arrangement anyway: this
+	// programme now has no live run of either kind, so nothing but the frozen
+	// list can be what hides the hosts.
+	other := uuid.New()
+	exec(t, h.pool, `INSERT INTO program (id, org_id, name, authorized_from) VALUES ($1,$2,'other',$3)`,
+		other, h.org, h.clock.now.Add(-time.Hour))
+	exec(t, h.pool, `UPDATE run SET program_id = $2 WHERE id = $1`, first.RunID, other)
+
 	second, err := h.sched.Verification(ctx, h.queries, h.org, h.program, "resolve")
 	if err != runs.ErrNothingDue {
 		t.Fatalf("a second run selected %v, want nothing due", second)
@@ -852,5 +862,98 @@ func TestTheDuePassIgnoresWhatIsNotATarget(t *testing.T) {
 	if started, err := pass.Once(ctx); err != nil || started != 0 {
 		t.Errorf("started = %d err = %v, want nothing: neither a service nor an asset "+
 			"outside the perimeter is a target", started, err)
+	}
+}
+
+// No verification while an enumeration is walking the same perimeter.
+//
+// The frozen list cannot express this. A discovery run freezes nothing, because
+// it is the one allowed to find things, so selection has no way to see the hosts
+// it is scanning. The window is the run itself: its report has not landed, every
+// asset it touches still carries the due date it had before, and a verification
+// starting a minute in sends a second scanner at hosts the first one is
+// connected to.
+func TestNoVerificationWhileAnEnumerationIsWalkingThePerimeter(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.due(t, "a.acme.test", "b.acme.test")
+
+	// A discovery run in flight, which is what the report has not come back
+	// from yet.
+	discovery := uuid.New()
+	exec(t, h.pool, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline)
+		VALUES ($1,$2,$3,'discovery','full','running',$4)`,
+		discovery, h.org, h.program, h.clock.now.Add(time.Hour))
+
+	// The selection does not wake the programme.
+	rows, err := h.queries.ProgramsDueForVerification(ctx,
+		sqlcgen.ProgramsDueForVerificationParams{At: pgStamp(h.clock.now)})
+	if err != nil {
+		t.Fatalf("selection: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("the programme was selected %d times while an enumeration was in flight", len(rows))
+	}
+
+	// And the definition refuses, which is what covers the console button: it
+	// calls this directly and never goes through the selection.
+	if _, err := h.sched.Verification(ctx, h.queries, h.org, h.program, "full"); !errors.Is(err, runs.ErrRunInFlight) {
+		t.Errorf("err = %v, want a run in flight: a person pressing the button reaches "+
+			"this without passing the selection", err)
+	}
+	if n := h.count(t, `SELECT count(*) FROM run_target`); n != 0 {
+		t.Errorf("%d targets were frozen while an enumeration was walking the perimeter", n)
+	}
+
+	// The positive control, and the direction of the rule. Once the enumeration
+	// is done the verification goes out on the very next call, so what this
+	// costs is the length of a run rather than a cadence.
+	exec(t, h.pool, `UPDATE run SET state = 'completed', finished_at = $2 WHERE id = $1`,
+		discovery, h.clock.now)
+
+	rows, err = h.queries.ProgramsDueForVerification(ctx,
+		sqlcgen.ProgramsDueForVerificationParams{At: pgStamp(h.clock.now)})
+	if err != nil {
+		t.Fatalf("selection: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("the programme was selected %d times once the enumeration finished, want once", len(rows))
+	}
+	if _, err := h.sched.Verification(ctx, h.queries, h.org, h.program, "full"); err != nil {
+		t.Errorf("the verification was refused after the enumeration finished: %v", err)
+	}
+}
+
+// The rule is one directional, and the asymmetry is the point.
+//
+// Blocking discovery on a live verification would be the symmetric rule and a
+// starvation: during a drain a verification is in flight most minutes, and the
+// enumeration would never go out. Discovery is rare and its cadence is a
+// promise, so it wins.
+func TestAnEnumerationIsNotBlockedByAVerification(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	exec(t, h.pool, `INSERT INTO scope_rule (id, org_id, program_id, kind, matcher, pattern, valid_from)
+		VALUES ($1,$2,$3,'include','apex','acme.test',$4)`,
+		uuid.New(), h.org, h.program, h.clock.now.Add(-time.Hour))
+
+	verification := uuid.New()
+	exec(t, h.pool, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline)
+		VALUES ($1,$2,$3,'verification','full','running',$4)`,
+		verification, h.org, h.program, h.clock.now.Add(time.Hour))
+
+	programs, err := h.queries.ProgramsDueForDiscovery(ctx, sqlcgen.ProgramsDueForDiscoveryParams{
+		At:    pgStamp(h.clock.now),
+		Retry: pgtype.Interval{Microseconds: time.Hour.Microseconds(), Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("read due programmes: %v", err)
+	}
+	if len(programs) != 1 {
+		t.Fatalf("the programme was selected %d times for discovery while a verification "+
+			"was in flight, want once: the reverse rule would starve enumeration", len(programs))
+	}
+	if _, err := h.sched.Discovery(ctx, h.queries, h.org, h.program); err != nil {
+		t.Errorf("the enumeration was refused while a verification was in flight: %v", err)
 	}
 }

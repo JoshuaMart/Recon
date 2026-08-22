@@ -210,6 +210,30 @@ func (s *Scheduler) Verification(
 		return nil, fmt.Errorf("%w: %s", ErrRunInFlight, live.Error())
 	}
 
+	// And not while an enumeration is walking the same perimeter, which the
+	// frozen list cannot express: a discovery run freezes nothing, because it is
+	// the one allowed to find things, so selection has no way to see the hosts
+	// it is already scanning.
+	//
+	// The window is the run itself. Its report has not landed, so every asset it
+	// is touching still carries the due date it had before, and a verification
+	// starting a minute in selects hosts a browser-less scanner is connecting to
+	// right now. Two runs holding the same host is double scan traffic against
+	// somebody's perimeter, which is the one cost this system is not allowed to
+	// be careless with, and the existing lease only ever covered the pair it
+	// could see.
+	//
+	// One direction only. Discovery is rare and its cadence is a promise, so it
+	// wins; verification re-selects on the next tick and loses nothing but
+	// minutes. Blocking discovery on a live verification would be the symmetric
+	// rule and a starvation: during a drain a verification is in flight most
+	// minutes, and the enumeration would never go out.
+	if live, err := s.InFlight(ctx, q, program, KindDiscovery); err != nil {
+		return nil, err
+	} else if live != nil {
+		return nil, fmt.Errorf("%w: %s", ErrRunInFlight, live.Error())
+	}
+
 	at := s.now()
 	due, err := q.SelectDueHosts(ctx, sqlcgen.SelectDueHostsParams{
 		OrgID:     pgUUID(org),
