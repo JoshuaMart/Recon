@@ -1,0 +1,2042 @@
+openapi: 3.1.0
+
+info:
+  title: Recon control plane
+  version: "0.1.0"
+  summary: The HTTP surface of the Recon attack surface management platform.
+  description: |
+    Two kinds of caller reach this API and they are told apart by the credential
+    they carry, never by a field in a body.
+
+    A **console token** is a long lived organization credential. It carries a set
+    of actions (`read_assets`, `manage_scope`, `manage_jobs`) and every route it
+    reaches goes through one authorization layer that turns the token into a
+    principal. The organization is discovered from the token and can never be
+    named by the caller: no filter, no body field and no query parameter selects
+    a tenant.
+
+    A **run token** is short lived, signed, and belongs to one run. It reaches
+    exactly two routes: the target list that run is allowed to read, and the
+    report it posts back. Nothing else.
+
+    Two conventions hold across the whole surface.
+
+    An identifier that does not exist and one belonging to another organization
+    answer the same `404`. The difference between them would leak one bit, and
+    one bit is enough to enumerate.
+
+    Every error body carries a machine readable `error` beside a sentence in
+    `detail`. Branch on the first, show the second.
+
+servers:
+  - url: http://localhost:8080
+    description: Local development.
+  - url: https://{host}
+    description: A deployment.
+    variables:
+      host:
+        default: recon.example.com
+
+tags:
+  - name: assets
+    description: The inventory and the questions asked of it.
+  - name: programs
+    description: Perimeters, their rules and their runs.
+  - name: renders
+    description: The two render triggers that are API entry points.
+  - name: runs
+    description: What a run reads and what it posts back.
+  - name: health
+    description: Liveness and readiness.
+
+security:
+  - consoleToken: []
+
+paths:
+
+  /assets/search:
+    post:
+      tags: [assets]
+      operationId: searchAssets
+      summary: One page of assets.
+      description: |
+        A structured filter tree rather than a query string, and a POST rather
+        than a GET, because the question is a document.
+
+        An unknown field or an operator a field does not accept is refused by
+        name rather than answered with an empty result set: an empty page reads
+        as an empty inventory, which is a different thing.
+
+        Requires `read_assets`.
+      security:
+        - consoleToken: [read_assets]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Query'
+            examples:
+              everything:
+                summary: The whole inventory, first page.
+                value: {}
+              live_http_in_one_program:
+                summary: Live HTTP services of one perimeter.
+                value:
+                  filter:
+                    op: and
+                    clauses:
+                      - op: eq
+                        field: program_id
+                        value: 6f1a2b3c-0d4e-4f5a-8b6c-7d8e9f0a1b2c
+                      - op: eq
+                        field: lifecycle
+                        value: active
+                      - op: in
+                        field: status_code
+                        value: [200, 401, 403]
+                  limit: 100
+      responses:
+        '200':
+          description: One page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Page'
+        '400':
+          $ref: '#/components/responses/BadFilter'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/Unavailable'
+
+  /assets/hosts:
+    post:
+      tags: [assets]
+      operationId: listHosts
+      summary: One page of the folded list.
+      description: |
+        The list a console renders: assets grouped under the host they share.
+
+        A route of its own rather than a flag on `/assets/search`, because the
+        two hand out cursors that mean different columns. Behind one route, a
+        client that kept a cursor and flipped a flag would get a walk that
+        restarts or skips, and neither says anything.
+
+        Requires `read_assets`.
+      security:
+        - consoleToken: [read_assets]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Query'
+      responses:
+        '200':
+          description: One page of groups.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupedPage'
+        '400':
+          $ref: '#/components/responses/BadFilter'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/Unavailable'
+
+  /assets/facets:
+    post:
+      tags: [assets]
+      operationId: facetAssets
+      summary: Counters over the filtered result.
+      description: |
+        Aggregates over what the filter selected, not over the inventory. That
+        is what the side counters of an ASM interface are.
+
+        `limit` and `cursor` are ignored here. Requires `read_assets`.
+      security:
+        - consoleToken: [read_assets]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Query'
+      responses:
+        '200':
+          description: The counters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FacetPage'
+        '400':
+          $ref: '#/components/responses/BadFilter'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/Unavailable'
+
+  /assets/export:
+    post:
+      tags: [assets]
+      operationId: exportAssets
+      summary: The filtered result in full, streamed.
+      description: |
+        It streams as it walks, so the response starts before the walk
+        finishes. One consequence is worth stating plainly: a failure part way
+        through has already sent a valid prefix and the status line is long
+        gone, so a truncated file is possible and is logged rather than
+        reported in the status.
+
+        `jsonl` is lossless. `csv` flattens, and opens in a spreadsheet.
+
+        `limit` here is a total rather than a page, and it is honoured exactly.
+        Requires `read_assets`.
+      security:
+        - consoleToken: [read_assets]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/Query'
+              properties:
+                format:
+                  type: string
+                  enum: [jsonl, csv]
+                  default: jsonl
+      responses:
+        '200':
+          description: The walk, one asset per line.
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+                description: One `Asset` object per line.
+            text/csv:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/BadFilter'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/Unavailable'
+
+  /assets/fields:
+    get:
+      tags: [assets]
+      operationId: getFields
+      summary: What the search accepts, and what this deployment can do.
+      description: |
+        Served rather than deduced. A client that learns the vocabulary against
+        400s learns it wrong, and one that deduces the enrichment state from
+        missing data guesses: with no MaxMind database configured, no asset
+        carries an ASN, and that looks exactly like enrichment finding nothing.
+
+        Call this first. It is the authoritative field list, and the static one
+        in this document is a copy that can fall behind a deployment.
+
+        Requires `read_assets`.
+      security:
+        - consoleToken: [read_assets]
+      responses:
+        '200':
+          description: The vocabulary.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  fields:
+                    type: object
+                    description: Field name to the operators it accepts.
+                    additionalProperties:
+                      type: array
+                      items:
+                        type: string
+                  facets:
+                    type: integer
+                    description: How many values one facet returns.
+                  page_limit:
+                    type: integer
+                    description: The largest page a caller may ask for.
+                  page_default:
+                    type: integer
+                  enrichment:
+                    type: object
+                    properties:
+                      configured:
+                        type: boolean
+                        description: |
+                          Whether this deployment has an enrichment database at
+                          all. False means the infrastructure fields are never
+                          populated, which is not the same as never matching.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /assets/{asset}:
+    get:
+      tags: [assets]
+      operationId: getAsset
+      summary: One asset, with its evidence and its timeline.
+      description: |
+        The only read path here that touches the journal.
+
+        The timeline is bounded by a window and a cap, and a layer whose history
+        was cut is named in `truncated_layers` rather than silently shortened.
+
+        Requires `read_assets`.
+      security:
+        - consoleToken: [read_assets]
+      parameters:
+        - $ref: '#/components/parameters/AssetID'
+      responses:
+        '200':
+          description: The asset.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/Unavailable'
+
+  /assets/{asset}/render:
+    post:
+      tags: [renders]
+      operationId: requestRender
+      summary: Put one asset at the head of the render queue.
+      description: |
+        `manage_jobs` rather than `ingest`, and the distinction is not
+        tidiness: something holding `ingest` could otherwise schedule renders of
+        its choosing and spend a programme's budget on targets it picked.
+
+        A `200` does not mean a render is coming. `queued` is read from the
+        conditions the statement itself applies, so an archived asset, one out
+        of scope, or one on a port a browser refuses to open all answer `200`
+        with `queued: false` and a reason. Answering otherwise would tell a
+        caller to wait for a render nobody will make.
+      security:
+        - consoleToken: [manage_jobs]
+      parameters:
+        - $ref: '#/components/parameters/AssetID'
+      responses:
+        '200':
+          description: Whether anything is queued.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [asset_id, key, queued]
+                properties:
+                  asset_id:
+                    type: string
+                    format: uuid
+                  key:
+                    type: string
+                  queued:
+                    type: boolean
+                  reason:
+                    type: string
+                    description: Present only when nothing was queued.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/Unavailable'
+
+  /renders/replan:
+    post:
+      tags: [renders]
+      operationId: replanRenders
+      summary: Put the whole inventory back in the low queue.
+      description: |
+        The forced refresh after a major update of the rendering service. It is
+        spread over several days on purpose: doing it in an hour would restore
+        baseline consistency and produce a mass alert at the same time.
+
+        The spread is a deployment setting, not a parameter. Requires
+        `manage_jobs`.
+      security:
+        - consoleToken: [manage_jobs]
+      responses:
+        '200':
+          description: What moved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  replanned:
+                    type: integer
+                  spread:
+                    type: string
+                    description: A Go duration, as configured.
+                    examples: ["72h0m0s"]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/Unavailable'
+
+  /feed:
+    get:
+      tags: [assets]
+      operationId: streamFeed
+      summary: The live feed of discoveries, as server sent events.
+      description: |
+        Polling with a cursor behind an SSE connection. Rounds run every few
+        seconds and a round that found nothing emits nothing, so the cursor only
+        advances on a message that named a discovery.
+
+        The stream ends by itself after a few minutes and the client reconnects,
+        which the SSE protocol does on its own. A forgotten tab holding an HTTP
+        request forever is a leak visible only in the connection count.
+
+        Events are named `discoveries` rather than left unnamed, so adding a
+        second kind of message later does not start delivering it to every
+        existing listener. Comment lines beginning with `:` are heartbeats and
+        the protocol drops them.
+
+        Resumption costs no server state: the message id *is* the cursor, and a
+        browser hands it back as `Last-Event-ID` by itself. A first connection
+        with no cursor starts at the present rather than at the beginning of the
+        inventory.
+
+        Requires `read_assets`.
+      security:
+        - consoleToken: [read_assets]
+      parameters:
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+          description: |
+            Where to resume. Used only when `Last-Event-ID` is absent, which is
+            the case of a first connection that already knows where it left off.
+        - name: Last-Event-ID
+          in: header
+          required: false
+          schema:
+            type: string
+          description: The browser's own resumption, and it takes precedence.
+      responses:
+        '200':
+          description: The event stream.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  Each event is `id:` the cursor, `event: discoveries`, and
+                  `data:` one `Tick` object, given below.
+              x-event-data-schema:
+                $ref: '#/components/schemas/Tick'
+        '400':
+          description: The cursor is not one this served.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /programs:
+    get:
+      tags: [programs]
+      operationId: listPrograms
+      summary: The perimeters of this organization.
+      description: |
+        The default shape is the one that costs nothing, because the programme
+        switcher renders it on every page. Asset counts are asked for rather
+        than given.
+
+        Requires `read_assets`.
+      security:
+        - consoleToken: [read_assets]
+      parameters:
+        - name: counts
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ["1"]
+          description: Set to `1` to include `assets` and `assets_in_scope`.
+      responses:
+        '200':
+          description: The list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  programs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Program'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/Unavailable'
+
+    post:
+      tags: [programs]
+      operationId: createProgram
+      summary: Declare a perimeter.
+      description: |
+        Requires `manage_scope`. Entering a perimeter is an assertion about what
+        may be scanned, which is a different privilege from reading what was
+        found.
+      security:
+        - consoleToken: [manage_scope]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProgramBody'
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  program:
+                    $ref: '#/components/schemas/Program'
+        '400':
+          description: The body is not one this route takes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/Unavailable'
+
+  /programs/{program}:
+    get:
+      tags: [programs]
+      operationId: getProgram
+      summary: One perimeter and its rules.
+      security:
+        - consoleToken: [read_assets]
+      parameters:
+        - $ref: '#/components/parameters/ProgramID'
+      responses:
+        '200':
+          description: The programme, its rules, and the size of the perimeter.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  program:
+                    $ref: '#/components/schemas/Program'
+                  rules:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Rule'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/Unavailable'
+
+    patch:
+      tags: [programs]
+      operationId: updateProgram
+      summary: Edit a perimeter.
+      description: |
+        Optimistic concurrency. `version` is required and is the one read from
+        the programme: a write against a version that moved is refused with
+        `409 stale_version` and nothing is written, so the caller rereads before
+        rewriting.
+
+        Changing the authorization window or the state can move assets in and
+        out of scope, and `effect` reports what that did.
+
+        Requires `manage_scope`.
+      security:
+        - consoleToken: [manage_scope]
+      parameters:
+        - $ref: '#/components/parameters/ProgramID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/ProgramBody'
+              required: [version]
+      responses:
+        '200':
+          description: Written, and what it moved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  program:
+                    $ref: '#/components/schemas/Program'
+                  effect:
+                    $ref: '#/components/schemas/Effect'
+        '400':
+          description: No version, no name, or an interval that is not a duration.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/StaleVersion'
+        '500':
+          $ref: '#/components/responses/Unavailable'
+
+  /programs/{program}/rules:
+    post:
+      tags: [programs]
+      operationId: createRule
+      summary: Add a rule to a perimeter.
+      description: |
+        Nested under the programme and not reachable on its own. A rule
+        identifier alone would need its own ownership check, and a second place
+        deciding who may touch what is a second place to get it wrong.
+
+        An include whose matcher is `fqdn` or `url_prefix` names a thing rather
+        than a shape, so it also creates it: those two are the matchers that
+        declare something, and what they created comes back in `declared`. An
+        `apex` says where to start looking, a `cidr` names a range nobody can
+        enumerate from, and a `regex` names a shape, so none of the three
+        declares anything. Exclusions never declare.
+
+        Adding a rule reclassifies the perimeter, and `effect` reports what
+        moved. Requires `manage_scope`.
+      security:
+        - consoleToken: [manage_scope]
+      parameters:
+        - $ref: '#/components/parameters/ProgramID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuleBody'
+            examples:
+              apex:
+                summary: Everything under a domain.
+                value:
+                  kind: include
+                  matcher: apex
+                  pattern: example.com
+              exclusion:
+                summary: A subdomain taken out.
+                value:
+                  kind: exclude
+                  matcher: fqdn
+                  pattern: internal.example.com
+                  note: asked for by the programme
+      responses:
+        '201':
+          description: Created, what it moved, and what it declared.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rule:
+                    $ref: '#/components/schemas/Rule'
+                  effect:
+                    $ref: '#/components/schemas/Effect'
+                  declared:
+                    type: array
+                    description: |
+                      The assets this rule created, on the two matchers that
+                      name a thing. Absent or empty otherwise.
+                    items:
+                      $ref: '#/components/schemas/Accepted'
+        '400':
+          description: |
+            A rule the perimeter cannot hold. `bad_rule` covers a matcher that
+            does not go with its pattern and a pattern the entry path cannot
+            represent, and the detail names which.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/Unavailable'
+
+  /programs/{program}/rules/{rule}:
+    patch:
+      tags: [programs]
+      operationId: updateRule
+      summary: Edit or close a rule.
+      description: |
+        Closing a rule is setting `valid_to`. There is no delete on this surface
+        at all: a rule has a period of validity rather than an existence, and an
+        asset classified by a rule since closed stays explainable.
+
+        `version` is required, and a stale one is refused with `409` having
+        written nothing. Requires `manage_scope`.
+      security:
+        - consoleToken: [manage_scope]
+      parameters:
+        - $ref: '#/components/parameters/ProgramID'
+        - name: rule
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/RuleBody'
+              required: [version]
+      responses:
+        '200':
+          description: Written, and what it moved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rule:
+                    $ref: '#/components/schemas/Rule'
+                  effect:
+                    $ref: '#/components/schemas/Effect'
+        '400':
+          description: No version, or a rule the perimeter cannot hold.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/StaleVersion'
+        '500':
+          $ref: '#/components/responses/Unavailable'
+
+  /programs/{program}/assets:
+    post:
+      tags: [programs]
+      operationId: enterAssets
+      summary: Record assets somebody typed in.
+      description: |
+        Entering an asset by hand is an assertion about the perimeter, which is
+        a different privilege from writing what a scanner found: this holds
+        `manage_scope`, not `ingest`.
+
+        Each entry is classified against the rules in force. An entry the
+        normalizer cannot read, or one the perimeter excludes, comes back in
+        `refused` with its reason rather than failing the call.
+
+        A list longer than the bound is an import, and an import belongs behind
+        a job rather than behind a request somebody is waiting on.
+      security:
+        - consoleToken: [manage_scope]
+      parameters:
+        - $ref: '#/components/parameters/ProgramID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [entries]
+              properties:
+                entries:
+                  type: array
+                  minItems: 1
+                  maxItems: 5000
+                  items:
+                    type: string
+                  description: |
+                    Hosts, addresses, `host:port` services or URLs. They are
+                    normalized before anything else happens to them.
+            examples:
+              a_handful:
+                value:
+                  entries:
+                    - api.example.com
+                    - https://admin.example.com/login
+                    - 198.51.100.7:8443
+      responses:
+        '200':
+          description: What was taken and what was not.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Entered'
+        '400':
+          description: A malformed body, or no entry at all.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          description: More entries than one call takes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/Unavailable'
+
+  /programs/{program}/runs:
+    post:
+      tags: [programs, runs]
+      operationId: startRun
+      summary: Provision one run over a perimeter.
+      description: |
+        Beside the cadence rather than instead of it. The scheduled pass gives
+        regular coverage, and this is what re-runs a perimeter after a scope
+        change without waiting for the next tick.
+
+        Three answers are worth telling apart, and none of them is a failure.
+
+        `200` with `started: false` means nothing was due, which is the normal
+        state of a healthy inventory.
+
+        `202` with `started: true` means the platform accepted the execution.
+
+        `202` with `started: false` and a `run_id` means the row exists and the
+        platform did not start it. The deadline sweeper owns that run and
+        nothing has to be repaired by hand. Retrying is what would create a
+        second run.
+
+        The start happens after the commit and detached from the request, so a
+        console that hangs up mid call cannot cancel a start the platform has
+        already accepted.
+
+        Requires `manage_jobs`.
+      security:
+        - consoleToken: [manage_jobs]
+      parameters:
+        - $ref: '#/components/parameters/ProgramID'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                kind:
+                  type: string
+                  enum: [discovery, verification]
+                  default: verification
+                scope:
+                  type: string
+                  enum: [enum, resolve, ports, full]
+                  default: full
+                  description: |
+                    How far up the ladder a verification run walks. A discovery
+                    run walks all of it and ignores this.
+      responses:
+        '200':
+          description: Nothing was due.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  started:
+                    type: boolean
+                    const: false
+                  reason:
+                    type: string
+        '202':
+          description: A run exists, whether or not the platform started it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunStarted'
+        '400':
+          description: A run kind that is neither of the two.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: |
+            `no_perimeter` when the programme declares no apex, so there is
+            nothing to enumerate. `run_in_flight` when one is already open, and
+            the detail names the run, its state and its age: a run something has
+            opened is a run to wait for, and a run nobody has claimed is a run
+            whose provisioning failed. `refused` covers the rest, an expired
+            authorization among them.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/Unavailable'
+
+  /queue:
+    get:
+      tags: [runs]
+      operationId: getQueue
+      summary: Queue depths and recent runs.
+      description: |
+        Read from a console, never from what consumes it.
+
+        A queue whose three counters are all zero is dropped, so an entry here
+        is always a queue that exists.
+
+        On a run, `started_at` separates one something opened from one whose
+        provisioning failed, and `external_id` says whether the platform ever
+        named an execution. Those two call for opposite actions.
+
+        Requires `read_assets`.
+      security:
+        - consoleToken: [read_assets]
+      responses:
+        '200':
+          description: The queues and the recent runs.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  depths:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/QueueDepth'
+                  runs:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Run'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/Unavailable'
+
+  /runs/{run}/targets:
+    get:
+      tags: [runs]
+      operationId: getRunTargets
+      summary: The only thing a run is given about the inventory.
+      description: |
+        Authenticated by the run's own signed token, not by a console
+        credential, and scoped to that run. The run in the path must be the run
+        the token names.
+
+        Plain text, one key per line.
+
+        Reaching for this list is what says a scanner opened the run, as opposed
+        to a provisioner having promised to. It is the only moment that
+        separates those two for a verification run.
+
+        A run in a terminal state hands out nothing further. That is the
+        effective revocation: a signed token cannot be recalled, so it stays
+        valid and stops being useful.
+      security:
+        - runToken: []
+      parameters:
+        - name: run
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The target list.
+          content:
+            text/plain:
+              schema:
+                type: string
+                examples: ["api.example.com\nwww.example.com\n"]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: The run is completed, failed or expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/Unavailable'
+
+  /reports:
+    post:
+      tags: [runs]
+      operationId: postReport
+      summary: Where a run's report lands.
+      description: |
+        Authenticated by the run's signed token. The run is taken from the
+        credential and never from the body: reading it from the body first would
+        let anyone probe an organization's run states by the shape of the
+        answer.
+
+        The report type is transcribed rather than shared, so the scanner ships
+        on its own cycle. That only holds because a major schema version this
+        does not know is refused: a document reusing field names under new
+        meanings would be ingested under the old ones and write wrong inventory
+        in silence. Current: `1.x`.
+
+        The scanner is untrusted by assumption. What it says is read as
+        evidence, and what the inventory records is decided here.
+      security:
+        - runToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Report'
+      responses:
+        '200':
+          description: What the report changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Summary'
+        '400':
+          description: |
+            A malformed document, or `schema_unsupported` for a major version
+            this does not read.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: |
+            `program_unauthorized`. The programme's authorization no longer
+            covers this run, so nothing is written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: The run is already closed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/Unavailable'
+
+  /healthz:
+    get:
+      tags: [health]
+      operationId: healthz
+      summary: Liveness.
+      description: |
+        It touches nothing, because a probe that queries the database turns a
+        slow database into a restarted process.
+      security: []
+      responses:
+        '200':
+          description: The process is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    const: ok
+
+  /readyz:
+    get:
+      tags: [health]
+      operationId: readyz
+      summary: Readiness.
+      description: |
+        The one that asks. Both pools, because a request needs both: the system
+        pool is what turns a credential into an organization, so a broken one
+        500s every authenticated call while a process pinging only the other
+        keeps reporting itself ready and stays in the rotation.
+      security: []
+      responses:
+        '200':
+          description: Ready.
+        '503':
+          description: Not ready, and the body names which dependency.
+
+components:
+
+  securitySchemes:
+    consoleToken:
+      type: http
+      scheme: bearer
+      description: |
+        A long lived organization credential, sent as `Authorization: Bearer`.
+        It names itself and never an organization: the tenant is discovered from
+        the token, in one place, and everything after that runs scoped to it.
+
+        The actions are `read_assets` (the inventory and the queues),
+        `manage_scope` (perimeters, rules, hand entered assets) and
+        `manage_jobs` (runs and renders). A credential that authenticated but
+        lacks the action gets `403`, told apart from the `401` of a credential
+        that is wrong, which is what makes the separation usable rather than
+        mysterious.
+    runToken:
+      type: http
+      scheme: bearer
+      description: |
+        A signed, short lived credential belonging to one run. It reaches
+        `GET /runs/{run}/targets` and `POST /reports`, and nothing else. It
+        cannot be recalled, so a run in a terminal state simply stops answering.
+
+  parameters:
+    AssetID:
+      name: asset
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ProgramID:
+      name: program
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    Unauthorized:
+      description: |
+        The credential is missing, wrong or expired. One answer for all three:
+        which one it was belongs in a log, not in a reply.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Forbidden:
+      description: The credential is good and does not hold the action.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: |
+        No such thing, or one belonging to another organization. The two are
+        deliberately indistinguishable, and a malformed identifier answers this
+        rather than `400` for the same reason.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    BadFilter:
+      description: |
+        `bad_filter` for a field the registry does not describe, an operator a
+        field does not accept, or a value of the wrong shape. `bad_cursor` for a
+        cursor this did not hand out, including one from the other list. The
+        detail names it, which is what makes the vocabulary learnable.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    StaleVersion:
+      description: |
+        The row moved since it was read, so nothing was written. The caller
+        based a decision on a state that no longer exists, and the only honest
+        answer is to say so.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unavailable:
+      description: Something failed here, and it says nothing further.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+
+    Error:
+      type: object
+      required: [error, detail]
+      properties:
+        error:
+          type: string
+          description: Machine readable. Branch on this.
+          examples: [bad_filter, not_found, stale_version, run_in_flight]
+        detail:
+          type: string
+          description: A sentence. Show this.
+
+    Query:
+      type: object
+      description: The body every search route takes.
+      properties:
+        filter:
+          $ref: '#/components/schemas/Node'
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 50
+          description: |
+            A page. On `/assets/export` it is a total instead, honoured exactly.
+        cursor:
+          type: string
+          description: |
+            The `next_cursor` of the previous page. Cursors are not
+            interchangeable between `/assets/search` and `/assets/hosts`: they
+            mean different columns, and the wrong one is refused rather than
+            silently restarting or skipping the walk.
+        format:
+          type: string
+          enum: [jsonl, csv]
+          description: Export only.
+
+    Node:
+      type: object
+      description: |
+        One clause or one group of them, as a tree. An AST rather than a query
+        string: a textual language comes later and will produce the same tree,
+        which avoids freezing a syntax before anybody knows what actually gets
+        filtered.
+
+        A group carries `clauses` and no `field`. A leaf carries `field` and
+        `value` and no `clauses`. An omitted or empty filter means the whole
+        inventory, and that is only meaningful at the root: nested, an empty
+        `and` is true by identity and an empty `or` is false, so the same shape
+        would mean the whole inventory in one parent and nothing at all in the
+        other.
+
+        The tree nests at most 16 deep and a group carries at most 64 clauses.
+
+        There is no field for the organization, in either direction. The
+        compiler emits that clause itself, outside the tree.
+      required: [op]
+      properties:
+        op:
+          type: string
+          enum:
+            [and, or, not, eq, in, gt, gte, lt, lte, prefix, suffix, contains,
+             exists, before, after, in_cidr]
+        field:
+          type: string
+          description: |
+            Leaves only. `GET /assets/fields` is the authoritative list of what
+            a deployment accepts and which operators each field takes.
+          enum:
+            - key
+            - host
+            - program_id
+            - kind
+            - lifecycle
+            - scope_status
+            - scheme
+            - port
+            - status_code
+            - asn
+            - country
+            - cdn_provider
+            - waf_vendor
+            - server
+            - is_cdn
+            - waf_detected
+            - ip
+            - technologies
+            - first_seen
+            - last_seen
+            - last_changed_at
+            - volatility
+            - favicon_hash
+            - cert_spki_hash
+            - script_hash
+            - cookie_name
+            - external_host
+            - dead_external_host
+            - takeover_candidate
+        value:
+          description: |
+            Leaves only. A scalar for most operators, an array for `in`, a CIDR
+            string for `in_cidr`, an RFC 3339 instant for `before` and `after`,
+            and ignored by `exists`.
+        clauses:
+          type: array
+          maxItems: 64
+          items:
+            $ref: '#/components/schemas/Node'
+
+    Asset:
+      type: object
+      description: |
+        One row of the inventory. Every field is evidence or a pivot: there is
+        no composite score, no severity and no environment label, because those
+        cannot be determined from the outside anyway.
+      required:
+        [asset_id, program_id, kind, key, lifecycle, scope_status,
+         technologies, attributes, volatility, pivots, discovery_source,
+         first_seen, last_seen]
+      properties:
+        asset_id: { type: string, format: uuid }
+        program_id: { type: string, format: uuid }
+        kind:
+          type: string
+          enum: [fqdn, ip, service, url]
+        key:
+          type: string
+          description: The normalized identity. Unique inside a programme.
+        host: { type: [string, "null"] }
+        port: { type: [integer, "null"] }
+        scheme: { type: [string, "null"] }
+        lifecycle:
+          type: string
+          enum: [candidate, active, flapping, inactive, unobservable, archived]
+        scope_status:
+          type: string
+          enum: [in_scope, out_of_scope, unknown]
+        dns_state:
+          type: [string, "null"]
+          enum: [unmeasured, healthy, failing, dead, null]
+        tcp_state:
+          type: [string, "null"]
+          enum: [unmeasured, healthy, failing, dead, null]
+        http_state:
+          type: [string, "null"]
+          enum: [unmeasured, healthy, failing, dead, null]
+        status_code: { type: [integer, "null"] }
+        status_chain:
+          type: array
+          items: { type: integer }
+        final_url: { type: [string, "null"] }
+        title: { type: [string, "null"] }
+        server: { type: [string, "null"] }
+        ip: { type: [string, "null"] }
+        asn: { type: [integer, "null"] }
+        asn_org: { type: [string, "null"] }
+        country: { type: [string, "null"] }
+        city: { type: [string, "null"] }
+        is_cdn: { type: [boolean, "null"] }
+        cdn_provider: { type: [string, "null"] }
+        waf_detected: { type: [boolean, "null"] }
+        waf_vendor: { type: [string, "null"] }
+        technologies:
+          type: array
+          items: { type: string }
+        attributes:
+          type: object
+          description: |
+            The open part. `favicon_hash`, `cert_spki_hash`, `script_hashes`,
+            `cookie_names`, `external_hosts`, `dead_external_hosts` and
+            `takeover_candidate` are the keys the search can filter on, through
+            containment.
+          additionalProperties: true
+        volatility:
+          type: integer
+          description: |
+            How much this asset has moved lately, computed per row from its
+            change buckets. It has no index and cannot have one: the value of a
+            row that has not moved changes with the calendar.
+        pivots:
+          type: array
+          description: What this asset shares with others, and with how many.
+          items:
+            $ref: '#/components/schemas/Pivot'
+        discovery_source:
+          type: string
+          description: How this asset first entered the inventory.
+        lineage:
+          description: What it was derived from, when it was derived.
+        first_seen: { type: string, format: date-time }
+        last_seen: { type: string, format: date-time }
+        last_fingerprint_at: { type: [string, "null"], format: date-time }
+        last_checked_at: { type: [string, "null"], format: date-time }
+        last_changed_at: { type: [string, "null"], format: date-time }
+
+    Pivot:
+      type: object
+      properties:
+        type: { type: string }
+        value: { type: string }
+        count:
+          type: integer
+          description: How many other assets share this value.
+
+    Page:
+      type: object
+      properties:
+        assets:
+          type: array
+          items:
+            $ref: '#/components/schemas/Asset'
+        favicons:
+          type: object
+          description: |
+            The images of this page, keyed by hash. On the page rather than on
+            each row: a shared favicon is the interesting case, and repeating
+            two kilobytes per asset would undo the point of storing one copy.
+          additionalProperties:
+            type: string
+        next_cursor:
+          type: string
+          description: Absent on the last page.
+
+    GroupedPage:
+      type: object
+      properties:
+        groups:
+          type: array
+          items:
+            type: object
+            properties:
+              host:
+                type: string
+                description: |
+                  A row with no host is grouped under its own key, which shows
+                  it alone and in its place in the order rather than pooling
+                  every such row under one name that means nothing.
+              last_seen:
+                type: string
+                format: date-time
+                description: |
+                  The most recent of the group, and what the groups are ordered
+                  by: what moved recently stays at the top, and folding must not
+                  cost that.
+              assets:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Asset'
+        favicons:
+          type: object
+          additionalProperties:
+            type: string
+        next_cursor:
+          type: string
+
+    FacetPage:
+      type: object
+      properties:
+        facets:
+          type: array
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              truncated:
+                type: boolean
+                description: There were more values than the facet returns.
+              terms:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    value: { type: string }
+                    count: { type: integer }
+        favicons:
+          type: object
+          description: |
+            The images the favicon facet refers to. They travel with it rather
+            than being taken from the page's rows, because the two sets are not
+            the same: a facet ranks the whole filtered result and a page shows
+            fifty of it, so the most shared icon in a perimeter is routinely one
+            no row on screen carries.
+          additionalProperties:
+            type: string
+
+    AssetDetail:
+      type: object
+      properties:
+        asset:
+          $ref: '#/components/schemas/Asset'
+        evidence:
+          type: array
+          description: The current reading of each layer, and where it came from.
+          items:
+            type: object
+            properties:
+              layer: { type: string }
+              outcome: { type: string }
+              source: { type: string }
+              observed_at: { type: string, format: date-time }
+              last_confirmed_at: { type: string, format: date-time }
+              producer_version: { type: [string, "null"] }
+              data: {}
+        timeline:
+          type: array
+          description: What changed, most recent first.
+          items:
+            type: object
+            properties:
+              layer: { type: string }
+              at: { type: string, format: date-time }
+              held_until: { type: string, format: date-time }
+              outcome: { type: string }
+              producer_version: { type: [string, "null"] }
+              diff:
+                type: object
+                properties:
+                  class: { type: string }
+                  previous_producer_version: { type: [string, "null"] }
+                  fields:
+                    type: array
+                    items: { type: object }
+        truncated_layers:
+          type: array
+          description: |
+            Layers whose history hit the cap. Named rather than silently
+            shortened.
+          items: { type: string }
+        window_from:
+          type: string
+          format: date-time
+          description: How far back the timeline was read.
+        favicons:
+          type: object
+          additionalProperties: { type: string }
+
+    Tick:
+      type: object
+      description: One feed message.
+      properties:
+        discoveries:
+          type: array
+          items:
+            type: object
+            properties:
+              asset_id: { type: string, format: uuid }
+              program_id: { type: string, format: uuid }
+              kind: { type: string }
+              key: { type: string }
+              host: { type: [string, "null"] }
+              lifecycle: { type: string }
+              scope_status: { type: string }
+              first_seen: { type: string, format: date-time }
+              discovery_source: { type: string }
+              step: { type: [string, "null"] }
+        overflow:
+          type: integer
+          description: What the cap left out, answered rather than dropped.
+        overflow_at_least:
+          type: boolean
+          description: |
+            The count itself was capped, so `overflow` is a floor. A page
+            rendering "500 more" where there are forty thousand is a silent
+            truncation, and this is what prevents it.
+        cursor:
+          type: string
+          description: The id of this message, and where to resume.
+
+    Program:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        platform: { type: [string, "null"] }
+        platform_ref: { type: [string, "null"] }
+        state:
+          type: string
+          enum: [active, suspended, archived]
+        authorized_from: { type: string, format: date-time }
+        authorized_to:
+          type: [string, "null"]
+          format: date-time
+          description: |
+            Absent means open ended. A run refuses once this has passed, and
+            that refusal is the authorization doing its job.
+        authorization_ref: { type: [string, "null"] }
+        rate_limit_rps: { type: integer }
+        discovery_interval:
+          type: string
+          description: A Go duration.
+          examples: ["168h0m0s"]
+        last_discovery_at: { type: [string, "null"], format: date-time }
+        version:
+          type: integer
+          description: Hand this back on an edit. See `409 stale_version`.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        rules_in_force: { type: [integer, "null"] }
+        assets:
+          type: [integer, "null"]
+          description: Only when asked for, on the list. Always on the detail.
+        assets_in_scope: { type: [integer, "null"] }
+
+    ProgramBody:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        platform: { type: [string, "null"] }
+        platform_ref: { type: [string, "null"] }
+        state:
+          type: string
+          enum: [active, suspended, archived]
+          default: active
+        authorized_from: { type: [string, "null"], format: date-time }
+        authorized_to: { type: [string, "null"], format: date-time }
+        authorization_ref: { type: [string, "null"] }
+        rate_limit_rps: { type: integer }
+        discovery_interval:
+          type: string
+          description: A positive Go duration.
+          examples: ["168h0m0s"]
+        version:
+          type: [integer, "null"]
+          description: Required on an edit, ignored on a create.
+
+    Rule:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        kind:
+          type: string
+          enum: [include, exclude]
+        matcher:
+          type: string
+          enum: [apex, fqdn, cidr, regex, url_prefix]
+        pattern: { type: string }
+        valid_from: { type: string, format: date-time }
+        valid_to:
+          type: [string, "null"]
+          format: date-time
+          description: |
+            Absent means still in force. Setting it is how a rule is closed;
+            there is no delete.
+        note: { type: [string, "null"] }
+        in_force: { type: boolean }
+        version: { type: integer }
+        created_at: { type: string, format: date-time }
+
+    RuleBody:
+      type: object
+      required: [kind, matcher, pattern]
+      properties:
+        kind:
+          type: string
+          enum: [include, exclude]
+        matcher:
+          type: string
+          enum: [apex, fqdn, cidr, regex, url_prefix]
+          description: |
+            `apex` covers a domain and everything under it. `fqdn` is one name.
+            `cidr` is an address range, and it can only be applied after
+            resolution, so it is never pushed into a run. `regex` is a shape.
+            `url_prefix` is a path, and it is the one matcher that reads the key
+            rather than the host.
+        pattern: { type: string }
+        valid_from: { type: [string, "null"], format: date-time }
+        valid_to: { type: [string, "null"], format: date-time }
+        note: { type: [string, "null"] }
+        version:
+          type: [integer, "null"]
+          description: Required on an edit.
+
+    Effect:
+      type: object
+      description: What a scope write moved.
+      properties:
+        examined: { type: integer }
+        changed: { type: integer }
+        gained:
+          type: integer
+          description: Assets that came into scope.
+        lost:
+          type: integer
+          description: Assets that left it. They are kept, never probed.
+
+    Accepted:
+      type: object
+      properties:
+        asset_id: { type: string, format: uuid }
+        kind: { type: string }
+        key: { type: string }
+        scope_status: { type: string }
+        created:
+          type: boolean
+          description: False means it was already there.
+        scheduled: { type: boolean }
+
+    Entered:
+      type: object
+      properties:
+        accepted:
+          type: array
+          items:
+            $ref: '#/components/schemas/Accepted'
+        refused:
+          type: array
+          description: |
+            Each with the entry as typed and why it was not taken, so a typo
+            reads as a typo rather than as a failure.
+          items:
+            type: object
+            properties:
+              entry: { type: string }
+              reason: { type: string }
+
+    RunStarted:
+      type: object
+      properties:
+        started:
+          type: boolean
+          description: |
+            False here means the row exists and the platform did not start it.
+            The deadline sweeper owns that run: do not retry, or there will be
+            two.
+        run_id: { type: string, format: uuid }
+        external_id:
+          type: string
+          description: What the platform called the execution. Only when started.
+        kind: { type: string }
+        scope: { type: string }
+        deadline: { type: string, format: date-time }
+        target_count: { type: integer }
+        reason:
+          type: string
+          description: Present when nothing started.
+        args:
+          type: array
+          description: |
+            What the run was actually asked to do. In development nothing starts
+            it, so a console shows this and a person runs the image: the same
+            shape as production minus the call.
+          items: { type: string }
+        env:
+          type: object
+          additionalProperties: { type: string }
+
+    QueueDepth:
+      type: object
+      properties:
+        program_id: { type: string, format: uuid }
+        queue: { type: string }
+        due: { type: integer }
+        later: { type: integer }
+        in_run: { type: integer }
+
+    Run:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        program_id: { type: string, format: uuid }
+        kind:
+          type: string
+          enum: [discovery, verification]
+        scope:
+          type: string
+          enum: [enum, resolve, ports, full]
+        state:
+          type: string
+          enum: [pending, running, completed, failed, expired]
+        deadline: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        started_at:
+          type: [string, "null"]
+          format: date-time
+          description: |
+            Absent means nothing has opened this run. That is a different thing
+            from a run whose provisioning failed, and the two want opposite
+            actions.
+        finished_at: { type: [string, "null"], format: date-time }
+        target_count: { type: [integer, "null"] }
+        observations: { type: integer }
+        error: { type: [string, "null"] }
+        external_id:
+          type: [string, "null"]
+          description: |
+            What the platform called the execution. Absent means nothing started
+            it.
+
+    Report:
+      type: object
+      description: |
+        The scanner's document, schema `1.x`. It is transcribed here rather than
+        imported from the scanner, so the two ship on their own cycles.
+      required: [schema_version, run, sources, stats, hosts]
+      properties:
+        schema_version:
+          type: string
+          examples: ["1.0"]
+        run:
+          type: object
+          required: [id, domain, input, scope, started_at, finished_at]
+          properties:
+            id: { type: string }
+            domain: { type: string }
+            input:
+              type: string
+              enum: [domain, targets]
+              description: |
+                What says whether a missing host means anything. Enumeration is
+                authoritative on presence, never on absence.
+            scope: { type: string }
+            stages:
+              type: array
+              items: { type: string }
+            started_at: { type: string, format: date-time }
+            finished_at: { type: string, format: date-time }
+            duration_ms: { type: integer }
+            completed: { type: boolean }
+            truncated_by_timeout:
+              type: boolean
+              description: |
+                Running out of time is data rather than an error. A run that
+                delivered nine hundred hosts before its deadline has to stay
+                distinguishable from one that crashed on the first.
+            version: { type: string }
+            environment: { type: string }
+            degraded:
+              type: array
+              description: |
+                What this run could not guarantee. A run that says it ran
+                degraded produces no informative failure: a resolver pool that
+                could not be validated turns every dead host into a live one, or
+                every live host into a timeout, and those are the two signals a
+                death is read from. The list grows one code at a time, and a
+                consumer that does not know one still sees that the run was
+                degraded.
+              items:
+                type: string
+                examples: [resolvers_unvalidated, wildcard_zones_capped]
+        sources:
+          type: array
+          description: |
+            Every source appears whether it succeeded or not, which is what
+            makes a silently empty one visible.
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              status: { type: string }
+              found: { type: integer }
+              duration_ms: { type: integer }
+              partial: { type: boolean }
+              error: { type: string }
+        stats:
+          type: object
+          properties:
+            enumerated: { type: integer }
+            excluded: { type: integer }
+            in_scope: { type: integer }
+            live: { type: integer }
+            dead: { type: integer }
+            wildcard: { type: integer }
+            open_ports: { type: integer }
+            http_services: { type: integer }
+        hosts:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReportHost'
+        excluded:
+          type: array
+          description: Hosts an exclusion pattern removed before any packet.
+          items:
+            type: object
+            properties:
+              host: { type: string }
+              pattern: { type: string }
+        warnings:
+          type: array
+          items: { type: string }
+
+    ReportHost:
+      type: object
+      required: [host, status]
+      properties:
+        host: { type: string }
+        status:
+          type: string
+          enum: [discovered, live, dead, wildcard]
+          description: |
+            A host the run never reached comes back as `discovered` and produces
+            no observation at all: silence is not a measurement.
+        addresses:
+          type: array
+          items: { type: string }
+        cname:
+          type: array
+          items: { type: string }
+        reason:
+          type: string
+          enum: [nxdomain, no_answer, timeout, wildcard]
+          description: |
+            `nxdomain` and `no_answer` are deliberately distinct: a name that
+            exists without an address, an MX-only host, is not a name that does
+            not exist.
+        sources:
+          type: array
+          description: Absent on a verification run, where stage one was a list.
+          items: { type: string }
+        cdn:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              type: { type: string }
+              addresses:
+                type: array
+                items: { type: string }
+              scan_limited: { type: boolean }
+        scan:
+          type: object
+          description: |
+            What the sweep actually tried, summed over every address. The four
+            buckets have to add up to `scanned`, and that is not bookkeeping: a
+            report listing open ports says nothing when the list is empty, and
+            "nothing else is open" and "nothing else was tried" are the two
+            readings that decide between a death and a silence. A report whose
+            counts do not add up is not read.
+          properties:
+            scanned: { type: integer }
+            open: { type: integer }
+            refused: { type: integer }
+            filtered: { type: integer }
+            unknown:
+              type: integer
+              description: |
+                What the observer could not measure, as opposed to what the
+                target did. A probe that failed on a local limit says nothing
+                about the target and is counted here rather than dropped.
+        ports:
+          type: array
+          items:
+            type: object
+            properties:
+              port: { type: integer }
+              protocol: { type: string }
+              state: { type: string }
+              addresses:
+                type: array
+                items: { type: string }
+              http:
+                type: object
+                properties:
+                  url: { type: string }
+                  final_url: { type: string }
+                  scheme: { type: string }
+                  status_code: { type: integer }
+                  title: { type: string }
+                  content_length: { type: integer }
+                  response_time_ms: { type: integer }
+                  server: { type: string }
+                  redirects:
+                    type: array
+                    items: { type: string }
+                  redirect_unfollowed: { type: boolean }
+                  tech:
+                    type: array
+                    items: { type: string }
+                  tls:
+                    type: object
+                    properties:
+                      subject_cn: { type: string }
+                      issuer: { type: string }
+                      not_after: { type: string, format: date-time }
+                      sans:
+                        type: array
+                        items: { type: string }
+                      cert_spki_hash: { type: string }
+
+    Summary:
+      type: object
+      description: What one report changed.
+      properties:
+        hosts: { type: integer }
+        assets: { type: integer }
+        created: { type: integer }
+        observations: { type: integer }
+        deduplicated: { type: integer }
+        rejected: { type: integer }
+        skipped: { type: integer }
+        derived: { type: integer }
+        takeovers: { type: integer }
+        suppressed: { type: integer }
+        late:
+          type: boolean
+          description: |
+            The report arrived after its run's deadline. The data is still
+            valid, so it is recorded rather than refused: the run may simply
+            have been re-dispatched, and deduplication merges the two.
+        completed: { type: boolean }
+        truncated_by_timeout: { type: boolean }
+        degraded:
+          type: array
+          items: { type: string }
+        sources:
+          type: array
+          description: |
+            The per source accounting, kept because the failure it describes
+            does not look like one: without a credential a keyed source disables
+            itself, the run starts, finishes correctly, and simply finds less.
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              status: { type: string }
+              found: { type: integer }
+              error: { type: string }
+        unknown:
+          type: object
+          additionalProperties: { type: integer }

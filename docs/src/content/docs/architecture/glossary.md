@@ -2,7 +2,7 @@
 title: Glossary
 description: The project vocabulary.
 sidebar:
-  order: 16
+  order: 17
 ---
 
 | Term | Definition |
