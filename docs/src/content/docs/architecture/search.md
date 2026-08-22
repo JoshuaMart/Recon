@@ -218,6 +218,7 @@ also the answer to "what can be filtered", and it is short on purpose.
 | Field | Reads | Type | Operators |
 |---|---|---|---|
 | `key`, `host` | the column | text | `eq`, `prefix`, `suffix` |
+| `program_id` | the column | uuid | `eq`, `in` |
 | `kind`, `lifecycle`, `scope_status`, `scheme` | the column | text | `eq`, `in` |
 | `port`, `status_code`, `asn` | the column | int | `eq`, `in`, `gt`, `gte`, `lt`, `lte` |
 | `country`, `cdn_provider`, `waf_vendor`, `server` | the column | text | `eq`, `in` |
@@ -230,6 +231,17 @@ also the answer to "what can be filtered", and it is short on purpose.
 | `script_hash`, `cookie_name`, `external_host` | `attributes` | text[] | `contains` |
 | `dead_external_host` | `attributes` | text[] | `contains` |
 | `takeover_candidate` | `attributes` | bool | `exists` |
+
+**`program_id` is in the registry and `org_id` is not**, and the pair is worth a paragraph because they look
+like the same kind of field. The organization is emitted by the compiler on every compilation, so a query can
+neither name it nor omit it: a tenant filter a caller can express is one a caller can forget. A program is a
+perimeter **inside** one organization, the switcher sits on every screen and is exactly a filter on it, and
+the tenant clause is still emitted beside it, so naming somebody else's program returns nothing rather than
+their inventory. It reads the leading columns of an index the projection already carries.
+
+The value is bound and cast at the placeholder rather than parsed first. The cast is what refuses a malformed
+identifier, with the value still a parameter, and parsing it here would be a second definition of what a
+uuid is.
 
 **The JSONB fields compile to containment and nothing else**, `attributes @> '{"favicon_hash": "..."}'`, on
 a scalar key and on an array key alike. That is the one form the GIN index of
@@ -497,6 +509,46 @@ information, and half the groups are typically a name that the scope has not set
 assets: "16 services on 443" stays the right answer whether the screen folds them or not. A facet counting hosts
 would answer a different question, and nobody asked it.
 
+### It is a second route, not a flag on the first
+
+`POST /assets/hosts` beside `POST /assets/search`, taking the same filter and answering `groups` where the other
+answers `assets`.
+
+The reason is the cursor. A grouped page walks `(max(last_seen), host)` and a flat one walks
+`(last_seen, asset_id)`, so the two hand out cursors that mean different things. Behind one route with a flag, a
+client that flips the flag and keeps the cursor gets a walk that restarts or skips, and neither says anything. Behind
+two routes the mistake is a refusal, because neither cursor decodes as the other: one is an opaque pair of
+timestamp and identifier, the other is an encoded object, and a decoder that reads the wrong one fails rather than
+guessing.
+
+It also leaves the flat list exactly as [10.8](#108-export) needs it. The export walks the flat one, and an export
+that had to unfold groups to write rows would be a second set of rules to keep in step with the first.
+
+**The group cursor bounds the group, never the row.** Bounding the rows as well reads like a free narrowing and is
+wrong: dropping the rows above the cursor changes what `max()` is computed from, so a host already returned comes
+back with a smaller maximum and passes the bound a second time. The cost of not doing it is stated rather than
+hidden, since the aggregate is then computed over the whole filtered set on every page. On the perimeters this is
+built for that is a grouping over thousands of rows; the honest fix the day it stops being is a materialized per
+host timestamp, not a bound that is wrong.
+
+**A host with no value falls back to its own key.** A row whose `host` is null is grouped under its key, which shows
+it alone and in its place in the order. Pooling every such row under one empty name would produce a group that means
+nothing and sits at the top.
+
+**The two statements read under the same filter.** A group on a list filtered to `status_code = 200` shows the
+services that match, not the eight the host has. Reading every asset of the host instead would make the fold
+disagree with the facets beside it.
+
+### The favicon images travel on the page
+
+Keyed by hash, once per page, beside the groups rather than on each row. A shared favicon is the interesting case
+and the whole reason [10.2](#the-favicon-image-is-not-in-attributes) stores one copy, so repeating two kilobytes per
+asset would undo it at the last step.
+
+They are rendered as data URIs. An endpoint per image is a request per row from a page that has just been drawn,
+and the bound that makes this safe is already in the schema: an image above 64 kB is not kept, so a page of fifty
+carries what a page of fifty can carry.
+
 ### What a row carries
 
 The guiding rule: **every displayed attribute is evidence or a pivot, ideally both.** A field that is neither does
@@ -690,6 +742,29 @@ cuts, for the same reason the export refuses to truncate silently.
 year and then thinner. That is the right answer rather than a limitation to fix, but it has to be written, otherwise
 someone will read the thinning as data loss.
 
+### What the two bounds are, and which one gets said
+
+`GET /assets/{id}`, on the read action, answering the asset exactly as the list renders it plus the last observation
+of each layer, the timeline, and the images of whatever favicon the asset carries.
+
+The window is **ninety days** and the cap is **fifty entries per layer**. Both are constants rather than parameters,
+because a caller able to ask for the whole journal of an asset probed hourly for a year is a caller able to ask for
+the query this bound exists to prevent.
+
+**Only the cap is reported, and the window never is.** The two absences are not the same absence. The cap cutting
+means there is more inside the window the page is not showing, which is a fact about this render and has to be on
+screen. The window is a property of the view rather than of the asset, so a page announcing it on every asset would
+be announcing its own settings to somebody who did not ask. The layers that were cut are named, because "the
+timeline was truncated" on a page with four panels does not say which one to distrust.
+
+**The diff is computed here rather than stored.** The timeline calls the same comparison the Notifier calls, on the
+same pairs of consecutive rows. It is the one thing on this page that costs CPU per entry, and it is the one thing
+that must not be a second implementation.
+
+**The oldest entry read for a layer carries no diff, and that is not "nothing changed".** It is the first row inside
+the window, so what it moved from is outside it. The field is absent rather than empty, and the screen says "not
+compared".
+
 ## 10.10 The live feed of discoveries
 
 ### Polling, not a database notification
@@ -738,3 +813,25 @@ indefinitely, so the stream ends on its own after a bounded time and the client 
 by itself. An eternal stream is a leak visible only in the connection count. And **a heartbeat**, because a proxy cuts a
 silent connection and the browser does not say so. Resumption is free: the event id **is** the cursor, so the
 `Last-Event-ID` the browser sends back on reconnection is enough, with no server side state.
+
+### One event per tick, not one per discovery
+
+`GET /feed`, on the read action. Each SSE message carries a **batch**: the discoveries of one round, the count the cap
+left out, and the cursor as its id.
+
+One message per asset would put the cap in the wrong place. A round that found four hundred assets would emit four
+hundred messages of which the client keeps the last fifty, and the overflow the round is supposed to announce would
+have no message of its own to travel in. A batch carries its own bound and says what it dropped, in one object.
+
+**A round that found nothing emits nothing**, and the connection stays open on the heartbeat. Emitting an empty batch
+per tick would advance the id on every tick, so a client reconnecting on a `Last-Event-ID` would be resuming from a
+cursor that never named a discovery. The heartbeat is a comment line, which the protocol drops rather than delivering
+as an event, so nothing about it can be mistaken for data.
+
+**The cap orders by `first_seen` ascending and keeps the oldest**, which is what makes the cursor advance past them.
+Keeping the newest would leave the cursor where it was and re-read the same head of the queue on the next tick, and
+the feed would stall on a first run rather than draining it.
+
+**The tenant is the connection's, and the round trip is the one every other read makes.** No `LISTEN`, so nothing
+pins a connection between rounds, and Row-Level Security applies with nothing special.
+

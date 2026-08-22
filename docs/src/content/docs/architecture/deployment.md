@@ -319,9 +319,21 @@ credential and has no way to create an organization. An endpoint for creating or
 necessarily be unauthenticated, since there is no tenant to attach the caller to before one exists, and
 that is the classic hole in this spot.
 
-It is **idempotent on the organization name**. Replayed, it does not create a second one; it issues a new
-token if asked. A bootstrap that silently duplicates is what produces two tenants with the same name, one
-of them empty.
+It is **idempotent**, and the key is the **email** rather than the organization name. That correction is
+worth the two lines it costs: `app_user.email` carries a UNIQUE constraint in the schema and `org.name`
+deliberately does not, because two customers may legitimately be called the same thing. Keying on the name
+would be this command hoping to be unique where the database enforces nothing, and the failure is the one
+the idempotency exists to prevent: a second tenant with the same name, empty. So the person is the anchor,
+the organization is reached through the membership, and a replay finds both. It issues a new token if
+asked, which on a replay is the only reason to run the command at all since the first secret was printed
+and never stored.
+
+The four rows commit **together**. A half bootstrapped tenant is worse than none, because the next run
+finds the organization and stops before creating what is missing.
+
+It is a subcommand of an operational binary rather than a binary of its own, and that is where the rest of
+this sort of thing goes. `migrate` stays separate: a failed migration has to be readable on its own, and
+the deployment gates the application on it.
 
 A system whose bootstrap goes through hand written SQL is not deployable, and it makes multi-tenancy
 untestable: creating a second organization to check isolation would need the same intervention, so nobody

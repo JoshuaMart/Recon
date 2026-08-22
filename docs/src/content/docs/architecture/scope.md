@@ -169,6 +169,38 @@ screen. It is aggregated on `asset_current`, like a facet, and it is worth sayin
 place in this chapter that costs a scan per program. **These counters are asked for, not given.** The
 program switcher sits on every page, so the default shape of the list is the one that costs nothing.
 
+### The write surface, and where a version is required
+
+| Route | What it does | Carries a version |
+|---|---|---|
+| `GET /programs` | the list, counters only when asked for | no |
+| `POST /programs` | creates one | no, there is nothing to overwrite |
+| `GET /programs/{id}` | the program and its rules | no |
+| `PATCH /programs/{id}` | edits it | yes |
+| `POST /programs/{id}/rules` | opens a rule | no |
+| `PATCH /programs/{id}/rules/{rule}` | closes one, or edits it | yes |
+
+The rule routes are nested under the program and not reachable on their own. A rule identifier alone would
+need its own ownership check, and a second place that decides who may touch what is a second place to get
+it wrong. Nested, the program's check covers both, and a rule of another program answers 404 like the
+program would.
+
+**Every one of the four writes reclassifies, including the two that touch the program rather than a rule.**
+Suspending a program does not change the perimeter, but the reclassification is what carries the due dates,
+and a pass that only ran on rule writes would be a rule nobody wrote deciding when the inventory is
+correct. The response carries what moved: how many assets were examined, how many changed, and the count
+per resulting status. A write that says only "ok" leaves somebody running a search to find out what they
+just did.
+
+**A stale version applies nothing, including the reclassification.** The refusal happens inside the
+transaction, on the `UPDATE ... WHERE version = $n` returning no row, so there is no ordering in which the
+pass runs and the write does not. Answering 409 after having reclassified would be the worst of both: the
+caller rereads and rewrites, and the inventory has already moved once for a write that never landed.
+
+**Closing a rule is a `PATCH` that sets `valid_to`, and there is no `DELETE` on this surface at all.** Not
+as a convention somebody follows, but because the verb is absent: a route that does not exist cannot be
+called by a client written in a hurry.
+
 :::note[One clock decides, and it is the one that wrote the value]
 Counting the rules in force compares `valid_to` against the current time. `valid_to` is written by the
 application and `now()` is PostgreSQL's clock, so the result would depend on two clocks agreeing, and
