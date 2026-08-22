@@ -356,7 +356,12 @@ func (h *Console) UpdateProgram(w http.ResponseWriter, r *http.Request, principa
 		return
 	}
 
-	moved, err := h.reclassify(ctx, q, programID, at)
+	set, err := compileScope(ctx, q, programID, at)
+	if err != nil {
+		h.unavailable(ctx, w, "read perimeter failed", err)
+		return
+	}
+	moved, err := h.reclassify(ctx, q, programID, at, set)
 	if err != nil {
 		h.unavailable(ctx, w, "reclassify failed", err)
 		return
@@ -429,19 +434,44 @@ func (h *Console) CreateRule(w http.ResponseWriter, r *http.Request, principal a
 		return
 	}
 
-	// After the write and inside the same transaction, which is the whole
-	// point: a rule in force whose consequence the inventory does not carry is
-	// a perimeter that lies, and the window between two transactions is a
-	// window where the system scans what was just taken away from it.
-	moved, err := h.reclassify(ctx, q, programID, at)
+	// The perimeter as it stands with the new rule in it, compiled once and
+	// used twice. Reading the rules back rather than taking the one just
+	// written, because classification is the whole set: an include added beside
+	// an exclude has to be evaluated with it.
+	set, err := compileScope(ctx, q, programID, at)
 	if err != nil {
-		// A perimeter that will not compile is the caller's, and it has to be
-		// named: a rule that writes and then silently classifies nothing is
-		// worse than a refusal.
 		if errors.Is(err, scope.ErrInvalidRule) {
 			fail(w, http.StatusBadRequest, "bad_rule", err.Error())
 			return
 		}
+		h.unavailable(ctx, w, "read perimeter failed", err)
+		return
+	}
+
+	// An include that names one thing declares it as well as classifying it.
+	//
+	// An apex says where enumeration starts and a run finds what is under it.
+	// The other two name something that exists: a host to probe, or a path to
+	// render. Without this they were classifiers with nothing to classify, and
+	// the rule read as in force over an inventory it had never put anything
+	// into.
+	seeded, err := h.seed(ctx, q, principal, programID, set, body)
+	if err != nil {
+		var bad *refusedPattern
+		if errors.As(err, &bad) {
+			fail(w, http.StatusBadRequest, "bad_rule", bad.reason)
+			return
+		}
+		h.unavailable(ctx, w, "seed the rule failed", err)
+		return
+	}
+
+	// After the write and inside the same transaction, which is the whole
+	// point: a rule in force whose consequence the inventory does not carry is
+	// a perimeter that lies, and the window between two transactions is a
+	// window where the system scans what was just taken away from it.
+	moved, err := h.reclassify(ctx, q, programID, at, set)
+	if err != nil {
 		h.unavailable(ctx, w, "reclassify failed", err)
 		return
 	}
@@ -449,7 +479,9 @@ func (h *Console) CreateRule(w http.ResponseWriter, r *http.Request, principal a
 		h.unavailable(ctx, w, "commit failed", err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"rule": readRuleCreated(row, at), "effect": moved})
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"rule": readRuleCreated(row, at), "effect": moved, "declared": seeded,
+	})
 }
 
 // UpdateRule edits or closes one.
@@ -517,12 +549,21 @@ func (h *Console) UpdateRule(w http.ResponseWriter, r *http.Request, principal a
 		return
 	}
 
-	moved, err := h.reclassify(ctx, q, programID, at)
+	// Nothing is seeded here, and the asymmetry is deliberate. Closing a rule
+	// must not create anything, and this surface offers no way to change a
+	// pattern, so the only edit that reaches it is the close.
+	set, err := compileScope(ctx, q, programID, at)
 	if err != nil {
 		if errors.Is(err, scope.ErrInvalidRule) {
 			fail(w, http.StatusBadRequest, "bad_rule", err.Error())
 			return
 		}
+		h.unavailable(ctx, w, "read perimeter failed", err)
+		return
+	}
+
+	moved, err := h.reclassify(ctx, q, programID, at, set)
+	if err != nil {
 		h.unavailable(ctx, w, "reclassify failed", err)
 		return
 	}
@@ -626,18 +667,15 @@ func (h *Console) Queue(w http.ResponseWriter, r *http.Request, principal auth.P
 	writeJSON(w, http.StatusOK, map[string]any{"depths": outDepths, "runs": outRuns})
 }
 
-// reclassify re-evaluates the programme against the rules now in force.
+// reclassify re-evaluates the programme against the perimeter it is given.
 //
-// It reads the perimeter back rather than taking it from the write, because a
-// write is one rule and the classification is the whole set: an include added
-// beside an exclude has to be evaluated with it.
+// The set is compiled by the caller and passed in, because the two things that
+// happen on a rule write need the same one: what a rule declares has to be
+// classified by the perimeter that now includes it, and compiling twice would
+// be two reads of a table that cannot have changed between them.
 func (h *Console) reclassify(
-	ctx context.Context, q *sqlcgen.Queries, programID uuid.UUID, at time.Time,
+	ctx context.Context, q *sqlcgen.Queries, programID uuid.UUID, at time.Time, set *scope.Set,
 ) (effect, error) {
-	set, err := compileScope(ctx, q, programID, at)
-	if err != nil {
-		return effect{}, err
-	}
 	moved, err := h.ingestor.Reclassify(ctx, q, programID, set, ingest.DefaultSchedule(at, false))
 	if err != nil {
 		return effect{}, err
@@ -646,6 +684,60 @@ func (h *Console) reclassify(
 		Examined: moved.Examined, Changed: moved.Moved,
 		Gained: moved.Gained, Lost: moved.Lost,
 	}, nil
+}
+
+// refusedPattern is a pattern the entry path could not read, told apart from a
+// failure of ours so a typo does not look like an outage.
+type refusedPattern struct{ reason string }
+
+func (r *refusedPattern) Error() string { return r.reason }
+
+// seed creates what an include names, when the matcher names something.
+//
+// `fqdn` and `url_prefix` are the two that point at a thing rather than at a
+// shape: one is a host to probe, the other a path to render. An `apex` names
+// where to start looking and a run finds what is under it, a `cidr` names a
+// range nobody can enumerate from, and a `regex` names a shape rather than a
+// thing, so none of the three declares anything.
+//
+// The same path the assets form uses, because it is the same act: it creates the
+// chain a URL needs, gives the host the due date, and lets the declared path earn
+// its render once the service has answered. The lineage says which of the two
+// acts it was.
+//
+// Exclusions never seed. Naming something to take it out of a perimeter is not a
+// reason to put it in one.
+func (h *Console) seed(
+	ctx context.Context, q *sqlcgen.Queries, principal auth.Principal,
+	programID uuid.UUID, set *scope.Set, body ruleBody,
+) ([]ingest.Accepted, error) {
+	if body.Kind != scope.Include {
+		return nil, nil
+	}
+	switch body.Matcher {
+	case scope.MatchFQDN, scope.MatchURLPrefix:
+	default:
+		return nil, nil
+	}
+
+	entered, err := h.ingestor.Enter(ctx, q, ingest.Run{
+		ID:        uuid.New(),
+		OrgID:     principal.OrgID,
+		ProgramID: programID,
+		Kind:      "manual",
+		Source:    ingest.SourceRule,
+	}, set, []string{body.Pattern})
+	if err != nil {
+		return nil, err
+	}
+	// A pattern the entry path cannot represent is refused rather than stored.
+	// A rule that names something this system has no way to hold is a rule that
+	// will not do what it says, and the refusal reaches somebody looking at the
+	// form.
+	if len(entered.Refused) > 0 {
+		return nil, &refusedPattern{reason: entered.Refused[0].Reason}
+	}
+	return entered.Accepted, nil
 }
 
 // stale decides between 404 and 409 on a write that changed nothing.

@@ -542,3 +542,128 @@ func TestTheQueueCarriesTheExecutionIdentifier(t *testing.T) {
 		t.Errorf("the unstarted run came back with external_id %v, want none", got)
 	}
 }
+
+// An include that names a thing declares it, and the thing joins the ordinary
+// cycle.
+//
+// An apex says where enumeration starts and a run finds what is under it. The
+// other two name something that already exists: a host to probe, a path to
+// render. Before this they were classifiers with nothing to classify, so the
+// rule read as in force over an inventory it had never put anything into, and
+// the three queues stayed at zero under a programme that looked configured.
+func TestAnIncludeThatNamesAThingCreatesIt(t *testing.T) {
+	h := newHarness(t)
+	token := h.console(t)
+	ctx := context.Background()
+
+	resp, payload := h.raw(t, http.MethodPost,
+		"/programs/"+h.program.String()+"/rules", token, map[string]any{
+			"kind": "include", "matcher": "fqdn", "pattern": "www.target.test",
+		})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status %d: %s", resp.StatusCode, payload)
+	}
+
+	// The host exists, it is in scope, and it carries a due date. That last one
+	// is what the whole thing is for: a verification run selects on it, and
+	// without it nothing ever goes and looks.
+	var status string
+	var full, resolve *time.Time
+	var source string
+	if err := h.pool.QueryRow(ctx, `
+		SELECT c.scope_status, c.next_full_at, c.next_resolve_at, a.discovery_source
+		  FROM asset_current c JOIN asset a ON a.id = c.asset_id
+		 WHERE c.program_id = $1 AND c.key = 'www.target.test'`, h.program).
+		Scan(&status, &full, &resolve, &source); err != nil {
+		t.Fatalf("the fqdn rule created no asset: %v", err)
+	}
+	if status != "in_scope" {
+		t.Errorf("scope_status = %s, want in_scope", status)
+	}
+	if full == nil || resolve == nil {
+		t.Errorf("due dates = full %v resolve %v, want both: a host with none is one "+
+			"no run will ever select", full, resolve)
+	}
+	// The lineage says which act put it here, because "why is this here" has two
+	// different answers and a rule is not somebody typing into a form.
+	if source != "scope_rule" {
+		t.Errorf("discovery_source = %q, want the rule that declared it", source)
+	}
+
+	// A URL declares the chain it needs. The host is what carries the schedule,
+	// because a URL has no liveness of its own: what answers is the service.
+	resp, payload = h.raw(t, http.MethodPost,
+		"/programs/"+h.program.String()+"/rules", token, map[string]any{
+			"kind": "include", "matcher": "url_prefix", "pattern": "https://app.target.test/admin",
+		})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status %d: %s", resp.StatusCode, payload)
+	}
+
+	for _, want := range []struct {
+		key, kind string
+		scheduled bool
+	}{
+		{"app.target.test", "fqdn", true},
+		{"app.target.test:443/tcp", "service", false},
+		{"https://app.target.test/admin", "url", false},
+	} {
+		var kind, status string
+		var due *time.Time
+		if err := h.pool.QueryRow(ctx, `
+			SELECT kind, scope_status, next_full_at FROM asset_current
+			 WHERE program_id = $1 AND key = $2`, h.program, want.key).
+			Scan(&kind, &status, &due); err != nil {
+			t.Errorf("the url rule created no %s: %v", want.key, err)
+			continue
+		}
+		if kind != want.kind {
+			t.Errorf("%s is a %s, want a %s", want.key, kind, want.kind)
+		}
+		// Every link of the chain is in scope, which is the answer to whether an
+		// included URL puts its host in the perimeter. It has to be: a path is
+		// not reachable without the name it is served from.
+		if status != "in_scope" {
+			t.Errorf("%s classified %s, want in_scope", want.key, status)
+		}
+		if (due != nil) != want.scheduled {
+			t.Errorf("%s scheduled = %v, want %v: the host carries the due date and "+
+				"the service is observed through it", want.key, due != nil, want.scheduled)
+		}
+	}
+
+	// An exclusion names something to take it out, which is not a reason to put
+	// it in. Nothing is created.
+	before := h.count(t, `SELECT count(*) FROM asset WHERE program_id = $1`, h.program)
+	resp, _ = h.raw(t, http.MethodPost,
+		"/programs/"+h.program.String()+"/rules", token, map[string]any{
+			"kind": "exclude", "matcher": "fqdn", "pattern": "never.target.test",
+		})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status %d on the exclusion", resp.StatusCode)
+	}
+	if after := h.count(t, `SELECT count(*) FROM asset WHERE program_id = $1`, h.program); after != before {
+		t.Errorf("an exclusion created %d assets", after-before)
+	}
+}
+
+// A pattern the entry path cannot read is refused rather than stored, and the
+// rule goes with it.
+func TestARuleNamingSomethingUnrepresentableIsRefused(t *testing.T) {
+	h := newHarness(t)
+	token := h.console(t)
+
+	before := h.count(t, `SELECT count(*) FROM scope_rule WHERE program_id = $1`, h.program)
+
+	resp, payload := h.raw(t, http.MethodPost,
+		"/programs/"+h.program.String()+"/rules", token, map[string]any{
+			"kind": "include", "matcher": "url_prefix", "pattern": "not a url at all",
+		})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400: %s", resp.StatusCode, payload)
+	}
+	if after := h.count(t, `SELECT count(*) FROM scope_rule WHERE program_id = $1`, h.program); after != before {
+		t.Errorf("scope_rule rows went from %d to %d on a refusal: the rule and what it "+
+			"declares are one transaction", before, after)
+	}
+}

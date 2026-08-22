@@ -51,6 +51,9 @@ type Run struct {
 	// Targets is the frozen list, keyed by canonical host. Nil on a discovery
 	// run, which has no list because it is the one allowed to find things.
 	Targets map[string]struct{}
+	// Source is what an entered asset records as its origin. Empty means the
+	// assets form, which is what it has always been.
+	Source string
 	// Due is when a freshly created asset becomes due. The arithmetic lives in
 	// Go, where it is testable, rather than in the statement that stores it.
 	Due Schedule

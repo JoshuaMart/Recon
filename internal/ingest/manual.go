@@ -40,6 +40,28 @@ type Refused struct {
 	Reason string `json:"reason"`
 }
 
+// Sources an entered asset can carry, and they are two because the lineage
+// answers "why is this here" and the two answers are different acts.
+//
+// One is somebody typing a name into the assets form. The other is a perimeter
+// rule naming a host or a path, which declares the thing as well as classifying
+// it: an apex says where to enumerate, and those two say what exists.
+const (
+	SourceManual = "manual"
+	SourceRule   = "scope_rule"
+)
+
+// origin is the source this entry records and the step its lineage carries.
+//
+// Defaulted rather than required, so a caller that says nothing keeps the
+// behaviour the assets form has always had.
+func (r Run) origin() (string, string) {
+	if r.Source == SourceRule {
+		return SourceRule, "declared_in_scope"
+	}
+	return SourceManual, "entered_by_hand"
+}
+
 // Enter records assets somebody typed in.
 //
 // It runs under the scope action rather than the ingestion one. Entering an
@@ -146,8 +168,9 @@ func (i *Ingestor) enterAsset(
 ) (Accepted, error) {
 	status := set.Classify(scope.Target{Key: key})
 
+	source, step := run.origin()
 	path, err := json.Marshal([]any{map[string]any{
-		"step": "entered_by_hand",
+		"step": step,
 		"run":  run.ID.String(),
 	}})
 	if err != nil {
@@ -161,7 +184,7 @@ func (i *Ingestor) enterAsset(
 		Kind:            string(key.Kind),
 		Key:             key.Value,
 		Host:            text(key.Host),
-		DiscoverySource: "manual",
+		DiscoverySource: source,
 		DiscoveryPath:   path,
 		ScopeStatus:     string(status),
 		SeenAt:          stamp(i.now()),

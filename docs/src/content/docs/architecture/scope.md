@@ -143,6 +143,51 @@ What matters is the meaning of the refusal. The client did not make a syntax err
 decision on a state that no longer exists, and the only honest answer is to say so, so it can reread
 before rewriting. Creation carries no version, since there is nothing to avoid overwriting.
 
+### An include that names a thing declares it
+
+The three include matchers do not all say the same kind of thing, and the difference decides whether a
+rule creates anything.
+
+| Matcher | What it says | What it declares |
+|---|---|---|
+| `apex` | where enumeration starts | nothing: the run finds what is under it |
+| `fqdn` | one host to probe | that host |
+| `url_prefix` | one path to render | that path, the service it answers on, and the host it is served from |
+| `cidr` | a range | nothing: nobody enumerates from an address range |
+| `regex` | a shape | nothing: a shape is not a thing |
+
+Before this, the last two were classifiers with nothing to classify. A rule naming `www.target.com` was
+written, read as in force, and matched no asset, because nothing had ever created one: only enumeration and
+the assets form put rows in. The perimeter looked configured and covered nothing, which is the same failure
+as [a rule whose consequence the inventory does not carry](#a-rule-that-changes-reclassifies-in-the-same-transaction),
+reached from the other end.
+
+**It goes through the same path as the assets form**, because it is the same act. The host is what carries
+the due date, so a declared path schedules the host its service sits on, and the path earns its render once
+that service has answered. What differs is the lineage: "why is this here" has two answers and a rule is not
+somebody typing into a form.
+
+**An exclusion never declares anything.** Naming something to take it out of a perimeter is not a reason to
+put it in one.
+
+**A pattern the entry path cannot read is refused, and the rule goes with it.** The two are one transaction:
+a rule naming something the system has no way to hold is a rule that will not do what it says, and the
+refusal is cheaper than the perimeter that lies.
+
+### `url_prefix` is not symmetric, and that is what it is for
+
+As an **exclusion** it reads the key alone. A path is taken out while the service carrying it stays in, which
+is a child being stricter than its parent, and it is the reason this matcher exists.
+
+As an **inclusion** it also reaches the host and the service. That is not the same rule read backwards. A
+path is not reachable without the name it is served from: an include matching the URL alone would put in
+scope a thing that can only exist once its host has been probed, and the host would never be probed because
+nothing put it in scope. The loop closes on itself and the perimeter reads as configured while covering
+nothing.
+
+It reaches **that name and no further**. An include on `https://www.target.com/app` does not bring
+`api.target.com` in: an include that reached the domain would be an apex rule somebody did not write.
+
 ### Entering an asset by hand
 
 `POST /programs/{id}/assets` takes a list of names and URLs. It sits under the **scope** action rather

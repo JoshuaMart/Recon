@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -116,6 +117,9 @@ type compiled struct {
 	pattern string
 	re      *regexp.Regexp
 	prefix  netip.Prefix
+	// host is the name a url_prefix rule names, kept so an include can reach
+	// the host its path sits on. Empty on every other matcher.
+	host string
 }
 
 // Compile turns rows into a rule set, rejecting anything unusable.
@@ -158,6 +162,13 @@ func Compile(rules []Rule) (*Set, error) {
 
 		case MatchURLPrefix:
 			item.pattern = strings.TrimSpace(rule.Pattern)
+			// The host is read out of the pattern once, here, so the matcher
+			// does not parse a URL per asset on the ingestion path. A prefix
+			// that will not parse keeps an empty host and stays what it always
+			// was: a rule that matches URLs by prefix and nothing else.
+			if parsed, err := url.Parse(item.pattern); err == nil {
+				item.host = strings.ToLower(parsed.Hostname())
+			}
 
 		default:
 			return nil, fmt.Errorf("%w: rule %s has matcher %q", ErrInvalidRule, rule.ID, rule.Matcher)
@@ -251,12 +262,28 @@ func (c compiled) matches(target Target) bool {
 		return false
 
 	case MatchURLPrefix:
-		// The only matcher that reads the key rather than the host, and the
-		// only one that can be stricter than the asset's parent.
-		if target.Key.Kind != normalize.KindURL {
+		// The only matcher that reads the key rather than the host, and the one
+		// place the two kinds of rule are not symmetric.
+		//
+		// As an exclusion it reads the key alone, which is what lets it be
+		// stricter than the asset's parent: a path can be taken out while the
+		// service carrying it stays in. A child may be stricter than its parent.
+		//
+		// As an inclusion it also reaches the host, and that is not the same
+		// rule read backwards. A path is not reachable without the name it sits
+		// on: an include that matched the URL alone would put in scope a thing
+		// that can only exist once its host has been probed, and the host would
+		// never be probed because nothing put it in scope. The loop closes on
+		// itself and the perimeter reads as configured while covering nothing.
+		// So declaring a path declares the name it is served from, and the
+		// service that answers it.
+		if target.Key.Kind == normalize.KindURL {
+			return strings.HasPrefix(target.Key.Value, c.pattern)
+		}
+		if c.rule.Kind != Include || c.host == "" {
 			return false
 		}
-		return strings.HasPrefix(target.Key.Value, c.pattern)
+		return target.Key.Host == c.host
 	}
 
 	return false
