@@ -38,15 +38,20 @@ export const actions: Actions = {
 		const rate = String(form.get('rate_limit_rps') ?? '').trim();
 		if (rate) body.rate_limit_rps = Number(rate);
 
-		let created: Program;
+		// The envelope, not the object. Every write on this surface answers
+		// `{program: ...}` or `{rule: ..., effect: ...}`, and reading one as the
+		// other is silent: `created.id` is undefined and the redirect lands on
+		// /programs/undefined, where the server answers 404 for a programme that
+		// was in fact created.
+		let created: { program: Program };
 		try {
-			created = await call<Program>(locals.token!, '/programs', body, fetch);
+			created = await call<{ program: Program }>(locals.token!, '/programs', body, fetch);
 		} catch (err) {
 			if (err instanceof APIError) {
 				return { message: err.message };
 			}
 			return { message: err instanceof Error ? err.message : 'the program was not created' };
 		}
-		redirect(303, '/programs/' + created.id);
+		redirect(303, '/programs/' + created.program.id);
 	}
 };

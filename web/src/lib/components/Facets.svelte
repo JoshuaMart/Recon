@@ -10,9 +10,20 @@
 		favicons: Record<string, string>;
 		/** What each field accepts, from the server rather than guessed. */
 		operators: Record<string, string[]>;
+		/**
+		 * Which shape the list is in, so a link out of it does not silently change
+		 * it.
+		 *
+		 * `href` defaults to grouped, which is right for a link arriving from
+		 * somewhere else and wrong for every link on this page: from the flat list,
+		 * clicking a facet or removing a chip folded the list back without anybody
+		 * asking. The shape lives in the URL, so it has to travel with every link
+		 * built from it.
+		 */
+		grouped?: boolean;
 	}
 
-	const { facets, filters, favicons, operators }: Props = $props();
+	const { facets, filters, favicons, operators, grouped = true }: Props = $props();
 
 	const shown = $derived(shownFacets(facets));
 
@@ -63,8 +74,8 @@
 	/** A bucket already in force links to its own removal, which is where a reader clicks next. */
 	function termHref(field: string, value: string): string {
 		const on = active(field, value);
-		if (on) return href(withoutFilter(filters, on));
-		return href(withFilter(filters, facetFilter(field, value, operators)));
+		if (on) return href(withoutFilter(filters, on), grouped);
+		return href(withFilter(filters, facetFilter(field, value, operators)), grouped);
 	}
 
 	/** Labels for the values the database spells in its own vocabulary. */

@@ -279,3 +279,35 @@ func TestADeepTreeIsRefused(t *testing.T) {
 		t.Fatal("a tree deeper than the bound was accepted")
 	}
 }
+
+// A malformed identifier is the caller's mistake and has to be named as one.
+//
+// The first version bound the value and cast it at the placeholder, so a typo in
+// a hand-edited filter reached PostgreSQL, failed there, and came back as a 500
+// and a line in our log: the caller was told the request could not be served
+// when the honest answer names the field.
+func TestAMalformedIdentifierIsRefusedRatherThanRunTest(t *testing.T) {
+	t.Parallel()
+
+	for name, tree := range map[string]string{
+		"a value that is not an identifier": `{"op":"eq","field":"program_id","value":"not-a-uuid"}`,
+		"an empty one":                      `{"op":"eq","field":"program_id","value":""}`,
+		"one bad member of a list":          `{"op":"in","field":"program_id","value":["` + uuid.New().String() + `","nope"]}`,
+	} {
+		node, err := Parse([]byte(tree))
+		if err != nil {
+			// Refused at the parse, which is just as good an answer.
+			continue
+		}
+		if _, err := Compile(uuid.New(), node); err == nil {
+			t.Errorf("%s compiled, so it reaches the database to be refused there", name)
+		}
+	}
+
+	// And the positive control, without which the above passes on a field that
+	// refuses everything.
+	if _, err := Compile(uuid.New(), parse(t,
+		`{"op":"eq","field":"program_id","value":"`+uuid.New().String()+`"}`)); err != nil {
+		t.Errorf("a well formed identifier was refused: %v", err)
+	}
+}

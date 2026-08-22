@@ -36,6 +36,10 @@ export const GET: RequestHandler = async ({ locals, url, fetch, request }) => {
 
 	const upstream = await fetch(apiURL() + '/feed?' + query.toString(), { headers });
 	if (!upstream.ok || !upstream.body) {
+		// Cancelled before throwing, because EventSource reconnects on its own: a
+		// token revoked upstream turns into one refusal every few seconds, and a
+		// body nobody read is a connection nobody returns.
+		await upstream.body?.cancel();
 		error(upstream.status === 401 || upstream.status === 403 ? 403 : 502, 'the feed is unavailable');
 	}
 

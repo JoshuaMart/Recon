@@ -24,13 +24,19 @@
 <svelte:head><title>Search · recon</title></svelte:head>
 
 <div class="work">
-	<Facets facets={data.facets} filters={data.filters} favicons={data.favicons} operators={data.operators} />
+	<Facets
+		facets={data.facets}
+		filters={data.filters}
+		favicons={data.favicons}
+		operators={data.operators}
+		grouped={data.grouped}
+	/>
 
 	<main class="results">
 		<!-- The names, so a chip reads `program is jomar.ovh` rather than an identifier
 		     nobody can check. The load function resolves them only when a programme filter
 		     is present, which is what keeps this free on every other search. -->
-		<FilterBar filters={data.filters} programNames={data.programNames} />
+		<FilterBar filters={data.filters} programNames={data.programNames} grouped={data.grouped} />
 
 		<!-- the fold: the host is the list and the flat one is the exception, so the
 		     toggle names both shapes and neither is a mode with state. Links rather than
@@ -51,7 +57,7 @@
 			     second place to keep what a line has to say. -->
 			<section class="flat">
 				{#each data.assets as asset (asset.asset_id)}
-					<AssetRow {asset} filters={data.filters} withHost />
+					<AssetRow {asset} filters={data.filters} withHost grouped={false} />
 				{/each}
 			</section>
 		{/if}

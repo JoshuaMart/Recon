@@ -23,9 +23,20 @@
 		shared?: Shared;
 		/** Flat mode writes the host into the row, since no header carries it. */
 		withHost?: boolean;
+		/**
+		 * Which shape the list is in, so a link out of it does not silently change
+		 * it.
+		 *
+		 * `href` defaults to grouped, which is right for a link arriving from
+		 * somewhere else and wrong for every link on this page: from the flat list,
+		 * clicking a facet or removing a chip folded the list back without anybody
+		 * asking. The shape lives in the URL, so it has to travel with every link
+		 * built from it.
+		 */
+		grouped?: boolean;
 	}
 
-	const { asset, filters, shared = {}, withHost = false }: Props = $props();
+	const { asset, filters, shared = {}, withHost = false, grouped = true }: Props = $props();
 
 	/**
 	 * One service, one line (the fold).
@@ -63,7 +74,7 @@
 	});
 
 	function pivotHref(type: string, value: string): string {
-		return href(withFilter(filters, badgeFilter(type, value)));
+		return href(withFilter(filters, badgeFilter(type, value)), grouped);
 	}
 
 	/**
@@ -76,7 +87,7 @@
 	 */
 	const takeover = $derived(asset.attributes?.takeover_candidate);
 	const takeoverHref = $derived(
-		href(withFilter(filters, { field: 'takeover_candidate', op: 'exists', value: 'true' }))
+		href(withFilter(filters, { field: 'takeover_candidate', op: 'exists', value: 'true' }), grouped)
 	);
 
 	/**

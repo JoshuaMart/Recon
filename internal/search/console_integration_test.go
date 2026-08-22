@@ -381,7 +381,7 @@ func TestTheFeedDrainsWithoutRepeating(t *testing.T) {
 	for round := 0; round < 4; round++ {
 		var tick search.Tick
 		h.scoped(t, h.org, func(tx pgx.Tx) {
-			got, err := search.Discoveries(ctx, tx, h.org, cursor)
+			got, err := search.Discoveries(ctx, tx, h.org, cursor, time.Now())
 			if err != nil {
 				t.Fatalf("round %d: %v", round, err)
 			}
@@ -429,7 +429,7 @@ func TestTheFeedDrainsWithoutRepeating(t *testing.T) {
 	// the feed orders on the one that cannot move forward.
 	h.exec(t, `UPDATE asset_current SET last_seen = now() WHERE org_id = $1`, h.org)
 	h.scoped(t, h.org, func(tx pgx.Tx) {
-		tick, err := search.Discoveries(ctx, tx, h.org, cursor)
+		tick, err := search.Discoveries(ctx, tx, h.org, cursor, time.Now())
 		if err != nil {
 			t.Fatalf("after a rescan: %v", err)
 		}
@@ -441,12 +441,59 @@ func TestTheFeedDrainsWithoutRepeating(t *testing.T) {
 	// A round that finds nothing leaves the cursor where it was. Advancing it
 	// would hand out an id that never named a discovery.
 	h.scoped(t, h.org, func(tx pgx.Tx) {
-		tick, err := search.Discoveries(ctx, tx, h.org, cursor)
+		tick, err := search.Discoveries(ctx, tx, h.org, cursor, time.Now())
 		if err != nil {
 			t.Fatalf("empty round: %v", err)
 		}
 		if tick.Cursor != cursor.String() {
 			t.Errorf("cursor moved to %s on an empty round, want %s", tick.Cursor, cursor.String())
+		}
+	})
+}
+
+// The feed reads behind a watermark, and that is what stops it skipping.
+//
+// first_seen is stamped by the application inside the ingestion transaction, so
+// stamp order and commit order are not the same: a run that stamps early and
+// commits late lands after one that stamped later and committed at once. A feed
+// reading up to the present emits the second, advances past it, and never sees
+// the first. Nothing about that is visible, which is what makes it worth a test.
+func TestTheFeedDoesNotSkipASlowCommit(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	// Inside the lag: stamped, and by construction not yet safe to read.
+	h.arrival(t, "slow.target.test", now.Add(-time.Second))
+	// Outside it: old enough that any transaction which stamped it has landed.
+	h.arrival(t, "settled.target.test", now.Add(-2*search.FeedLag))
+
+	h.scoped(t, h.org, func(tx pgx.Tx) {
+		tick, err := search.Discoveries(ctx, tx, h.org, search.FeedCursor{}, now)
+		if err != nil {
+			t.Fatalf("feed: %v", err)
+		}
+		keys := make([]string, 0, len(tick.Discoveries))
+		for _, discovery := range tick.Discoveries {
+			keys = append(keys, discovery.Key)
+		}
+		if len(keys) != 1 || keys[0] != "settled.target.test" {
+			t.Fatalf("tick carried %v, want only the one past the watermark: emitting the "+
+				"recent one advances the cursor over anything still committing behind it", keys)
+		}
+	})
+
+	// And it is a delay rather than a loss. The same asset arrives once the
+	// watermark has passed it.
+	h.scoped(t, h.org, func(tx pgx.Tx) {
+		tick, err := search.Discoveries(ctx, tx, h.org, search.FeedCursor{},
+			now.Add(2*search.FeedLag))
+		if err != nil {
+			t.Fatalf("feed: %v", err)
+		}
+		if len(tick.Discoveries) != 2 {
+			t.Errorf("later tick carried %d discoveries, want both: the watermark delays "+
+				"and never drops", len(tick.Discoveries))
 		}
 	})
 }
@@ -458,11 +505,12 @@ func TestAFreshFeedStartsAtThePresent(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
-	h.arrival(t, "old.target.test", time.Now().UTC().Add(-time.Hour))
-	head := search.Head(time.Now())
+	opened := time.Now().UTC()
+	h.arrival(t, "old.target.test", opened.Add(-time.Hour))
+	head := search.Head(opened)
 
 	h.scoped(t, h.org, func(tx pgx.Tx) {
-		tick, err := search.Discoveries(ctx, tx, h.org, head)
+		tick, err := search.Discoveries(ctx, tx, h.org, head, opened)
 		if err != nil {
 			t.Fatalf("feed: %v", err)
 		}
@@ -471,9 +519,14 @@ func TestAFreshFeedStartsAtThePresent(t *testing.T) {
 		}
 	})
 
-	h.arrival(t, "new.target.test", time.Now().UTC().Add(time.Second))
+	// After the connection opened, and read once the watermark has moved past
+	// it. The lag is what the second clock is for: an asset is emitted when
+	// every transaction that could have stamped it has landed, not the instant
+	// it becomes visible.
+	h.arrival(t, "new.target.test", opened.Add(time.Second))
+	later := opened.Add(2 * search.FeedLag)
 	h.scoped(t, h.org, func(tx pgx.Tx) {
-		tick, err := search.Discoveries(ctx, tx, h.org, head)
+		tick, err := search.Discoveries(ctx, tx, h.org, head, later)
 		if err != nil {
 			t.Fatalf("feed: %v", err)
 		}

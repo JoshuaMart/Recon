@@ -6,9 +6,20 @@
 		filters: Filter[];
 		/** Programme names, keyed by identifier. Empty unless a filter carries one. */
 		programNames?: Record<string, string>;
+		/**
+		 * Which shape the list is in, so a link out of it does not silently change
+		 * it.
+		 *
+		 * `href` defaults to grouped, which is right for a link arriving from
+		 * somewhere else and wrong for every link on this page: from the flat list,
+		 * clicking a facet or removing a chip folded the list back without anybody
+		 * asking. The shape lives in the URL, so it has to travel with every link
+		 * built from it.
+		 */
+		grouped?: boolean;
 	}
 
-	const { filters, programNames = {} }: Props = $props();
+	const { filters, programNames = {}, grouped = true }: Props = $props();
 
 	/**
 	 * The export carries the current filters, and it is the same query as the list
@@ -22,12 +33,12 @@
 	{#each filters as filter (encodeFilter(filter))}
 		<span class="chip">
 			<code>{label(filter, programNames)}</code>
-			<a class="x" href={href(withoutFilter(filters, filter))} aria-label="Remove this filter">×</a>
+			<a class="x" href={href(withoutFilter(filters, filter), grouped)} aria-label="Remove this filter">×</a>
 		</span>
 	{/each}
 
 	{#if filters.length}
-		<a class="link" href="/">Clear all</a>
+		<a class="link" href={href([], grouped)}>Clear all</a>
 	{:else}
 		<span class="hint">Everything in the inventory. Click a facet or a badge to narrow it.</span>
 	{/if}

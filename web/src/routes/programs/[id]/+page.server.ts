@@ -135,6 +135,13 @@ export const actions: Actions = {
 		// program's state rather than a patch of the fields somebody touched. A
 		// partial write against an optimistic lock is the shape where two edits
 		// that never overlapped still lose each other.
+		//
+		// All of it, and the three at the bottom are the ones that were missing:
+		// the server assigns every column unconditionally, so a field this form
+		// left out came back as NULL. Changing a rate limit erased the platform
+		// reference and the authorization reference, and nothing on this screen
+		// could put them back.
+		const text = (name: string) => String(form.get(name) ?? '') || null;
 		const body: Record<string, unknown> = {
 			version: Number(form.get('version') ?? 0),
 			name: String(form.get('name') ?? ''),
@@ -142,7 +149,10 @@ export const actions: Actions = {
 			rate_limit_rps: Number(form.get('rate_limit_rps') ?? 0),
 			discovery_interval: String(form.get('discovery_interval') ?? ''),
 			authorized_from: String(form.get('authorized_from') ?? '') || undefined,
-			authorized_to: String(form.get('authorized_to') ?? '') || null
+			authorized_to: text('authorized_to'),
+			platform: text('platform'),
+			platform_ref: text('platform_ref'),
+			authorization_ref: text('authorization_ref')
 		};
 
 		try {

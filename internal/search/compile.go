@@ -265,10 +265,12 @@ func (b *builder) number(entry field, n Node) (string, error) {
 
 // identifier compiles an equality or a membership over a uuid column.
 //
-// The value is bound as text and cast at the placeholder rather than parsed
-// here. Parsing it would put a second definition of "is this a uuid" in this
-// package, and the cast is what refuses a malformed one: the statement fails
-// with the value still a parameter, so nothing a caller sends reaches the SQL.
+// The value is checked here and still bound and cast at the placeholder. The
+// cast alone was the first version and it is not enough: a malformed identifier
+// reaches PostgreSQL, fails there with 22P02, and comes back to the caller as a
+// 500 and a line in our log, when it is a typo in a filter somebody hand
+// edited. A refusal names the field, and a refusal is what the whole registry
+// is built to answer with.
 func (b *builder) identifier(entry field, n Node) (string, error) {
 	switch n.Op {
 	case OpIn:
@@ -276,11 +278,19 @@ func (b *builder) identifier(entry field, n Node) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		for _, value := range values {
+			if _, err := uuid.Parse(value); err != nil {
+				return "", refuse("%q takes identifiers, and %q is not one", n.Field, value)
+			}
+		}
 		return entry.expr + " = ANY(" + b.bind(values) + "::uuid[])", nil
 	case OpEq:
 		value, ok := n.Value.(string)
 		if !ok || value == "" {
 			return "", refuse("%q takes an identifier", n.Field)
+		}
+		if _, err := uuid.Parse(value); err != nil {
+			return "", refuse("%q takes an identifier, and %q is not one", n.Field, value)
 		}
 		return entry.expr + " = " + b.bind(value) + "::uuid", nil
 	default:

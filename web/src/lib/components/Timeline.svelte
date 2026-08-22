@@ -94,9 +94,16 @@
 	 * one layer is a filter on an array. A chip and not a select, because there are four
 	 * of them at most and the count is worth seeing.
 	 */
-	let only = $state('');
+	let only = $state<Change['layer'] | ''>('');
 	const layers = $derived([...new Set(changes.map((entry) => entry.layer))]);
-	const shown = $derived(only ? changes.filter((entry) => entry.layer === only) : changes);
+	// The filter is only honoured while the layer it names is still on screen.
+	// State survives a navigation between two assets on the same route, and the
+	// tab row only renders above one layer, so a filter left on `http` followed
+	// by an asset whose changes are all `dns` showed an empty panel with no
+	// control left to clear it. Self healing here rather than through an effect
+	// that resets it, because the condition is the same one the tabs render on.
+	const active = $derived(only && layers.includes(only) ? only : '');
+	const shown = $derived(active ? changes.filter((entry) => entry.layer === active) : changes);
 
 	/** The days, so a run of changes on one afternoon reads as one afternoon. */
 	const days = $derived.by(() => {
@@ -143,9 +150,9 @@
 		<span class="dv-src">{changes.length} {changes.length === 1 ? 'change' : 'changes'} in the window</span>
 		<span class="spacer"></span>
 		{#if layers.length > 1}
-			<button class="tab" class:on={only === ''} type="button" onclick={() => (only = '')}>all layers</button>
+			<button class="tab" class:on={active === ''} type="button" onclick={() => (only = '')}>all layers</button>
 			{#each layers as layer (layer)}
-				<button class="tab" class:on={only === layer} type="button" onclick={() => (only = layer)}>{layer}</button>
+				<button class="tab" class:on={active === layer} type="button" onclick={() => (only = layer)}>{layer}</button>
 			{/each}
 		{/if}
 	</header>

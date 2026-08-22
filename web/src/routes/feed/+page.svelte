@@ -16,10 +16,23 @@
 	let overflowFloor = $state(false);
 	let status = $state<'connecting' | 'live' | 'lost'>('connecting');
 	let opened = $state('');
+	/**
+	 * The clock behind "since", ticking on its own.
+	 *
+	 * `ago` is a pure function of two instants and `opened` is written once, so
+	 * without something moving the second one a tab left open for four hours still
+	 * read "since just now". A minute is the resolution the phrase has anyway.
+	 */
+	let now = $state(Date.now());
 
 	/** What the list holds. Old rows are dropped rather than accumulated: a tab left
 	 *  open through a first scan would otherwise grow without bound. */
 	const keep = 200;
+
+	$effect(() => {
+		const clock = setInterval(() => (now = Date.now()), 60_000);
+		return () => clearInterval(clock);
+	});
 
 	$effect(() => {
 		opened = new Date().toISOString();
@@ -68,7 +81,7 @@
 			{status === 'live' ? 'listening' : status === 'connecting' ? 'connecting' : 'reconnecting'}
 		</span>
 		<span class="spacer"></span>
-		<span class="since" title={exact(opened)}>since {ago(opened)}</span>
+		<span class="since" title={exact(opened)}>since {ago(opened, now)}</span>
 	</header>
 
 	{#if overflow > 0}

@@ -154,3 +154,29 @@ describe('layerOf and cookieNamesOf', () => {
 		expect(cookieNamesOf(observation('http', {}))).toEqual([]);
 	});
 });
+
+describe('the lists a keyed each block renders', () => {
+	// Neither list is deduplicated by the producer or by normalization, and a
+	// repeated key throws in Svelte rather than drawing a line twice, so the
+	// whole asset view fails to render. Deduplicating is also the right answer
+	// for a counted list: the same bundle loaded from two tags is one script.
+	it('collapses a script the page loaded twice', () => {
+		const evidence = observation('fingerprint', {
+			scripts: [
+				{ url: 'https://a.acme.test/app.js', hash: 'abc', internal: true },
+				{ url: 'https://a.acme.test/app.js', hash: 'abc', internal: true },
+				{ url: 'https://a.acme.test/other.js', hash: 'def', internal: true }
+			]
+		});
+		const scripts = scriptsOf(evidence);
+		expect(scripts).toHaveLength(2);
+		expect(new Set(scripts.map((script) => script.hash)).size).toBe(2);
+	});
+
+	it('collapses an external host recorded twice', () => {
+		const evidence = observation('fingerprint', {
+			external_hosts: ['cdn.partner.test', 'cdn.partner.test', 'other.partner.test']
+		});
+		expect(renderFacts(evidence).externalHosts).toEqual(['cdn.partner.test', 'other.partner.test']);
+	});
+});

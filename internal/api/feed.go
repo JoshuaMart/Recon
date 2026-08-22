@@ -167,5 +167,5 @@ func (h *Feed) round(
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	return search.Discoveries(ctx, tx, principal.OrgID, cursor)
+	return search.Discoveries(ctx, tx, principal.OrgID, cursor, h.now())
 }

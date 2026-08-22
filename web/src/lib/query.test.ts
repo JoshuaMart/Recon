@@ -194,3 +194,29 @@ describe('isGrouped and the shape of the list', () => {
 		expect(groupHref(filters, false)).toBe('/?group=none');
 	});
 });
+
+describe('the list shape survives a link', () => {
+	const filters = [{ field: 'port', op: 'eq' as const, value: '443' }];
+
+	// The shape lives in the URL, so every link built from it has to carry it.
+	// It defaults to grouped, which is right for a link arriving from elsewhere
+	// and wrong for every link on the list itself: from the flat list, adding a
+	// facet folded it back without anybody asking.
+	it('keeps the flat list flat', () => {
+		expect(href(filters, false)).toContain('group=none');
+		expect(href([], false)).toBe('/?group=none');
+	});
+
+	it('keeps the grouped list grouped, and says so by omission', () => {
+		expect(href(filters, true)).not.toContain('group=');
+		expect(href([])).toBe('/');
+	});
+
+	// Dropping the cursor when the shape changes is the point rather than an
+	// omission: the two walk different keys, so carrying one across would ask
+	// the server to continue a walk it never started.
+	it('drops the cursor on both sides of the toggle', () => {
+		expect(groupHref(filters, false)).not.toContain('cursor');
+		expect(groupHref(filters, true)).not.toContain('cursor');
+	});
+});

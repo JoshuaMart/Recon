@@ -144,11 +144,17 @@ RETURNING id, kind, matcher, pattern, valid_from, valid_to, note, version, creat
 -- @tenant: scoped
 -- name: UpdateRule :one
 UPDATE scope_rule
-   -- COALESCE, because closing a rule is not restating it. A caller that had to
-   -- send the pattern back to set valid_to would be one round trip away from
-   -- rewriting a rule it only meant to close.
+   -- COALESCE on both, because closing a rule is not restating it. A caller
+   -- that had to send them back to set valid_to would be one round trip away
+   -- from rewriting a rule it only meant to close, and the note is the half
+   -- that matters: it is the explanation a closed rule exists to preserve, so
+   -- erasing it on the way out takes away exactly what "a rule has a period of
+   -- validity rather than an existence" was for.
+   --
+   -- The consequence, said rather than discovered: a note cannot be cleared
+   -- through this statement, only replaced. Nothing asks to today.
    SET pattern    = COALESCE(sqlc.narg('pattern')::text, pattern),
-       note       = sqlc.narg('note')::text,
+       note       = COALESCE(sqlc.narg('note')::text, note),
        valid_to   = sqlc.narg('valid_to')::timestamptz,
        version    = version + 1,
        updated_by = sqlc.narg('actor')::uuid
@@ -205,9 +211,15 @@ SELECT s.program_id, s.queue,
 -- name: RecentRuns :many
 SELECT r.id, r.program_id, r.kind, r.scope, r.state, r.deadline,
        r.created_at, r.started_at, r.finished_at, r.target_count, r.error,
-       -- COALESCE because a run that has not delivered has no summary at all,
-       -- and a null here would be scanned as an error rather than as zero.
-       COALESCE((r.summary ->> 'observations')::int, 0)::int AS observations
+       -- Two spellings and a zero. The summary gained json tags when the queue
+       -- view started reading it back, so a run recorded before that carries
+       -- the Go identifier instead. Reading only the tagged key would show
+       -- every older run at zero observations, which the COALESCE would then
+       -- make indistinguishable from a run that delivered nothing. And a run
+       -- that has not delivered has no summary at all, where a null would be
+       -- scanned as an error rather than as zero.
+       COALESCE((r.summary ->> 'observations')::int,
+                (r.summary ->> 'Observations')::int, 0)::int AS observations
   FROM run r
  WHERE r.org_id = @org_id::uuid
  ORDER BY r.created_at DESC

@@ -32,6 +32,26 @@ import (
 // moment there is most to see.
 const FeedCap = 50
 
+// FeedLag is how far behind the present the feed reads.
+//
+// The cursor orders on first_seen, and that column is stamped by the
+// application inside the ingestion transaction rather than at commit. The two
+// orders are not the same: a run that stamps T1 and takes ten seconds to commit
+// lands after a run that stamped T2 > T1 and committed immediately, so a tick in
+// between emits the second, advances the cursor past T2, and never sees the
+// first. Nothing about that is visible; the assets are in the inventory and
+// simply never appeared in the feed.
+//
+// So the feed reads up to now minus this, which gives every transaction that
+// stamped before that instant time to have committed. The bound has to exceed
+// the longest ingestion transaction, and the consequence if it does not is the
+// silent skip above rather than an error.
+//
+// What it costs is latency, and it is the cheapest thing here to spend: a run
+// posts one report, so discovery arrives in batches and sub second latency
+// describes nothing real.
+const FeedLag = 30 * time.Second
+
 // FeedOverflowCap bounds the count of what a round left behind.
 //
 // The count is over the tail of the same index, so it is cheap on an ordinary
@@ -143,8 +163,12 @@ func ParseFeedCursor(encoded string) (FeedCursor, error) {
 //
 // No query on observation here either. It reads asset and asset_current, like
 // the list.
-func Discoveries(ctx context.Context, q Querier, org uuid.UUID, cursor FeedCursor) (Tick, error) {
+func Discoveries(
+	ctx context.Context, q Querier, org uuid.UUID, cursor FeedCursor, now time.Time,
+) (Tick, error) {
 	tick := Tick{Discoveries: []Discovery{}, Cursor: cursor.String()}
+	// The watermark, and the reason it exists is above FeedLag.
+	upTo := now.Add(-FeedLag)
 
 	rows, err := q.Query(ctx, `
 		SELECT c.asset_id, c.program_id, c.kind, c.key, c.host,
@@ -154,9 +178,10 @@ func Discoveries(ctx context.Context, q Querier, org uuid.UUID, cursor FeedCurso
 		  JOIN asset a ON a.id = c.asset_id
 		 WHERE c.org_id = $1
 		   AND (c.first_seen > $2 OR (c.first_seen = $2 AND c.asset_id > $3))
+		   AND c.first_seen <= $4
 		 ORDER BY c.first_seen, c.asset_id
-		 LIMIT $4`,
-		org, cursor.FirstSeen, cursor.AssetID, FeedCap)
+		 LIMIT $5`,
+		org, cursor.FirstSeen, cursor.AssetID, upTo, FeedCap)
 	if err != nil {
 		return Tick{}, fmt.Errorf("run the feed: %w", err)
 	}
@@ -190,7 +215,7 @@ func Discoveries(ctx context.Context, q Querier, org uuid.UUID, cursor FeedCurso
 	tick.Cursor = next.String()
 
 	if len(tick.Discoveries) == FeedCap {
-		overflow, capped, err := backlog(ctx, q, org, next)
+		overflow, capped, err := backlog(ctx, q, org, next, upTo)
 		if err != nil {
 			return Tick{}, err
 		}
@@ -200,15 +225,22 @@ func Discoveries(ctx context.Context, q Querier, org uuid.UUID, cursor FeedCurso
 }
 
 // backlog counts what a full round left behind, bounded.
-func backlog(ctx context.Context, q Querier, org uuid.UUID, after FeedCursor) (int, bool, error) {
+//
+// Under the same watermark as the round itself, so the number describes what
+// the next tick will actually deliver rather than counting rows this feed is
+// deliberately not looking at yet.
+func backlog(
+	ctx context.Context, q Querier, org uuid.UUID, after FeedCursor, upTo time.Time,
+) (int, bool, error) {
 	rows, err := q.Query(ctx, `
 		SELECT count(*) FROM (
 		    SELECT 1
 		      FROM asset_current c
 		     WHERE c.org_id = $1
 		       AND (c.first_seen > $2 OR (c.first_seen = $2 AND c.asset_id > $3))
-		     LIMIT $4
-		) waiting`, org, after.FirstSeen, after.AssetID, FeedOverflowCap)
+		       AND c.first_seen <= $4
+		     LIMIT $5
+		) waiting`, org, after.FirstSeen, after.AssetID, upTo, FeedOverflowCap)
 	if err != nil {
 		return 0, false, fmt.Errorf("run the feed backlog: %w", err)
 	}

@@ -159,7 +159,7 @@
 			{/if}
 			{#if facts.externalHosts.length > 0}
 				{#each facts.externalHosts as host (host)}
-					<a class="dv-badge plain" href={href([{ field: 'external_hosts', op: 'contains', value: host }])}>
+					<a class="dv-badge plain" href={href([{ field: 'external_host', op: 'contains', value: host }])}>
 						<span class="k">external</span><span class="v">{host}</span>
 					</a>
 				{/each}

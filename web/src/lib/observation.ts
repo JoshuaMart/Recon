@@ -180,12 +180,29 @@ export interface Script {
  * discriminating.
  */
 export function scriptsOf(evidence: Evidence | undefined): Script[] {
-	return list(bag(evidence?.data).scripts)
+	const scripts = list(bag(evidence?.data).scripts)
 		.map((raw) => {
 			const script = bag(raw);
 			return { url: text(script.url), hash: text(script.hash), internal: script.internal === true };
 		})
 		.filter((script) => script.internal && (script.hash || script.url));
+
+	// Deduplicated here, because the payload is not deduplicated anywhere. The
+	// producer records what the page loaded, and a page that loads the same
+	// bundle from two tags records it twice; the control plane only collapses
+	// them later, when it counts the pivot.
+	//
+	// Two identical lines would be wrong on a counted list anyway, and the
+	// screen has a harder reason: a keyed each block over a repeated hash throws
+	// in Svelte, so the whole asset view fails to render rather than showing a
+	// line twice.
+	const seen = new Set<string>();
+	return scripts.filter((script) => {
+		const key = script.hash ?? script.url ?? '';
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
 }
 
 export interface RenderFacts {
@@ -210,7 +227,10 @@ export function renderFacts(evidence: Evidence | undefined): RenderFacts {
 		llms: typeof metadata.llms_txt === 'boolean' ? metadata.llms_txt : undefined,
 		cname: text(network.cname),
 		cookieNames: Object.keys(bag(data.cookies)),
-		externalHosts: list(data.external_hosts).filter((host): host is string => typeof host === 'string')
+		// Deduplicated for the reason the scripts are: normalization sorts this
+		// list and never collapses it, and a repeated host is a keyed each block
+		// over a repeated key, which throws.
+		externalHosts: [...new Set(list(data.external_hosts).filter((host): host is string => typeof host === 'string'))]
 	};
 }
 

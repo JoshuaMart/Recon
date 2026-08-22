@@ -167,8 +167,16 @@ type Row struct {
 
 // Page is one answer.
 type Page struct {
-	Rows []Row  `json:"assets"`
-	Next string `json:"next_cursor,omitempty"`
+	Rows []Row `json:"assets"`
+	// Favicons are the images of the page, keyed by hash, exactly as on the
+	// grouped list. The same sidebar renders beside both shapes, so a facet that
+	// draws icons under one and blank squares under the other is the same list
+	// disagreeing with itself.
+	//
+	// Only when a display was asked for. The export walks this function with it
+	// off and would otherwise pay for images it never writes.
+	Favicons map[string]string `json:"favicons,omitempty"`
+	Next     string            `json:"next_cursor,omitempty"`
 }
 
 // selectColumns is what a row reads.
@@ -283,6 +291,14 @@ func List(ctx context.Context, q Querier, org uuid.UUID, req Request) (Page, err
 		page.Rows = page.Rows[:limit]
 		last := page.Rows[limit-1]
 		page.Next = Cursor{LastSeen: last.LastSeen, AssetID: last.AssetID}.String()
+	}
+
+	if req.Display {
+		images, err := Favicons(ctx, q, org, page.Rows)
+		if err != nil {
+			return Page{}, err
+		}
+		page.Favicons = images
 	}
 	return page, nil
 }

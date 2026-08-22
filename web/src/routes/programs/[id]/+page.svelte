@@ -36,12 +36,28 @@
 			: ''
 	);
 
-	let copied = $state(false);
+	let copied = $state<'no' | 'yes' | 'failed'>('no');
+	let clearing: ReturnType<typeof setTimeout> | undefined;
 
+	/**
+	 * The clipboard is not always there.
+	 *
+	 * `navigator.clipboard` is undefined outside a secure context, so a console
+	 * served over plain http to anything but localhost throws here. Unguarded the
+	 * button silently stayed on "copy", on the one screen whose whole purpose is
+	 * handing a command over, and the answer to "why is nothing happening" was in
+	 * a console nobody had open. It says so instead, and the command is still on
+	 * screen to select by hand.
+	 */
 	async function copy() {
-		await navigator.clipboard.writeText(command);
-		copied = true;
-		setTimeout(() => (copied = false), 2000);
+		clearTimeout(clearing);
+		try {
+			await navigator.clipboard.writeText(command);
+			copied = 'yes';
+		} catch {
+			copied = 'failed';
+		}
+		clearing = setTimeout(() => (copied = 'no'), 2000);
 	}
 
 	/** The last discovery run, and whether it still holds the program. */
@@ -235,7 +251,9 @@
 							<p class="dim">Run this to start it. The credential inside expires with the run.</p>
 							<div class="cmd">
 								<code>{command}</code>
-								<button type="button" class:done={copied} onclick={copy}>{copied ? 'copied' : 'copy'}</button>
+								<button type="button" class:done={copied === 'yes'} onclick={copy}>
+									{copied === 'yes' ? 'copied' : copied === 'failed' ? 'select it by hand' : 'copy'}
+								</button>
 							</div>
 						{:else if inFlight && !running}
 							<!-- The token was minted once and never stored, so this page
@@ -285,6 +303,9 @@
 					<input type="hidden" name="discovery_interval" value={program.discovery_interval} />
 					<input type="hidden" name="authorized_from" value={program.authorized_from} />
 					<input type="hidden" name="authorized_to" value={program.authorized_to ?? ''} />
+					<input type="hidden" name="platform" value={program.platform ?? ''} />
+					<input type="hidden" name="platform_ref" value={program.platform_ref ?? ''} />
+					<input type="hidden" name="authorization_ref" value={program.authorization_ref ?? ''} />
 					<label>
 						<span>State</span>
 						<select class="field" name="state">
