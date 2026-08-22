@@ -682,3 +682,175 @@ func TestAnExclusionThatCannotTravelIsSaidOutLoud(t *testing.T) {
 		}
 	}
 }
+
+// The pass on due dates, which is what turns a schedule into a run.
+//
+// Everything under it existed and nothing called it: the selection, the frozen
+// list and the lease have been there since verification was built, and a run
+// went out when somebody pressed a button and never otherwise. Due dates
+// accumulated, the queue counted them as what the next tick can dispatch, and no
+// tick did.
+func TestTheDuePassStartsAVerificationRun(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.due(t, "a.acme.test", "b.acme.test")
+
+	platform := &recorder{id: "run-verify"}
+	scheduler := runs.New(h.sched.Signer(), h.sched.Config(), quiet(),
+		runs.WithClock(h.clock.Now), runs.WithPlatform(platform))
+	pass := runs.NewDuePass(h.pool, scheduler, time.Minute, quiet())
+
+	started, err := pass.Once(ctx)
+	if err != nil {
+		t.Fatalf("due pass: %v", err)
+	}
+	if started != 1 {
+		t.Fatalf("%d runs went out, want one for the programme", started)
+	}
+	if platform.calls != 1 {
+		t.Errorf("the platform was called %d times, so the run was defined and never started",
+			platform.calls)
+	}
+
+	// One run holding both hosts, not one run per asset. The frozen list is the
+	// whole point: a run per due asset would be one execution billed per name.
+	var kind, scope string
+	var targets int
+	if err := h.pool.QueryRow(ctx, `
+		SELECT r.kind, r.scope, count(t.asset_id)::int
+		  FROM run r LEFT JOIN run_target t ON t.run_id = r.id
+		 WHERE r.program_id = $1 GROUP BY r.kind, r.scope`, h.program).
+		Scan(&kind, &scope, &targets); err != nil {
+		t.Fatalf("read the run: %v", err)
+	}
+	if kind != "verification" {
+		t.Errorf("kind = %s, want verification", kind)
+	}
+	// Full rather than resolve, because both dates are past and a full run
+	// executes every rung below it. Taking resolve here would leave the ports
+	// unswept while reporting the asset checked.
+	if scope != "full" {
+		t.Errorf("scope = %s, want full: it moves both dates and resolve would not", scope)
+	}
+	if targets != 2 {
+		t.Errorf("the run froze %d targets, want both hosts in one list", targets)
+	}
+
+	// And the second tick starts nothing, because the first one is still in
+	// flight. That bound is a unique index rather than this check, but a pass
+	// that provisioned into a refusal once a minute would be a warning a minute.
+	again, err := pass.Once(ctx)
+	if err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	if again != 0 {
+		t.Errorf("%d runs went out while one was in flight", again)
+	}
+	if n := h.count(t, `SELECT count(*) FROM run WHERE program_id = $1`, h.program); n != 1 {
+		t.Errorf("run rows = %d, want the one in flight", n)
+	}
+}
+
+// A programme nothing may scan is not selected at all.
+//
+// Asserted on the selection and not on the number of runs, because the run is
+// refused a second time further down: create reads the programme and checks the
+// window, so a test counting runs passes with the condition removed from the
+// query and proves only that the second guard exists. What the first one buys is
+// that the pass does not wake an expired programme, walk its due assets and log a
+// refusal once a minute forever, which is the shape of this failure rather than
+// a billed execution.
+func TestTheDuePassNeverSelectsOutsideTheAuthorization(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.due(t, "a.acme.test")
+
+	queries := h.queries
+	selected := func() int {
+		rows, err := queries.ProgramsDueForVerification(ctx,
+			sqlcgen.ProgramsDueForVerificationParams{At: pgStamp(h.clock.now)})
+		if err != nil {
+			t.Fatalf("selection: %v", err)
+		}
+		return len(rows)
+	}
+
+	// The positive control first, so the refusals below are read against a
+	// selection that does return something.
+	if got := selected(); got != 1 {
+		t.Fatalf("an authorized programme with a due asset was selected %d times, want once", got)
+	}
+
+	for _, state := range []struct {
+		label string
+		sql   string
+		args  []any
+	}{
+		{
+			"an expired authorization",
+			`UPDATE program SET authorized_to = $2 WHERE id = $1`,
+			[]any{h.program, h.clock.now.Add(-time.Minute)},
+		},
+		{
+			"a suspended programme",
+			`UPDATE program SET authorized_to = NULL, state = 'suspended' WHERE id = $1`,
+			[]any{h.program},
+		},
+		{
+			"an authorization that has not begun",
+			`UPDATE program SET state = 'active', authorized_from = $2 WHERE id = $1`,
+			[]any{h.program, h.clock.now.Add(time.Hour)},
+		},
+	} {
+		exec(t, h.pool, state.sql, state.args...)
+		if got := selected(); got != 0 {
+			t.Errorf("%s was selected %d times", state.label, got)
+		}
+	}
+
+	// And the run is refused as well, which is the guard that matters when a
+	// programme expires between the selection and the write.
+	exec(t, h.pool, `UPDATE program SET authorized_from = $2, authorized_to = $3 WHERE id = $1`,
+		h.program, h.clock.now.Add(-time.Hour), h.clock.now.Add(-time.Minute))
+	platform := &recorder{id: "run-never"}
+	scheduler := runs.New(h.sched.Signer(), h.sched.Config(), quiet(),
+		runs.WithClock(h.clock.Now), runs.WithPlatform(platform))
+	if _, err := scheduler.Verification(ctx, queries, h.org, h.program, "full"); err == nil {
+		t.Error("a run was defined on a programme whose authorization has expired")
+	}
+	if platform.calls != 0 {
+		t.Errorf("the platform was called %d times for a programme nothing may scan", platform.calls)
+	}
+}
+
+// An asset outside the perimeter, archived, or not a name is never a target,
+// and the pass must not wake a programme for one: it would be selected on every
+// tick and find nothing on every tick.
+func TestTheDuePassIgnoresWhatIsNotATarget(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	// A service with a due date, which is not a target of its own: it is
+	// observed through the host it sits on.
+	id := uuid.New()
+	exec(t, h.pool, `INSERT INTO asset
+		(id, org_id, program_id, kind, key, host, discovery_source, scope_status, first_seen, last_seen)
+		VALUES ($1,$2,$3,'service','a.acme.test:443/tcp','a.acme.test','manual','in_scope',$4,$4)`,
+		id, h.org, h.program, h.clock.now.Add(-time.Hour))
+	exec(t, h.pool, `INSERT INTO asset_current
+		(asset_id, org_id, program_id, kind, key, scope_status, host, port,
+		 next_resolve_at, next_full_at, first_seen, last_seen)
+		VALUES ($1,$2,$3,'service','a.acme.test:443/tcp','in_scope','a.acme.test',443,$4,$4,$4,$4)`,
+		id, h.org, h.program, h.clock.now.Add(-time.Hour))
+
+	// And a name that is out of the perimeter, with a date it should never have
+	// been given.
+	h.due(t, "out.acme.test")
+	exec(t, h.pool, `UPDATE asset_current SET scope_status = 'out_of_scope' WHERE key = 'out.acme.test'`)
+
+	pass := runs.NewDuePass(h.pool, h.sched, time.Minute, quiet())
+	if started, err := pass.Once(ctx); err != nil || started != 0 {
+		t.Errorf("started = %d err = %v, want nothing: neither a service nor an asset "+
+			"outside the perimeter is a target", started, err)
+	}
+}

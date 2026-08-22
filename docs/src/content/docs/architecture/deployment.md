@@ -272,7 +272,7 @@ inferred from the code:
 
 | Pool | What runs on it |
 |---|---|
-| `asm_sys` | the partition and housekeeping loop, the deadline sweeper, the discovery cadence, the Notifier, the render pass, the external host sweep, and the two lookups that turn a credential into an organization, one per kind of credential |
+| `asm_sys` | the partition and housekeeping loop, the deadline sweeper, the discovery cadence, the due date pass, the Notifier, the render pass, the external host sweep, and the two lookups that turn a credential into an organization, one per kind of credential |
 | `asm_app` | everything a request does after that lookup, including the whole of report ingestion |
 
 The credential lookups are on the system pool for a reason that is not convenience: they are the queries
@@ -397,7 +397,41 @@ keeps the local path from becoming a second way of starting a run.
 Two paths, complementary rather than alternative: scheduled for regular coverage, manual to re-run after a
 scope change.
 
-The scheduler makes a pass for discovery, distinct from the one on due dates:
+### The pass on due dates
+
+The counterpart of the one below, and the two answer different questions. Enumeration asks what exists under
+a perimeter and runs on the program's own interval. This asks what still answers, and it runs on the assets:
+a due date is written by every ingestion, and this is what turns it into a run.
+
+It selects the active, authorized programs holding at least one **name** that is due, and starts one
+verification run for each. A name is the unit, because an address is never a target of its own and a service
+is observed through its host's run.
+
+**One run per program, holding every due name of it.** The frozen list is what makes that possible, and the
+alternative is one execution billed per name.
+
+**`full` before `resolve`.** A full run executes every rung below it and its report moves both dates, so
+taking full first cannot starve resolve, and an asset due for full does not need a resolve run.
+
+**The interval is how fast the pass reacts, not how much it starts.** What bounds the runs is the due dates
+and the one live verification run per program, which is a unique index rather than a check. A tick that
+finds nothing due starts nothing, so a short interval costs a query rather than an execution. Short is what
+makes a declared asset go out at once, since [entering one](/architecture/scope/#entering-an-asset-by-hand)
+writes a due date of now: somebody is waiting.
+
+**The authorization window is checked in the selection as well as at the run**, and what the first one buys
+is worth stating exactly. Nothing is billed either way, because the run is refused before the platform is
+called. What it prevents is the pass waking an expired program, walking its due assets, freezing nothing and
+logging a refusal, once a minute, forever. A warning a minute is not a signal.
+
+**There is no cap on concurrent verification runs per organization**, and that is a decision rather than an
+omission. The bound today is one per program, which on a deployment holding a handful of them is the bill.
+It becomes worth having the day programs multiply, and a bound that has never bound anything has never been
+calibrated either.
+
+### The pass for discovery
+
+The scheduler makes a pass for discovery, distinct from the one on due dates above:
 
 ```sql
 WHERE p.state = 'active'

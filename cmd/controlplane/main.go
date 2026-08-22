@@ -119,6 +119,12 @@ func run() error {
 	go runs.NewSweeper(scheduler, sqlcgen.New(system), cfg.Verification.SweepInterval, log).Run(ctx)
 	// The pass that provisions enumeration, distinct from the one on due dates.
 	go runs.NewCadence(system, scheduler, cfg.Verification.SweepInterval, log).Run(ctx)
+	// And the one on due dates, which is what turns a schedule into a run. The
+	// two answer different questions: enumeration asks what exists under a
+	// perimeter, this asks what still answers. Without it a due date is written
+	// by every ingestion and nothing ever reads it, so the inventory is verified
+	// exactly when somebody presses a button.
+	go runs.NewDuePass(system, scheduler, cfg.Verification.SweepInterval, log).Run(ctx)
 
 	// The one loop that asks a question about somebody else's domain, and the
 	// only outbound work in the control plane. It resolves an apex and nothing

@@ -413,6 +413,96 @@ func (q *Queries) ProgramsDueForDiscovery(ctx context.Context, arg ProgramsDueFo
 	return items, nil
 }
 
+const programsDueForVerification = `-- name: ProgramsDueForVerification :many
+SELECT p.id, p.org_id, p.name,
+       bool_or(c.next_full_at <= $1::timestamptz) AS full_due
+  FROM program p
+  JOIN asset_current c ON c.program_id = p.id
+ WHERE p.state = 'active'
+   AND p.authorized_from <= $1::timestamptz
+   AND (p.authorized_to IS NULL OR p.authorized_to > $1::timestamptz)
+   -- The same predicate the selection uses, so a programme is never woken for
+   -- work the selection would then refuse to find. A name is the unit: an
+   -- address is never a target of its own, and a service is observed through
+   -- its host's run.
+   AND c.kind = 'fqdn'
+   AND c.scope_status = 'in_scope'
+   AND c.lifecycle <> 'archived'
+   AND (c.next_full_at <= $1::timestamptz OR c.next_resolve_at <= $1::timestamptz)
+   AND NOT EXISTS (
+        SELECT 1 FROM run r
+         WHERE r.program_id = p.id AND r.kind = 'verification'
+           AND r.state IN ('pending', 'running'))
+ GROUP BY p.id, p.org_id, p.name
+ ORDER BY p.id
+`
+
+type ProgramsDueForVerificationParams struct {
+	At pgtype.Timestamptz
+}
+
+type ProgramsDueForVerificationRow struct {
+	ID      pgtype.UUID
+	OrgID   pgtype.UUID
+	Name    string
+	FullDue bool
+}
+
+// ProgramsDueForVerification is the pass on due dates.
+//
+// The counterpart of the discovery cadence and the thing that was missing: due
+// dates were written, the queue view counted them as what the next tick can
+// dispatch, and no tick dispatched them. The engine has existed since
+// verification was built; only the trigger was absent, so a run went out when
+// somebody pressed a button and never otherwise.
+//
+// The authorization window is checked here as well as at the run, and what it
+// buys is worth stating exactly rather than borrowing the discovery pass's
+// sentence. Nothing is billed either way: the run is refused before the platform
+// is called. What this prevents is the pass waking an expired programme, walking
+// its due assets, freezing nothing and logging a refusal, once a minute, forever
+// until somebody edits the programme. A warning a minute is not a signal.
+//
+// full_due decides the rung without a second query. A full run executes every
+// rung below it and moves both dates, so taking full first cannot starve
+// resolve, and an asset due for full does not need a resolve run.
+//
+// The absence of a live verification run is the condition that does the work,
+// exactly as it is for discovery. It is not the guarantee: that is the unique
+// index, because a check that reads and then writes is not a reservation under
+// read committed. This only keeps the pass from provisioning what the index
+// would refuse, once a minute, forever.
+//
+// @tenant: cross-org
+// @why: the due date pass provisions verification for every programme of every
+//
+//	tenant in one pass, and a per tenant sweep would need a list of tenants to
+//	walk, which is the same crossing wearing a loop.
+func (q *Queries) ProgramsDueForVerification(ctx context.Context, arg ProgramsDueForVerificationParams) ([]ProgramsDueForVerificationRow, error) {
+	rows, err := q.db.Query(ctx, programsDueForVerification, arg.At)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProgramsDueForVerificationRow{}
+	for rows.Next() {
+		var i ProgramsDueForVerificationRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrgID,
+			&i.Name,
+			&i.FullDue,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const recordRunStart = `-- name: RecordRunStart :exec
 UPDATE run SET external_id = $1::text WHERE id = $2::uuid
 `
