@@ -325,6 +325,60 @@ func TestTheProgrammeCountersAreAskedFor(t *testing.T) {
 	if counted[0].AssetsInScope == nil || *counted[0].AssetsInScope != 1 {
 		t.Errorf("in scope = %v, want 1", counted[0].AssetsInScope)
 	}
+
+	// The detail answers them without being asked, and the switcher's reason not
+	// to does not apply: this is one programme somebody navigated to on purpose,
+	// and the size of the perimeter is what the screen opens with.
+	programID, ok := plain[0]["id"].(string)
+	if !ok {
+		t.Fatalf("the list carried no identifier: %+v", plain[0])
+	}
+	_, payload = h.raw(t, http.MethodGet, "/programs/"+programID, token, nil)
+	detail := decode[struct {
+		Program struct {
+			Assets        *int `json:"assets"`
+			AssetsInScope *int `json:"assets_in_scope"`
+		} `json:"program"`
+	}](t, payload).Program
+	if detail.Assets == nil || *detail.Assets != 1 {
+		t.Errorf("the detail counts %v assets, want 1", detail.Assets)
+	}
+	if detail.AssetsInScope == nil || *detail.AssetsInScope != 1 {
+		t.Errorf("the detail counts %v in scope, want 1", detail.AssetsInScope)
+	}
+}
+
+// A perimeter with nothing in it has a size, and it is nought.
+//
+// The group by returns no row for a programme with no asset, so the counts have
+// to be defaulted rather than left absent: an omitted field reads on the screen
+// as a number nobody computed, which is a different statement from zero.
+func TestAnEmptyProgrammeCountsNought(t *testing.T) {
+	h := newHarness(t)
+	token := h.console(t)
+
+	_, payload := h.raw(t, http.MethodGet, "/programs", token, nil)
+	plain := decode[struct {
+		Programs []map[string]any `json:"programs"`
+	}](t, payload).Programs
+	programID, ok := plain[0]["id"].(string)
+	if !ok {
+		t.Fatalf("the list carried no identifier: %+v", plain[0])
+	}
+
+	_, payload = h.raw(t, http.MethodGet, "/programs/"+programID, token, nil)
+	detail := decode[struct {
+		Program struct {
+			Assets        *int `json:"assets"`
+			AssetsInScope *int `json:"assets_in_scope"`
+		} `json:"program"`
+	}](t, payload).Program
+	if detail.Assets == nil || *detail.Assets != 0 {
+		t.Errorf("assets = %v, want a zero somebody can read", detail.Assets)
+	}
+	if detail.AssetsInScope == nil || *detail.AssetsInScope != 0 {
+		t.Errorf("in scope = %v, want a zero somebody can read", detail.AssetsInScope)
+	}
 }
 
 // The queue answers "why is nothing moving", and the three numbers are

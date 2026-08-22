@@ -65,8 +65,10 @@ type program struct {
 	Version   int32     `json:"version"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
-	// The three below are on the list only, and only when asked for. They cost
-	// an aggregation over the inventory, and the switcher sits on every page.
+	// RulesInForce is on the list only, and only when asked for: it costs an
+	// aggregation over the inventory and the switcher sits on every page. The
+	// two counts are also answered by the detail, which is one program somebody
+	// navigated to on purpose rather than a menu rendered everywhere.
 	RulesInForce  *int32 `json:"rules_in_force,omitempty"`
 	Assets        *int32 `json:"assets,omitempty"`
 	AssetsInScope *int32 `json:"assets_in_scope,omitempty"`
@@ -197,8 +199,35 @@ func (h *Console) GetProgram(w http.ResponseWriter, r *http.Request, principal a
 	for _, row := range rules {
 		out = append(out, readRule(row))
 	}
+
+	// The size of the perimeter, which is what this screen opens with. The same
+	// statement the list runs, and it is grouped over the tenant rather than
+	// filtered here because sqlc generates one function per statement and a
+	// second spelling of the same aggregate is a second thing to keep in step.
+	//
+	// Zero rather than absent when the group by returned no row for this
+	// program: a perimeter with nothing in it has a size, and it is nought. An
+	// omitted field would read on the screen as a number nobody computed.
+	counts, err := q.CountProgramAssets(ctx, sqlcgen.CountProgramAssetsParams{
+		OrgID: uuidTo(principal.OrgID),
+	})
+	if err != nil {
+		h.unavailable(ctx, w, "count programme assets failed", err)
+		return
+	}
+
+	detail := readProgramOne(row)
+	assets, inScope := int32(0), int32(0)
+	for _, count := range counts {
+		if uuid.UUID(count.ProgramID.Bytes) == programID {
+			assets, inScope = count.Assets, count.InScope
+			break
+		}
+	}
+	detail.Assets, detail.AssetsInScope = &assets, &inScope
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"program": readProgramOne(row), "rules": out,
+		"program": detail, "rules": out,
 	})
 }
 
