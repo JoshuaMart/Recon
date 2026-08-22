@@ -1,4 +1,4 @@
-import type { Program, QueueDepth } from './types';
+import type { Program, QueueDepth, Run } from './types';
 
 /**
  * The three queues, in the order somebody reads them.
@@ -79,4 +79,55 @@ function sum(shares: QueueShare[], field: 'due' | 'later' | 'in_run'): number {
  */
 export function claimed(state: string, startedAt: string | undefined): boolean {
 	return state !== 'pending' || Boolean(startedAt);
+}
+
+export interface QueueTotals {
+	due: number;
+	later: number;
+	in_run: number;
+}
+
+/**
+ * The three queues of one program, added up.
+ *
+ * queueLines folds the other way, one line per queue across every program,
+ * because that is the question the queue page answers. The program list asks the
+ * opposite one: is anything waiting on this perimeter, whichever schedule it
+ * waits in. Adding the three is what makes it one number, and the panels that
+ * show it say so rather than letting a reader take it for a single queue.
+ */
+export function depthsByProgram(depths: QueueDepth[]): Map<string, QueueTotals> {
+	const out = new Map<string, QueueTotals>();
+
+	for (const depth of depths) {
+		const total = out.get(depth.program_id) ?? { due: 0, later: 0, in_run: 0 };
+		total.due += depth.due;
+		total.later += depth.later;
+		total.in_run += depth.in_run;
+		out.set(depth.program_id, total);
+	}
+
+	return out;
+}
+
+/**
+ * The last discovery run of each program.
+ *
+ * The queue answers newest first, so the first row for a program is its last run
+ * and every later one is history. One pass rather than a find() per row: the list
+ * renders one row per program, and the repeated walk is the same list every time.
+ *
+ * Discovery only. A verification run holds the same program and answers a
+ * different question, and a row saying "scanning" because something is verifying
+ * would send somebody looking for a perimeter walk that is not happening.
+ */
+export function lastDiscoveryRuns(runs: Run[]): Map<string, Run> {
+	const out = new Map<string, Run>();
+
+	for (const run of runs) {
+		if (run.kind !== 'discovery') continue;
+		if (!out.has(run.program_id)) out.set(run.program_id, run);
+	}
+
+	return out;
 }
