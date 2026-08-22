@@ -230,6 +230,39 @@ services:
       RECON_RUNNER__SECRET_KEY: ${RUNNER_SECRET_KEY:-}
       RECON_NOTIFY__WEBHOOK_URL: ${NOTIFY_WEBHOOK_URL:-}
       RECON_NOTIFY__MIN_PRIORITY: ${NOTIFY_MIN_PRIORITY:-low}
+      # The tunables, passed through by name rather than mapped with a default.
+      #
+      # The form matters. Written as `RECON_X: ${X:-}` an unset variable reaches
+      # the container as an empty string, and an empty duration is a decode
+      # error that stops the process: the stack would refuse to start because
+      # somebody did not set an optional value. Written as `RECON_X: ${X:-72h}`
+      # the default lives in two places and drifts. Left without a value, an
+      # unset variable is simply absent from the container and the default in
+      # internal/config applies, which is the one place it is written down.
+      #
+      # What each of them does is in .env.example, beside the value.
+      RECON_VERIFICATION__RESOLVE:
+      RECON_VERIFICATION__FULL:
+      RECON_VERIFICATION__FINGERPRINT:
+      RECON_VERIFICATION__RENDER_SOLE:
+      RECON_VERIFICATION__RENDER_RECOVERY:
+      RECON_VERIFICATION__RENDER_BLIND:
+      RECON_VERIFICATION__INACTIVE:
+      RECON_VERIFICATION__JITTER:
+      RECON_VERIFICATION__FULL_FLOOR:
+      RECON_VERIFICATION__BATCH_SIZE:
+      RECON_VERIFICATION__SWEEP_INTERVAL:
+      RECON_VERIFICATION__TIMEOUT:
+      RECON_VERIFICATION__DISCOVERY_RETRY:
+      RECON_VERIFICATION__PORTS:
+      RECON_RENDER__INTERVAL:
+      RECON_RENDER__BATCH:
+      RECON_RENDER__CONCURRENCY:
+      RECON_RENDER__COST:
+      RECON_RENDER__TIMEOUT:
+      RECON_NOTIFY__INTERVAL:
+      RECON_EXTERNAL__INTERVAL:
+      RECON_MAINTENANCE__INTERVAL:
     volumes:
       - ${GEOIP_DIR:-../../var/geoip}:/geoip:ro
     ports:
