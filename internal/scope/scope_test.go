@@ -326,3 +326,70 @@ func TestAnApexCoversTheDomainAndEverythingUnderIt(t *testing.T) {
 		t.Error("eviltarget.test came back in scope under target.test")
 	}
 }
+
+// A url_prefix include reaches nothing on its own, and the shape of that is
+// worth an assertion rather than a discovery.
+//
+// The matcher is the one that reads the key rather than the host, and it is
+// built to be stricter than the asset's parent: a URL can be excluded while the
+// service carrying it stays in scope. Used as an include it goes the other way,
+// and the loop closes on itself. The URL is the only kind it can match; a URL
+// exists once its service answered; a service is probed through its host; and
+// the host is left unknown, because a rule that only matches URLs never matched
+// it. Nothing is ever scheduled, so the URL that would have matched is never
+// created.
+func TestAURLPrefixIncludeReachesNoHost(t *testing.T) {
+	t.Parallel()
+
+	set := compile(t, scope.Rule{
+		ID: "1", Kind: scope.Include, Matcher: scope.MatchURLPrefix, Pattern: "https://www.target.test",
+	})
+
+	host, err := normalize.FQDN("www.target.test")
+	if err != nil {
+		t.Fatalf("key: %v", err)
+	}
+	service, err := normalize.Service("www.target.test", 443, "tcp")
+	if err != nil {
+		t.Fatalf("key: %v", err)
+	}
+	page, err := normalize.URL("https://www.target.test/")
+	if err != nil {
+		t.Fatalf("key: %v", err)
+	}
+
+	// The host is what carries a due date, and it is the one this rule cannot
+	// reach. That is the whole of why the perimeter never starts.
+	if got := set.Classify(scope.Target{Key: host}); got == scope.InScope {
+		t.Errorf("the host classified %s: a url_prefix rule matches a URL and nothing else", got)
+	}
+	if got := set.Classify(scope.Target{Key: service}); got == scope.InScope {
+		t.Errorf("the service classified %s, and it is observed through its host", got)
+	}
+	// And the one kind it does reach, which is what makes it useful as an
+	// exclusion beside an include that covers the host.
+	if got := set.Classify(scope.Target{Key: page}); got != scope.InScope {
+		t.Errorf("the URL classified %s, want in scope", got)
+	}
+
+	// Beside an apex include, the whole chain comes in and the exclusion is the
+	// direction this matcher is for: stricter than its parent, never looser.
+	both := compile(t,
+		scope.Rule{ID: "1", Kind: scope.Include, Matcher: scope.MatchApex, Pattern: "target.test"},
+		scope.Rule{ID: "2", Kind: scope.Exclude, Matcher: scope.MatchURLPrefix, Pattern: "https://www.target.test/admin"},
+	)
+	if got := both.Classify(scope.Target{Key: host}); got != scope.InScope {
+		t.Errorf("the host classified %s under an apex include, want in scope", got)
+	}
+	admin, err := normalize.URL("https://www.target.test/admin/users")
+	if err != nil {
+		t.Fatalf("key: %v", err)
+	}
+	if got := both.Classify(scope.Target{Key: admin}); got != scope.OutOfScope {
+		t.Errorf("the excluded path classified %s, want out of scope while its service stays in", got)
+	}
+	if got := both.Classify(scope.Target{Key: service}); got != scope.InScope {
+		t.Errorf("the service classified %s: a child may be stricter than its parent, "+
+			"and the parent does not follow it out", got)
+	}
+}

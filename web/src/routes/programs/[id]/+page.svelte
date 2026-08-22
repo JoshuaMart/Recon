@@ -9,6 +9,21 @@
 	const program = $derived(data.detail.program);
 	const rules = $derived(data.detail.rules);
 	const inForce = $derived(rules.filter((rule) => rule.in_force));
+
+	/**
+	 * Whether a discovery run has anything to enumerate.
+	 *
+	 * A run's perimeter is the apex includes and nothing else: the other matchers
+	 * narrow or exclude what enumeration finds, they cannot tell it where to
+	 * start. A programme whose only include is a `url_prefix` or a `cidr`
+	 * therefore has a rule in force, reads as configured, and answers 409 the
+	 * moment somebody presses the button.
+	 *
+	 * Said before the click rather than after it, and not as a refusal: adding an
+	 * apex second is an ordinary way to build a perimeter, so the panel states
+	 * what is missing and leaves the button alone.
+	 */
+	const apexes = $derived(inForce.filter((rule) => rule.kind === 'include' && rule.matcher === 'apex'));
 	const retired = $derived(rules.filter((rule) => !rule.in_force));
 
 	const answer = $derived(form && 'run' in form ? form.run : undefined);
@@ -222,6 +237,14 @@
 				<p class="dim lead">
 					The cadence covers regular coverage. This covers the case it cannot: relaunching after a scope change.
 				</p>
+
+				{#if apexes.length === 0}
+					<p class="dim note-off">
+						No apex include, so a run has nothing to enumerate. The other matchers narrow what enumeration finds; they
+						cannot say where it starts. Add an <code>apex</code> rule with the domain, without a
+						<code>*.</code> prefix: it covers the domain and everything under it.
+					</p>
+				{/if}
 
 				<form method="POST" action="?/startRun" use:enhance>
 					<button class="btn btn-signal start" type="submit" disabled={program.state !== 'active' || inFlight}>
