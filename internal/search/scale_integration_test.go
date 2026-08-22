@@ -84,7 +84,7 @@ func TestAFourClauseQueryOverAMillionAssets(t *testing.T) {
 		if err != nil {
 			t.Fatalf("facets: %v", err)
 		}
-		if len(facets) == 0 {
+		if len(facets.Facets) == 0 {
 			t.Fatal("no facet came back")
 		}
 		t.Logf("the facets of the same filter: %s", took.Round(time.Millisecond))

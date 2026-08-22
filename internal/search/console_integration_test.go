@@ -226,6 +226,58 @@ func TestTheFaviconsTravelOncePerPage(t *testing.T) {
 	})
 }
 
+// The favicon is faceted, and the sidebar gets the images to draw it with.
+//
+// It is the fastest identity signal an inventory has, and without a facet the
+// only way to ask "which icons does this perimeter share" was to click one badge
+// at a time on a row that happened to carry one. The first version of the facet
+// list refused it on the grounds that a key of `attributes` would have to
+// aggregate through a GIN index; the filter runs once into a CTE and every facet
+// groups over that, so it costs what a column costs.
+func TestTheFaviconIsFacetedWithItsImages(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	shared := []byte(`{"favicon_hash":"shared"}`)
+	h.asset(t, h.org, "one.target.test", map[string]any{"attributes": shared})
+	h.asset(t, h.org, "two.target.test", map[string]any{"attributes": shared})
+	h.asset(t, h.org, "three.target.test", map[string]any{"attributes": []byte(`{"favicon_hash":"lonely"}`)})
+	h.exec(t, `INSERT INTO favicon_image (org_id, hash, media_type, bytes)
+	           VALUES ($1, 'shared', 'image/png', '\x89504e47'), ($1, 'lonely', 'image/x-icon', '\x00000100')`,
+		h.org)
+
+	h.scoped(t, h.org, func(tx pgx.Tx) {
+		page, err := search.Facets(ctx, tx, h.org, filter(t, `{"op":"and"}`))
+		if err != nil {
+			t.Fatalf("facets: %v", err)
+		}
+
+		var favicons *search.Facet
+		for i := range page.Facets {
+			if page.Facets[i].Field == "favicon_hash" {
+				favicons = &page.Facets[i]
+			}
+		}
+		if favicons == nil {
+			t.Fatal("no favicon facet, so the sidebar cannot ask which icons a perimeter shares")
+		}
+		// Ranked like any other facet: the shared one first, because that is the
+		// one worth looking at.
+		if len(favicons.Terms) != 2 || favicons.Terms[0].Value != "shared" || favicons.Terms[0].Count != 2 {
+			t.Fatalf("terms = %+v, want the shared icon first with two assets", favicons.Terms)
+		}
+
+		// And the images come with it. Taken from the page's rows instead, the
+		// most shared icon in a perimeter is routinely one no row on screen
+		// carries, and the entry draws as a blank square with a count beside it.
+		for _, term := range favicons.Terms {
+			if !strings.HasPrefix(page.Favicons[term.Value], "data:") {
+				t.Errorf("the facet ranks %q and the sidebar got no image for it", term.Value)
+			}
+		}
+	})
+}
+
 // The asset view is the one read path that touches the journal, and each row of
 // it is a change: the journal is deduplicated on write, so two consecutive rows
 // of one layer are two distinct states by construction.

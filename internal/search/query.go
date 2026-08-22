@@ -347,12 +347,22 @@ type FacetTerm struct {
 // FacetLimit is how many values one facet returns.
 const FacetLimit = 20
 
-// facets are the only ones offered, and every one of them is a promoted column
-// with an index.
+// facets are the ones offered, in the order a sidebar is read.
 //
-// A facet over attributes would have to aggregate through a GIN index that
-// answers containment and cannot group, which is the whole reason this list is
-// this one.
+// Almost all of them are promoted columns, and the exception is the one worth
+// explaining. The first version of this list refused a facet over attributes on
+// the grounds that it would have to aggregate through a GIN index that answers
+// containment and cannot group. That describes an implementation this query
+// never had: the filter runs once into a CTE and every facet groups over that,
+// so no facet is served by its own index and a key of the object costs exactly
+// what a column costs. The index serves the filter; a facet is an aggregation
+// over what the filter already produced.
+//
+// The favicon is the one pivot a reader wants as a list rather than one badge at
+// a time. It answers "which icons does this perimeter share, and how many assets
+// each", which is the fastest identity signal an inventory has, and clicking a
+// single badge was the only way to ask it. Last, because it draws as a grid of
+// images and the counted rows above it read in one column.
 var facets = []struct{ field, expr string }{
 	{"lifecycle", "c.lifecycle"},
 	{"kind", "c.kind"},
@@ -363,6 +373,21 @@ var facets = []struct{ field, expr string }{
 	{"asn", "c.asn::text"},
 	{"cdn_provider", "c.cdn_provider"},
 	{"waf_vendor", "c.waf_vendor"},
+	{"favicon_hash", "c.attributes->>'favicon_hash'"},
+}
+
+// FacetPage is the sidebar's answer.
+type FacetPage struct {
+	Facets []Facet `json:"facets"`
+	// Favicons are the images the favicon facet refers to.
+	//
+	// They travel with it rather than being taken from the page's rows, because
+	// the two sets are not the same: a facet ranks the whole filtered result and
+	// a page shows fifty of it, so the most shared icon in a perimeter is
+	// routinely one no row on screen carries. Without them that entry draws as a
+	// blank square with a count beside it, which reads as a broken image rather
+	// than as the answer.
+	Favicons map[string]string `json:"favicons,omitempty"`
 }
 
 // Facets aggregates over the filtered result rather than over the inventory.
@@ -371,10 +396,10 @@ var facets = []struct{ field, expr string }{
 // usually pushes a project toward a search engine. One statement rather than
 // one per facet: the expensive half is the filter, and running it ten times is
 // paying for it ten times.
-func Facets(ctx context.Context, q Querier, org uuid.UUID, filter Node) ([]Facet, error) {
+func Facets(ctx context.Context, q Querier, org uuid.UUID, filter Node) (FacetPage, error) {
 	compiled, err := Compile(org, filter)
 	if err != nil {
-		return nil, err
+		return FacetPage{}, err
 	}
 
 	args := append([]any{}, compiled.Args...)
@@ -402,7 +427,7 @@ func Facets(ctx context.Context, q Querier, org uuid.UUID, filter Node) ([]Facet
 
 	rows, err := q.Query(ctx, sql, args...)
 	if err != nil {
-		return nil, fmt.Errorf("run the facets: %w", err)
+		return FacetPage{}, fmt.Errorf("run the facets: %w", err)
 	}
 	defer rows.Close()
 
@@ -412,7 +437,7 @@ func Facets(ctx context.Context, q Querier, org uuid.UUID, filter Node) ([]Facet
 		var field, value string
 		var total int
 		if err := rows.Scan(&field, &value, &total); err != nil {
-			return nil, fmt.Errorf("read a facet: %w", err)
+			return FacetPage{}, fmt.Errorf("read a facet: %w", err)
 		}
 		facet, seen := byField[field]
 		if !seen {
@@ -423,10 +448,11 @@ func Facets(ctx context.Context, q Querier, org uuid.UUID, filter Node) ([]Facet
 		facet.Terms = append(facet.Terms, FacetTerm{Value: value, Count: total})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the facets: %w", err)
+		return FacetPage{}, fmt.Errorf("read the facets: %w", err)
 	}
 
-	out := make([]Facet, 0, len(order))
+	page := FacetPage{Facets: make([]Facet, 0, len(order))}
+	hashes := make([]string, 0, FacetLimit)
 	for _, field := range order {
 		facet := byField[field]
 		// The extra value is how the cut is known, and it is said rather than
@@ -435,7 +461,18 @@ func Facets(ctx context.Context, q Querier, org uuid.UUID, filter Node) ([]Facet
 			facet.Terms = facet.Terms[:FacetLimit]
 			facet.Cut = true
 		}
-		out = append(out, *facet)
+		if field == "favicon_hash" {
+			for _, term := range facet.Terms {
+				hashes = append(hashes, term.Value)
+			}
+		}
+		page.Facets = append(page.Facets, *facet)
 	}
-	return out, nil
+
+	images, err := faviconsByHash(ctx, q, org, hashes)
+	if err != nil {
+		return FacetPage{}, err
+	}
+	page.Favicons = images
+	return page, nil
 }

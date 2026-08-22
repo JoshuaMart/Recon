@@ -304,9 +304,24 @@ Optimizations to reach for before migrating: precomputed partial aggregates, `GR
 only, and a cap on how many facet values come back.
 
 **The set is fixed and it is short.** `lifecycle`, `kind`, `port`, `scheme`, `status_code`, `country`,
-`asn`, `cdn_provider`, `waf_vendor` and `technologies`, which is the only one over an array. Every one of
-them is a promoted column with an index, which is the whole reason the list is this one: a facet over
-`attributes` would aggregate through a GIN index that answers containment and cannot group.
+`asn`, `cdn_provider`, `waf_vendor`, `technologies`, which is the only one over an array, and `favicon_hash`,
+which is the only one over `attributes`.
+
+**That last one was refused first, on a reason that did not survive the next paragraph.** The argument was
+that a facet over `attributes` would have to aggregate through a GIN index that answers containment and
+cannot group. It describes an implementation this never had: the filter runs once into a CTE and every facet
+groups over that, so no facet is served by its own index and a key of the object costs exactly what a column
+costs. The index serves the filter; a facet is an aggregation over what the filter already produced.
+
+The favicon earns its place because it is the one pivot a reader wants as a **list** rather than one badge at
+a time. "Which icons does this perimeter share, and how many assets each" is the fastest identity signal an
+inventory has, and without the facet the only way to ask it was to click a badge on a row that happened to
+carry one.
+
+**The images travel with the facet**, not with the page's rows. The two sets are not the same: a facet ranks
+the whole filtered result and a page shows fifty of it, so the most shared icon in a perimeter is routinely
+one no row on screen carries. Taken from the rows, that entry draws as a blank square with a count beside it,
+which reads as a broken image rather than as the answer.
 
 **One statement, not ten.** The facets are computed in a single pass over the filtered set rather than one
 query per facet, because the expensive half is the filter and running it ten times is paying for it ten

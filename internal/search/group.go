@@ -315,6 +315,19 @@ func Favicons(ctx context.Context, q Querier, org uuid.UUID, rows []Row) (map[st
 		return nil, nil
 	}
 
+	return faviconsByHash(ctx, q, org, hashes)
+}
+
+// faviconsByHash reads the images a set of hashes names.
+//
+// Separate from the walk above because the two callers arrive with different
+// things in hand: a page has rows, and the sidebar has the values its own
+// aggregation ranked, which is not the same set.
+func faviconsByHash(ctx context.Context, q Querier, org uuid.UUID, hashes []string) (map[string]string, error) {
+	if len(hashes) == 0 {
+		return nil, nil
+	}
+
 	// The organization is in the statement as well as in the policy. The two
 	// are not redundant: one is structural and the other is the guarantee this
 	// query cannot remove from itself.

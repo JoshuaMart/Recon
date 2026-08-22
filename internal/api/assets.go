@@ -175,12 +175,12 @@ func (h *Assets) Facets(w http.ResponseWriter, r *http.Request, principal auth.P
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	facets, err := search.Facets(ctx, tx, principal.OrgID, filter)
+	page, err := search.Facets(ctx, tx, principal.OrgID, filter)
 	if err != nil {
 		h.answerError(ctx, w, "facets failed", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"facets": facets})
+	writeJSON(w, http.StatusOK, page)
 }
 
 // Export writes the filtered result in full, as it walks it.

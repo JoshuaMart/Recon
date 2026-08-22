@@ -28,7 +28,7 @@ export const load: PageServerLoad = async ({ locals, url, fetch }) => {
 	try {
 		const [page, facets, capabilities] = await Promise.all([
 			call<GroupedPage & FlatPage>(token, route, { filter, cursor, limit: 50 }, fetch),
-			call<{ facets: Facet[] }>(token, '/assets/facets', { filter }, fetch),
+			call<{ facets: Facet[]; favicons?: Record<string, string> }>(token, '/assets/facets', { filter }, fetch),
 			// Whether this deployment enriches at all. Asked of the server because
 			// the console cannot see the difference between "no MaxMind database"
 			// and "no match": both give zero ASN, and an empty infrastructure
@@ -42,7 +42,12 @@ export const load: PageServerLoad = async ({ locals, url, fetch }) => {
 			grouped,
 			groups: page.groups ?? [],
 			assets: page.assets ?? [],
-			favicons: page.favicons ?? {},
+			// The two maps merged, and the order matters in one direction only: the
+			// facet answer covers the sidebar's icons and the page answer covers the
+			// rows, and a hash in both carries the same image because it is the hash
+			// of those bytes. The sidebar ranks the whole filtered result, so its
+			// most shared icon is routinely one no row on screen carries.
+			favicons: { ...(facets.favicons ?? {}), ...(page.favicons ?? {}) },
 			nextCursor: page.next_cursor,
 			facets: facets.facets,
 			enriched: capabilities.enrichment?.configured ?? false,

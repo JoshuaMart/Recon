@@ -550,8 +550,8 @@ func keysOf(page search.Page) []string {
 	return out
 }
 
-func term(facets []search.Facet, field, value string) int {
-	for _, facet := range facets {
+func term(page search.FacetPage, field, value string) int {
+	for _, facet := range page.Facets {
 		if facet.Field != field {
 			continue
 		}
