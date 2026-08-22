@@ -1,5 +1,6 @@
 import { error } from '@sveltejs/kit';
 import { APIError, call, fail, get, patch } from '$lib/server/api';
+import { depthsByProgram, lastDiscoveryRuns, type QueueTotals } from '$lib/queue';
 import type { Effect, ProgramDetail, QueueView, Run, ScopeRule } from '$lib/types';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -7,7 +8,7 @@ export const load: PageServerLoad = async ({ locals, params, fetch }) => {
 	try {
 		return {
 			detail: await get<ProgramDetail>(locals.token!, '/programs/' + encodeURIComponent(params.id), fetch),
-			run: await lastRun(locals.token!, params.id, fetch)
+			...(await work(locals.token!, params.id, fetch))
 		};
 	} catch (err) {
 		if (err instanceof APIError && err.status === 404) error(404, 'no such program');
@@ -16,24 +17,33 @@ export const load: PageServerLoad = async ({ locals, params, fetch }) => {
 };
 
 /**
- * The last discovery run of this program, from the queue view.
+ * The last discovery run of this program, and what its queues hold.
  *
  * Read here rather than added to the program endpoint: the queue already answers
- * it, and a second place computing the same thing is a second place to keep in
+ * both, and a second place computing the same thing is a second place to keep in
  * step. Without it the panel only knows about a run for as long as the form
  * result lives, so a reload forgets one that is still open and the next click
  * meets a refusal with no warning.
  *
- * A failure costs the status line and not the page. Somebody who cannot read the
- * queue can still manage the perimeter.
+ * A failure costs the status line and the queue panel, not the page. Somebody who
+ * cannot read the queue can still manage the perimeter. The two absences are
+ * distinguishable on the screen because `reachable` says which one it is: no
+ * answer from the queue is not a queue at rest.
  */
-async function lastRun(token: string, programID: string, fetcher: typeof fetch): Promise<Run | null> {
+async function work(
+	token: string,
+	programID: string,
+	fetcher: typeof fetch
+): Promise<{ run: Run | null; depth: QueueTotals | null; reachable: boolean }> {
 	try {
 		const queue = await get<QueueView>(token, '/queue', fetcher);
-		// The list comes back newest first, so the first match is the last run.
-		return queue.runs.find((run) => run.program_id === programID && run.kind === 'discovery') ?? null;
+		return {
+			run: lastDiscoveryRuns(queue.runs).get(programID) ?? null,
+			depth: depthsByProgram(queue.depths).get(programID) ?? null,
+			reachable: true
+		};
 	} catch {
-		return null;
+		return { run: null, depth: null, reachable: false };
 	}
 }
 
