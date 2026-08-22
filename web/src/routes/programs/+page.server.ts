@@ -1,17 +1,37 @@
 import { redirect } from '@sveltejs/kit';
 import { APIError, call, fail, get } from '$lib/server/api';
-import type { Program } from '$lib/types';
+import type { Program, QueueDepth, QueueView, Run } from '$lib/types';
 import type { Actions, PageServerLoad } from './$types';
 
 /** The programmes of the organisation , with the counts the screen asks for. */
 export const load: PageServerLoad = async ({ locals, fetch }) => {
 	try {
 		const body = await get<{ programs: Program[] }>(locals.token!, '/programs?counts=1', fetch);
-		return { programs: body.programs };
+		return { programs: body.programs, ...(await work(locals.token!, fetch)) };
 	} catch (err) {
 		fail(err);
 	}
 };
+
+/**
+ * What is running on each perimeter, and what is waiting.
+ *
+ * Read from the queue rather than added to the program endpoint, for the reason
+ * the detail page reads it the same way: the queue already answers both, and a
+ * second place computing the same thing is a second place to keep in step.
+ *
+ * A failure costs the two right-hand regions of every row and not the page.
+ * Somebody who cannot read the queue can still see a perimeter and manage it,
+ * and an error page here would take a working screen down for a panel.
+ */
+async function work(token: string, fetcher: typeof fetch): Promise<{ runs: Run[]; depths: QueueDepth[] }> {
+	try {
+		const queue = await get<QueueView>(token, '/queue', fetcher);
+		return { runs: queue.runs, depths: queue.depths };
+	} catch {
+		return { runs: [], depths: [] };
+	}
+}
 
 export const actions: Actions = {
 	/**
