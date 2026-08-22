@@ -598,6 +598,10 @@ func (h *Console) Queue(w http.ResponseWriter, r *http.Request, principal auth.P
 		TargetCount  *int32     `json:"target_count,omitempty"`
 		Observations int32      `json:"observations"`
 		Error        *string    `json:"error,omitempty"`
+		// ExternalID is what the platform called the execution. Absent means
+		// nothing started it, which is a different thing from a run nothing has
+		// opened yet, and the two want opposite actions.
+		ExternalID *string `json:"external_id,omitempty"`
 	}
 	outRuns := make([]run, 0, len(runs))
 	for _, row := range runs {
@@ -615,6 +619,7 @@ func (h *Console) Queue(w http.ResponseWriter, r *http.Request, principal auth.P
 			TargetCount:  row.TargetCount,
 			Observations: row.Observations,
 			Error:        row.Error,
+			ExternalID:   row.ExternalID,
 		})
 	}
 

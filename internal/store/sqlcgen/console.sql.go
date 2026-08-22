@@ -508,6 +508,11 @@ func (q *Queries) QueueDepth(ctx context.Context, arg QueueDepthParams) ([]Queue
 const recentRuns = `-- name: RecentRuns :many
 SELECT r.id, r.program_id, r.kind, r.scope, r.state, r.deadline,
        r.created_at, r.started_at, r.finished_at, r.target_count, r.error,
+       -- What the platform called the execution, which is the only way to find
+       -- its logs. It survives the request that started the run, so a screen
+       -- that read it out of a form result alone would lose it on the first
+       -- reload, at exactly the moment somebody is looking for it.
+       r.external_id,
        -- Two spellings and a zero. The summary gained json tags when the queue
        -- view started reading it back, so a run recorded before that carries
        -- the Go identifier instead. Reading only the tagged key would show
@@ -540,6 +545,7 @@ type RecentRunsRow struct {
 	FinishedAt   pgtype.Timestamptz
 	TargetCount  *int32
 	Error        *string
+	ExternalID   *string
 	Observations int32
 }
 
@@ -570,6 +576,7 @@ func (q *Queries) RecentRuns(ctx context.Context, arg RecentRunsParams) ([]Recen
 			&i.FinishedAt,
 			&i.TargetCount,
 			&i.Error,
+			&i.ExternalID,
 			&i.Observations,
 		); err != nil {
 			return nil, err

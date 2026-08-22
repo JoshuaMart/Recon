@@ -11,30 +11,43 @@
 	const inForce = $derived(rules.filter((rule) => rule.in_force));
 	const retired = $derived(rules.filter((rule) => !rule.in_force));
 
+	const answer = $derived(form && 'run' in form ? form.run : undefined);
+
 	/**
-	 * The command that runs the definition the control plane handed back.
+	 * The command that runs the definition the control plane handed back, and it
+	 * exists only where nothing else will run it.
 	 *
-	 * In development nothing starts the scanner, so the control plane renders the
-	 * run definition and this shows it: the same shape as production minus the
-	 * call. It is assembled here rather than sent, because the control plane knows
-	 * nothing about how the image is invoked on the machine somebody is reading
-	 * this on.
+	 * The answer carries the arguments on both paths, because a definition is
+	 * worth showing whether or not it was started, and reading them without
+	 * reading `started` is what put "run this to start it" under a run the
+	 * platform had already launched. The screen then said the opposite of what
+	 * had happened, on the one panel whose job is to say which of the two it was.
 	 *
-	 * It only exists for as long as the form result does. The credential inside it
-	 * is signed and never stored, so a reload leaves the run without its command,
-	 * which is what the panel has to say rather than hide.
+	 * Assembled here rather than sent: the control plane knows nothing about how
+	 * the image is invoked on the machine somebody is reading this on. It lives
+	 * for as long as the form result does, since the credential inside is signed
+	 * and never stored, and a reload leaves the run without its command, which the
+	 * panel says rather than hides.
 	 */
-	const started = $derived(form && 'run' in form ? form.run : undefined);
 	const command = $derived(
-		started && started.args
+		answer && answer.started === false && answer.args
 			? 'docker run --rm ' +
-					Object.entries(started.env ?? {})
+					Object.entries(answer.env ?? {})
 						.map(([key, value]) => `-e ${key}=${value}`)
 						.join(' ') +
 					' fastrecon ' +
-					started.args.join(' ')
+					answer.args.join(' ')
 			: ''
 	);
+
+	/**
+	 * What the platform called the execution, which is the only way to find its
+	 * logs.
+	 *
+	 * From the run row first and the form result second, in that order, because
+	 * the row survives a reload and the form result does not.
+	 */
+	const execution = $derived(data.run?.external_id ?? (answer?.started ? answer.external_id : undefined));
 
 	let copied = $state<'no' | 'yes' | 'failed'>('no');
 	let clearing: ReturnType<typeof setTimeout> | undefined;
@@ -245,9 +258,28 @@
 							<p class="count"><b>{scan.observations}</b> observations</p>
 						{/if}
 
-						{#if command}
+						{#if execution}
+							<!-- The platform started it, so the panel says so and hands over
+							     the one identifier that finds the execution's logs. Offering a
+							     command here would invite somebody to run the same perimeter
+							     twice.
+							     
+							     The sentence about waiting is bounded by the state, because it
+							     is only true while the run is in flight: written under a run
+							     that has finished it describes something that is no longer
+							     happening, which is the same fault as offering a command for a
+							     run the platform already took. -->
+							<p class="dim">
+								Started on the platform as <code class="ext">{execution}</code>.
+								{#if inFlight && !running}
+									It stays <em>waiting for a scanner</em> until the run opens its target list, which is the only thing that
+									says a scanner really took it.
+								{/if}
+							</p>
+						{:else if command}
 							<!-- The run is open and nothing has started it. Saying "run started"
-							     would be false: in development no platform starts the image. -->
+							     would be false: with no platform configured the definition is
+							     rendered and a person runs the image. -->
 							<p class="dim">Run this to start it. The credential inside expires with the run.</p>
 							<div class="cmd">
 								<code>{command}</code>
@@ -662,6 +694,12 @@
 		border-radius: var(--radius-control);
 		background: var(--canvas);
 		overflow: hidden;
+	}
+
+	.ext {
+		font-family: var(--font-mono);
+		font-size: 11px;
+		color: var(--ink-2);
 	}
 
 	.cmd code {

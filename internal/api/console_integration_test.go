@@ -502,3 +502,43 @@ func TestTheDeploymentSaysWhetherItEnriches(t *testing.T) {
 			"a caller can forget")
 	}
 }
+
+// The queue carries what the platform called each execution.
+//
+// Without it the logs of a run that went wrong are unfindable, which is the
+// whole of that column's purpose. It has to come back on the read rather than
+// only on the answer that started the run: the answer lives for one request,
+// and somebody looking for an execution's logs is looking after a reload.
+func TestTheQueueCarriesTheExecutionIdentifier(t *testing.T) {
+	h := newHarness(t)
+	token := h.console(t)
+
+	started, unstarted := uuid.New(), uuid.New()
+	h.exec(t, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline, external_id)
+	           VALUES ($1, $2, $3, 'discovery', 'full', 'pending', now() + interval '1 hour', 'job-exec-1')`,
+		started, h.org, h.program)
+	h.exec(t, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline)
+	           VALUES ($1, $2, $3, 'verification', 'full', 'pending', now() + interval '1 hour')`,
+		unstarted, h.org, h.program)
+
+	_, payload := h.raw(t, http.MethodGet, "/queue", token, nil)
+	runs := decode[struct {
+		Runs []struct {
+			ID         uuid.UUID `json:"id"`
+			ExternalID *string   `json:"external_id"`
+		} `json:"runs"`
+	}](t, payload).Runs
+
+	found := map[uuid.UUID]*string{}
+	for _, run := range runs {
+		found[run.ID] = run.ExternalID
+	}
+	if got := found[started]; got == nil || *got != "job-exec-1" {
+		t.Errorf("the started run came back with external_id %v, want the platform's identifier", got)
+	}
+	// And absent stays absent. A run nothing started and one whose execution is
+	// unnamed would otherwise read the same, and they want opposite actions.
+	if got, present := found[unstarted]; !present || got != nil {
+		t.Errorf("the unstarted run came back with external_id %v, want none", got)
+	}
+}

@@ -112,6 +112,7 @@ export const actions: Actions = {
 			const run = await call<{
 				started: boolean;
 				run_id?: string;
+				external_id?: string;
 				reason?: string;
 				args?: string[];
 				env?: Record<string, string>;

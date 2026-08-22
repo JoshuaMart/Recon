@@ -354,6 +354,14 @@ export interface Run {
 	target_count?: number;
 	observations: number;
 	error?: string;
+	/**
+	 * What the platform called the execution.
+	 *
+	 * Absent means nothing started it, which is not the same as a run no scanner
+	 * has opened yet: the first is a provisioning that failed, the second is a
+	 * run to wait for. It is also the only way to find the execution's logs.
+	 */
+	external_id?: string;
 }
 
 export interface QueueView {
