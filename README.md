@@ -22,9 +22,6 @@ Recon owns an inventory and drives two scanners, each in its own repository:
 | [FastRecon](https://github.com/JoshuaMart/FastRecon) | Enumeration, DNS resolution, port scan, HTTP probe. One run, one JSON report |
 | Fingerprinter | Browser rendering: technologies, favicon, scripts, cookies, headers |
 
-Neither holds a database credential. The scope, the scheduling, the correlation, the diff and the
-authorization live in the control plane, which is where the value is.
-
 ## Running the stack
 
 ```sh
