@@ -753,7 +753,11 @@ func validRule(body ruleBody) error {
 	}}); err != nil {
 		return err
 	}
-	return nil
+	// And refused if it compiles into something that can never match. That is
+	// the worse failure of the two: a rule that will not compile announces
+	// itself, and one that matches nothing reads as in force while the whole
+	// perimeter it was meant to cover stays unknown and unprobed.
+	return scope.Unmatchable(body.Matcher, body.Pattern)
 }
 
 // parseInterval reads a discovery cadence.

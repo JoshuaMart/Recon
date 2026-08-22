@@ -64,6 +64,46 @@ type Target struct {
 // a malformed perimeter from a failure to read one.
 var ErrInvalidRule = errors.New("invalid scope rule")
 
+// Unmatchable reports a pattern that compiles and can never match anything.
+//
+// It is separate from Compile on purpose, and the separation is the whole point.
+// Compile has to keep accepting whatever is already in the table: it runs on the
+// ingestion path, so a rule it refuses stops reports being written, and a
+// perimeter somebody typed badly six months ago would become an outage rather
+// than a correction. This is the write path's check, where the answer is a
+// refusal to somebody who is looking at the form.
+//
+// The case that costs a week: an apex rule written as "*.target.com". The apex
+// matcher covers the domain and everything under it by construction, so the
+// glob is redundant at best; what it actually does is make the comparison
+// literal, and no hostname is ever equal to "*.target.com" or a suffix of
+// ".*.target.com". The rule is stored, reads as in force, matches nothing, and
+// every asset the perimeter should have covered stays unknown and unprobed.
+// That is a perimeter that lies, silently, which is what this whole chapter is
+// built to prevent.
+func Unmatchable(matcher, pattern string) error {
+	switch matcher {
+	case MatchApex, MatchFQDN:
+	default:
+		// A regex is meant to carry metacharacters, a CIDR cannot hold one, and
+		// a url prefix is compared as written.
+		return nil
+	}
+
+	trimmed := strings.TrimSpace(pattern)
+	if !strings.ContainsAny(trimmed, "*?[]") {
+		return nil
+	}
+	if suffix, found := strings.CutPrefix(trimmed, "*."); found && suffix != "" {
+		return fmt.Errorf("%w: %q never matches a host name. An %s rule already covers the "+
+			"domain and everything under it, so write %q",
+			ErrInvalidRule, trimmed, MatchApex, suffix)
+	}
+	return fmt.Errorf("%w: %q never matches a host name, because %s and %s compare a name "+
+		"rather than a pattern. Use the regex matcher to match a shape",
+		ErrInvalidRule, trimmed, MatchApex, MatchFQDN)
+}
+
 // Set is a compiled perimeter. Compiling once and classifying many times is
 // what makes reclassifying a whole program affordable.
 type Set struct {

@@ -1,7 +1,9 @@
 package scope_test
 
 import (
+	"errors"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"github.com/JoshuaMart/recon/internal/normalize"
@@ -238,5 +240,89 @@ func TestMatchedNamesTheRuleThatDecided(t *testing.T) {
 	// number of assets that moved.
 	if matched.Pattern != "admin.target.com" {
 		t.Errorf("pattern = %q, want the exclusion that decided", matched.Pattern)
+	}
+}
+
+// A rule that compiles and can never match is worse than one that will not
+// compile, because it announces nothing.
+//
+// The case this exists for cost a full inventory: an apex rule written as
+// "*.jomar.ovh" was stored, read as in force, matched none of a hundred and
+// seven assets, and left every one of them unknown and unscheduled. The queue
+// then showed three zeroes under a discovery run that had just delivered a
+// hundred and twenty-three observations, which reads as a broken scanner.
+func TestAPatternThatCanNeverMatchIsRefused(t *testing.T) {
+	t.Parallel()
+
+	for _, refused := range []struct{ matcher, pattern string }{
+		{scope.MatchApex, "*.target.test"},
+		{scope.MatchApex, "*.sub.target.test"},
+		{scope.MatchFQDN, "*.target.test"},
+		{scope.MatchApex, "app-*.target.test"},
+		{scope.MatchFQDN, "app?.target.test"},
+	} {
+		err := scope.Unmatchable(refused.matcher, refused.pattern)
+		if err == nil {
+			t.Errorf("%s %q was accepted, and it matches no host name",
+				refused.matcher, refused.pattern)
+			continue
+		}
+		if !errors.Is(err, scope.ErrInvalidRule) {
+			t.Errorf("%s %q refused with %v, want an invalid rule", refused.matcher, refused.pattern, err)
+		}
+	}
+
+	// The message points at what to write instead, because the mistake is
+	// reasonable: every other tool in this space takes a glob here.
+	err := scope.Unmatchable(scope.MatchApex, "*.target.test")
+	if !strings.Contains(err.Error(), `"target.test"`) {
+		t.Errorf("the refusal does not name the pattern to write instead: %v", err)
+	}
+
+	// The positive control, without which the above passes on a check that
+	// refuses everything. A matcher meant to carry metacharacters keeps them,
+	// and an ordinary name is untouched.
+	for _, accepted := range []struct{ matcher, pattern string }{
+		{scope.MatchApex, "target.test"},
+		{scope.MatchFQDN, "app.target.test"},
+		{scope.MatchRegex, `^app-\d+\.target\.test$`},
+		{scope.MatchCIDR, "10.0.0.0/8"},
+		{scope.MatchURLPrefix, "https://target.test/api"},
+	} {
+		if err := scope.Unmatchable(accepted.matcher, accepted.pattern); err != nil {
+			t.Errorf("%s %q was refused: %v", accepted.matcher, accepted.pattern, err)
+		}
+	}
+}
+
+// And the perimeter it describes really does cover what the refusal tells
+// somebody to write, which is the half that makes the advice worth giving.
+func TestAnApexCoversTheDomainAndEverythingUnderIt(t *testing.T) {
+	t.Parallel()
+
+	set, err := scope.Compile([]scope.Rule{
+		{ID: "1", Kind: scope.Include, Matcher: scope.MatchApex, Pattern: "target.test"},
+	})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	for _, host := range []string{"target.test", "app.target.test", "a.b.target.test"} {
+		key, err := normalize.FQDN(host)
+		if err != nil {
+			t.Fatalf("key %s: %v", host, err)
+		}
+		if got := set.Classify(scope.Target{Key: key}); got != scope.InScope {
+			t.Errorf("%s classified %s, want in scope", host, got)
+		}
+	}
+	// The dot is in the comparison rather than in the pattern, so a name that
+	// merely ends in the same letters does not come back under it.
+	key, err := normalize.FQDN("eviltarget.test")
+	if err != nil {
+		t.Fatalf("key: %v", err)
+	}
+	if got := set.Classify(scope.Target{Key: key}); got == scope.InScope {
+		t.Error("eviltarget.test came back in scope under target.test")
 	}
 }
