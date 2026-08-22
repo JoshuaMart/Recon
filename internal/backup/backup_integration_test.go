@@ -49,8 +49,10 @@ func TestARestoreFromTheArchiveReturnsWhatWasWrittenAfterTheBaseBackup(t *testin
 	// first archive_command fires, or every segment fails to ship and the only
 	// sign is a line in the log. A fresh volume mounts owned by root, so this
 	// step is the deployment's, not the database's.
-	runAs(t, ctx, primary, "root", []string{"sh", "-c",
-		"mkdir -p " + archive + "/wal && chown -R postgres " + archive})
+	runAs(t, ctx, primary, "root", []string{
+		"sh", "-c",
+		"mkdir -p " + archive + "/wal && chown -R postgres " + archive,
+	})
 
 	conn := connect(t, ctx, primary)
 	mustExec(t, ctx, conn, `CREATE TABLE inventory (id int PRIMARY KEY, note text)`)
@@ -222,8 +224,10 @@ func waitForArchive(t *testing.T, ctx context.Context, c testcontainers.Containe
 
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		code, reader, err := c.Exec(ctx, []string{"sh", "-c",
-			"ls " + archive + "/wal | wc -l"}, tcexec.Multiplexed())
+		code, reader, err := c.Exec(ctx, []string{
+			"sh", "-c",
+			"ls " + archive + "/wal | wc -l",
+		}, tcexec.Multiplexed())
 		if err == nil && code == 0 {
 			if n := parseCount(readAll(reader)); n >= want {
 				return

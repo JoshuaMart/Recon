@@ -33,8 +33,10 @@ func perimeter(t *testing.T) *fixture {
 	t.Helper()
 
 	pool := newPool(t)
-	f := &fixture{pool: pool, org: uuid.New(), program: uuid.New(),
-		calls: &atomic.Int64{}, fail: &atomic.Bool{}}
+	f := &fixture{
+		pool: pool, org: uuid.New(), program: uuid.New(),
+		calls: &atomic.Int64{}, fail: &atomic.Bool{},
+	}
 
 	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if f.fail.Load() {
