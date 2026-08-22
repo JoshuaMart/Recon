@@ -626,33 +626,101 @@ lines of wiring. It was verified by reading.
 
 ## Phase 7: Console
 
-- [ ] [`recon bootstrap`](/architecture/deployment/#97-bootstrap), a precondition for the rest of the phase
-- [ ] [SvelteKit console](/architecture/console/) with no database credential, and the token exchange
-- [ ] [Host grouped list](/architecture/search/#107-the-list-is-a-list-of-hosts) with facets
-- [ ] [Distinct timestamp on fingerprinter badges](/architecture/search/#what-a-row-carries)
-- [ ] [Three enrichment states](/architecture/search/#three-states-of-enrichment), the console holding that state from the server
-- [ ] [Takeover candidate rendered on the row](/architecture/search/#what-a-row-carries)
-- [ ] [Asset view with its timeline](/architecture/search/#109-the-asset-view), the project's first read of the journal
-- [ ] [Live SSE feed](/architecture/search/#1010-the-live-feed-of-discoveries), polled on a cursor
-- [ ] [Program and scope management](/architecture/scope/#55-managing-the-perimeter), reclassifying in the same transaction
-- [ ] [Queue view](/architecture/deployment/#99-reading-the-queue)
+- [x] [`recon bootstrap`](/architecture/deployment/#97-bootstrap), a precondition for the rest of the phase
+- [x] [SvelteKit console](/architecture/console/) with no database credential, and the token exchange
+- [x] [Host grouped list](/architecture/search/#107-the-list-is-a-list-of-hosts) with facets
+- [x] [Distinct timestamp on fingerprinter badges](/architecture/search/#what-a-row-carries)
+- [x] [Three enrichment states](/architecture/search/#three-states-of-enrichment), the console holding that state from the server
+- [x] [Takeover candidate rendered on the row](/architecture/search/#what-a-row-carries)
+- [x] [Asset view with its timeline](/architecture/search/#109-the-asset-view), the project's first read of the journal
+- [x] [Live SSE feed](/architecture/search/#1010-the-live-feed-of-discoveries), polled on a cursor
+- [x] [Program and scope management](/architecture/scope/#55-managing-the-perimeter), reclassifying in the same transaction
+- [x] [Queue view](/architecture/deployment/#99-reading-the-queue)
 
 ### Milestone 7
 
-- [ ] Deciding "open it or move on" on a row in under a second
-- [ ] No composite score, no severity, no environment label, held by a test on the **contract** rather than on a screen
-- [ ] An `unobservable` asset is visually distinct from an `INACTIVE` one
-- [ ] Geolocation is not shown on a CDN asset
-- [ ] Every pivot badge is clickable and re-runs a search
-- [ ] A row with no cookie badge distinguishes the three causes
-- [ ] On a deployment with no Geo-IP database, the infrastructure family is **not shown** rather than empty
-- [ ] A row carries **no** script hash badge, and the same hash stays searchable and counted
-- [ ] `recon bootstrap` creates a usable organization without a line of SQL, and replayed it creates no second one
-- [ ] A service discovered and never probed is found by a filter on the port its key carries
-- [ ] The live feed re-emits nothing on an unchanged rescan, and says what a cap left out
-- [ ] A scope rule write grants or removes due dates in the same transaction, and a failed reclassification writes no rule
-- [ ] A write carrying a stale version answers 409 and applies **nothing**
-- [ ] The console **refuses to start** without `ORIGIN` outside development; in a production build, a cross-origin POST and a POST with no `Origin` both answer 403 where the same form in same origin answers 200
+- [x] Deciding "open it or move on" on a row in under a second
+- [x] No composite score, no severity, no environment label, held by a test on the **contract** rather than on a screen
+- [x] An `unobservable` asset is visually distinct from an `INACTIVE` one
+- [x] Geolocation is not shown on a CDN asset
+- [x] Every pivot badge is clickable and re-runs a search
+- [x] A row with no cookie badge distinguishes the three causes
+- [x] On a deployment with no Geo-IP database, the infrastructure family is **not shown** rather than empty
+- [x] A row carries **no** script hash badge, and the same hash stays searchable and counted
+- [x] `recon bootstrap` creates a usable organization without a line of SQL, and replayed it creates no second one
+- [x] A service discovered and never probed is found by a filter on the port its key carries
+- [x] The live feed re-emits nothing on an unchanged rescan, and says what a cap left out
+- [x] A scope rule write grants or removes due dates in the same transaction, and a failed reclassification writes no rule
+- [x] A write carrying a stale version answers 409 and applies **nothing**
+- [x] The console **refuses to start** without `ORIGIN` outside development; in a production build, a cross-origin POST and a POST with no `Origin` both answer 403 where the same form in same origin answers 200
+
+:::note[Measured]
+**The vocabulary grew one field, and it is the one that looks like the tenant.** The switcher sits on every
+screen and is exactly a filter on `program_id`, which phase 6 had refused alongside `org_id` as though the two
+were the same kind of thing. They are not. The organization is emitted by the compiler on every compilation,
+so a query can name it in neither direction; a program is a perimeter inside one organization, and the tenant
+clause is still emitted beside it, so naming somebody else's program returns nothing rather than their
+inventory. The test that refused both now asserts both halves.
+
+**The list is a second route rather than a flag**, because the two cursors mean different columns. A grouped
+page walks `(max(last_seen), host)` and a flat one walks `(last_seen, asset_id)`, so behind one route a client
+that flipped the flag and kept the cursor would get a walk that restarts or skips. Behind two, and with a
+prefix on the feed's, every mix-up is a refusal: none of the three decodes as another.
+
+**The group cursor bounds the group and never the row.** Bounding the rows as well reads like a free
+narrowing and is wrong: dropping the rows above the cursor changes what `max()` is computed from, so a host
+already returned comes back with a smaller maximum and passes the bound a second time. The cost of not doing
+it is a grouping over the whole filtered set on every page, which is stated rather than hidden.
+
+**The bootstrap is idempotent on the email and not on the organization name**, which is the correction the
+doc pass made before the code did. `app_user.email` carries a UNIQUE constraint and `org.name` deliberately
+does not, since two customers may legitimately be called the same thing, so keying on the name would have
+been this command hoping where the database enforces nothing.
+
+**The feed emits one message per round and not one per discovery.** One per asset would put the cap in the
+wrong place: a round that found four hundred would emit four hundred messages of which the client keeps the
+last fifty, and the overflow the round exists to announce would have no message to travel in. A round that
+finds nothing emits nothing at all, because an empty event per tick would advance the id on every tick and a
+client resuming from it would be resuming from a position that never named a discovery.
+
+**`first_seen` needed an index nothing else in the system wanted.** The list orders on `last_seen` and the
+due date passes order on their own columns, so the feed was a scan of the tenant per tick until phase 7 added
+one.
+
+**The timeline reads one row past its cap and never shows it.** Without that row the oldest displayed entry
+of a cut layer would say "not compared" while the state before it sits one row away, inside the window. The
+cap is reported and the window never is, because the two absences are not the same: one is a fact about the
+asset, the other is this view announcing its own settings.
+
+**The console is a second toolchain and it has a job of its own in CI.** Nothing generates the TypeScript
+shapes from the Go ones, so a field renamed on one side arrives on the other as `undefined` and draws an
+empty badge rather than failing. The type check is the only thing standing between the two, and it caught the
+whole contract move: `asset_id`, the pivots carrying the server's badge verdict, the lineage becoming objects
+instead of strings, and the layer verdicts speaking `asset_layer`'s vocabulary.
+
+**The row's sentence needed three columns the projection did not carry.** "The name no longer resolves" and
+"every probe failed" are two different findings and the lifecycle can write neither, so `dns_state`,
+`tcp_state` and `http_state` were promoted into what the list reads.
+
+**Two assertions did not discriminate on the first try, and both were found by breaking the code.** The
+fixture behind "an excluded asset loses its due dates" set one of the three columns, so an exclusion that
+cleared only `next_resolve_at` passed while two thirds of the guard proved nothing. And the badge test that
+was meant to prove a denylisted cookie is not drawn passed for the wrong reason: it carried the pivot without
+the attribute the value came from, so the row said "sets no cookie" where the honest answer is "sets one no
+badge deserves".
+
+**The stream and the page cannot share a path.** A `+server.ts` beside a `+page.svelte` is resolved by the
+Accept header, so the same URL answers a page to a browser and a stream to anything else. It worked in a
+browser and hung on the first client that accepted anything, which is how it was noticed.
+
+**`run.summary` became a wire contract, so its fields are tagged.** The queue view reads that document back,
+and without tags the keys were Go identifiers: renaming a field would have changed what a console reads with
+nothing failing to compile.
+
+**One route was deleted rather than ported.** The old console fetched a fold of raw evidence per row; the row
+that replaced the card does not have one, so the endpoint had no caller. A surface nobody calls is a surface
+somebody keeps working for nothing.
+:::
 
 ## Phase 8: Certificate Transparency
 
