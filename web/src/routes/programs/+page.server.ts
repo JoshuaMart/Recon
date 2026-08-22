@@ -23,13 +23,21 @@ export const load: PageServerLoad = async ({ locals, fetch }) => {
  * A failure costs the two right-hand regions of every row and not the page.
  * Somebody who cannot read the queue can still see a perimeter and manage it,
  * and an error page here would take a working screen down for a panel.
+ *
+ * `reachable` is answered rather than inferred from the two lists being empty.
+ * A queue that answered and holds nothing is the ordinary state of a fresh
+ * organisation, and reading it as a queue nobody could reach would report an
+ * absence of measurement where there was a measurement.
  */
-async function work(token: string, fetcher: typeof fetch): Promise<{ runs: Run[]; depths: QueueDepth[] }> {
+async function work(
+	token: string,
+	fetcher: typeof fetch
+): Promise<{ runs: Run[]; depths: QueueDepth[]; reachable: boolean }> {
 	try {
 		const queue = await get<QueueView>(token, '/queue', fetcher);
-		return { runs: queue.runs, depths: queue.depths };
+		return { runs: queue.runs, depths: queue.depths, reachable: true };
 	} catch {
-		return { runs: [], depths: [] };
+		return { runs: [], depths: [], reachable: false };
 	}
 }
 

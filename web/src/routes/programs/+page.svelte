@@ -29,7 +29,6 @@
 	 */
 	const runs = $derived(lastDiscoveryRuns(data.runs));
 	const depths = $derived(depthsByProgram(data.depths));
-	const reachable = $derived(data.runs.length > 0 || data.depths.length > 0);
 
 	/** How many perimeters are being walked right now, said once at the top. */
 	const busy = $derived(data.programs.filter((program) => runStatus(runs.get(program.id))?.inFlight).length);
@@ -179,7 +178,7 @@
 						{#if program.state !== 'active'}
 							<div class="line"><span class="dot"></span><span class="what dim">Not probed</span></div>
 							<p class="sub">a {program.state} program keeps its data and stops being observed</p>
-						{:else if !reachable}
+						{:else if !data.reachable}
 							<div class="figure"><span class="none">the queue could not be read</span></div>
 						{:else if !run}
 							<div class="figure"><span class="none">never run</span></div>
@@ -205,7 +204,7 @@
 
 					<div class="region">
 						<div class="lbl">Queue</div>
-						{#if !reachable}
+						{#if !data.reachable}
 							<p class="quiet">no answer from the queue</p>
 						{:else if !depth || depth.due + depth.later + depth.in_run === 0}
 							<p class="quiet">nothing is scheduled</p>
@@ -333,12 +332,9 @@
 		padding: 12px 14px 13px;
 	}
 
-	/* Dim the card, never the words: `archived` is the one thing this row is
-	   saying, and an opacity over the subtree takes it below readable. */
-	li.archived {
-		background: #fcfdfd;
-	}
-
+	/* Dim the two things that carry emphasis, never the words: `archived` is what
+	   this row is saying, and an opacity over the subtree takes it below
+	   readable. No tint either, since there is no token for one. */
 	li.archived .name {
 		color: var(--ink-2);
 	}

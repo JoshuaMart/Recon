@@ -169,7 +169,7 @@
 				<span class="v">{program.assets_in_scope ?? 0}</span>
 				<span class="unit">of {program.assets ?? 0} known</span>
 			</div>
-			<div class="dv-bar" style="margin-top: 8px"><i style:width="{coverage(program)}%"></i></div>
+			<div class="track"><i style:width="{coverage(program)}%"></i></div>
 			<!-- The gap is not one thing: a rule excludes an asset, or no rule
 			     settles it and it is kept and never probed. The bar draws the gap
 			     and the sentence refuses to name a cause it cannot see. -->
@@ -275,7 +275,7 @@
 									<td><span class="kind {rule.kind}">{rule.kind}</span></td>
 									<td><span class="matcher">{rule.matcher}</span></td>
 									<td><code>{rule.pattern}</code></td>
-									<td class="why">{rule.note ?? ''}</td>
+									<td class="rule-note">{rule.note ?? ''}</td>
 									<td class="since" title={exact(rule.valid_from)}>{ago(rule.valid_from)}</td>
 									<td>
 										<form method="POST" action="?/closeRule" use:enhance>
@@ -334,7 +334,7 @@
 										<td><span class="kind {rule.kind}">{rule.kind}</span></td>
 										<td><span class="matcher">{rule.matcher}</span></td>
 										<td><code>{rule.pattern}</code></td>
-										<td class="why">{rule.note ?? ''}</td>
+										<td class="rule-note">{rule.note ?? ''}</td>
 										<td class="since" title={exact(rule.valid_to)}>closed {ago(rule.valid_to)}</td>
 										<td></td>
 									</tr>
@@ -520,9 +520,9 @@
 						     three rather than letting it read as a single queue. -->
 						<p class="qnote">resolve, full probe and fingerprint together</p>
 						<div class="qcounts">
-							<span class="count" class:on={depth!.due > 0}>{depth!.due}<em>due</em></span>
-							<span class="count">{depth!.later}<em>scheduled</em></span>
-							<span class="count" class:flight={depth!.in_run > 0}>{depth!.in_run}<em>in flight</em></span>
+							<span class="qcount" class:on={depth!.due > 0}>{depth!.due}<em>due</em></span>
+							<span class="qcount">{depth!.later}<em>scheduled</em></span>
+							<span class="qcount" class:flight={depth!.in_run > 0}>{depth!.in_run}<em>in flight</em></span>
 						</div>
 					{/if}
 					<a class="queue" href="/queue">See the queue</a>
@@ -698,14 +698,17 @@
 		overflow-wrap: anywhere;
 	}
 
-	.dv-bar {
+	/* Not `dv-bar`. That prefix means the asset view's shared sheet, which this
+	   page does not import, so the name would promise a rule that is elsewhere. */
+	.track {
 		height: 3px;
+		margin-top: 8px;
 		border-radius: 2px;
 		background: var(--border);
 		overflow: hidden;
 	}
 
-	.dv-bar i {
+	.track i {
 		display: block;
 		height: 100%;
 		background: var(--signal);
@@ -848,7 +851,7 @@
 		color: var(--ink-3);
 	}
 
-	.why {
+	.rule-note {
 		color: var(--ink-3);
 	}
 
@@ -1071,7 +1074,7 @@
 		font-weight: 500;
 	}
 
-	p.why {
+	.why {
 		font-family: var(--font-mono);
 		font-size: 10.5px;
 		color: var(--code-5xx);
@@ -1137,13 +1140,17 @@
 		gap: 10px;
 	}
 
-	.count {
+	/* Its own name, not `count`. That one already means the observation total
+	   under the run status in this component, and a second meaning reached it:
+	   the paragraph took the mono face at 17px, so the word rendered larger than
+	   the number beside it. */
+	.qcount {
 		font-family: var(--font-mono);
 		font-size: 17px;
 		color: var(--ink-3);
 	}
 
-	.count em {
+	.qcount em {
 		display: block;
 		font-family: var(--font-sans);
 		font-style: normal;
@@ -1154,11 +1161,11 @@
 		font-weight: 600;
 	}
 
-	.count.on {
+	.qcount.on {
 		color: var(--ink);
 	}
 
-	.count.flight {
+	.qcount.flight {
 		color: var(--signal);
 	}
 
