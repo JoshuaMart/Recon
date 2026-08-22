@@ -207,6 +207,20 @@ describe('HostGroup', () => {
 
 	// the three absences, first state: a deployment with no MaxMind database is a normal deployment,
 	// so the family is not shown rather than shown empty.
+	// The positive control, and without it the two cases below pass just as
+	// happily on a console that shows nothing at all. That is how an absence
+	// test goes quietly green: it asserts that something is missing, on a screen
+	// where everything is.
+	it('shows the operator and the place when the deployment enriches', () => {
+		const body = host(group([asset({ asn: 51167, asn_org: 'Contabo GmbH', country: 'FR', city: 'Lauterbourg' })]));
+		expect(body).toContain('AS51167');
+		expect(body).toContain('Contabo GmbH');
+		expect(body).toContain('Lauterbourg');
+		// The flag is built from the two regional indicator letters rather than
+		// shipped as an image, so it needs no request and no asset.
+		expect(body).toContain('🇫🇷');
+	});
+
 	it('shows no operator at all when the deployment does not enrich', () => {
 		const body = host(group([asset({ asn: 51167, asn_org: 'Contabo GmbH' })]), false);
 		expect(body).not.toContain('AS51167');
