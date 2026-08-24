@@ -385,3 +385,58 @@ func TestABooleanEqualityIsStillABoundComparison(t *testing.T) {
 		t.Errorf("it binds %v", compiled.Args)
 	}
 }
+
+// A group nested in a group is parenthesised, and this asserts the SQL rather
+// than the fact that it compiles.
+//
+// SQL binds AND tighter than OR and the tree does not. Joined flat,
+// "and(a, or(b, c))" is "a AND b OR c", which PostgreSQL reads as
+// "(a AND b) OR c": the OR branch escapes every condition beside it. "Port 443,
+// and 200 or 301" then answers with everything carrying a 301 on any port.
+//
+// The reason this went unnoticed is worth keeping beside the fix. Nothing here
+// asserted the shape of the SQL, only that a tree compiled and that the
+// organization was bound first, and the one deep tree in the suite has a single
+// clause in its nested group, which is exactly the case where flat and
+// parenthesised are the same string.
+func TestANestedGroupIsParenthesised(t *testing.T) {
+	t.Parallel()
+
+	compiled, err := Compile(uuid.New(), parse(t, `{"op":"and","clauses":[
+		{"op":"eq","field":"port","value":443},
+		{"op":"or","clauses":[
+			{"op":"eq","field":"status_code","value":200},
+			{"op":"eq","field":"status_code","value":301}]}]}`))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	const want = "c.port = $2 AND (c.status_code = $3 OR c.status_code = $4)"
+	if !strings.Contains(compiled.SQL, want) {
+		t.Errorf("compiles to\n  %s\nwant it to carry\n  %s", compiled.SQL, want)
+	}
+}
+
+// The organization is not among the conditions an unparenthesised OR would
+// escape, and that is a fact of where the clause is joined rather than luck.
+// Compile wraps the whole tree before putting the tenant beside it, so the
+// widening above is within a tenant and never across two.
+//
+// Asserted on the shape that would have exposed it, which is an OR at the root:
+// a flat join there would have produced "org_id = $1 AND a OR b", and the OR
+// branch would have carried rows belonging to somebody else.
+func TestTheOrganizationSurvivesAnOrAtTheRoot(t *testing.T) {
+	t.Parallel()
+
+	compiled, err := Compile(uuid.New(), parse(t, `{"op":"or","clauses":[
+		{"op":"eq","field":"port","value":443},
+		{"op":"eq","field":"port","value":80}]}`))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	const want = "c.org_id = $1 AND ((c.port = $2 OR c.port = $3))"
+	if compiled.SQL != want {
+		t.Errorf("compiles to\n  %s\nwant\n  %s", compiled.SQL, want)
+	}
+}

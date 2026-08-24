@@ -113,7 +113,22 @@ func (b *builder) group(n Node, joiner string, depth int) (string, error) {
 		}
 		return "", nil
 	}
-	return strings.Join(parts, " "+joiner+" "), nil
+	// Parenthesised, because SQL binds AND tighter than OR and the tree does
+	// not. Joined flat, "and(a, or(b, c))" is "a AND b OR c", which PostgreSQL
+	// reads as "(a AND b) OR c": the OR branch escapes every condition beside
+	// it and answers a question nobody asked.
+	//
+	// The failure is silent and it widens. "port 443, and 200 or 301" comes
+	// back as everything carrying a 301 on any port, which looks like a result
+	// rather than like an error, and the only way to notice is to read the SQL.
+	// The organization is not among the conditions it escapes: Compile wraps
+	// the whole tree before joining the tenant clause to it, so this widens
+	// within a tenant and never across two.
+	joined := strings.Join(parts, " "+joiner+" ")
+	if len(parts) > 1 {
+		joined = "(" + joined + ")"
+	}
+	return joined, nil
 }
 
 func (b *builder) leaf(n Node) (string, error) {

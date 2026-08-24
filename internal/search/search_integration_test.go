@@ -724,3 +724,52 @@ func TestANegationDoesNotReachTheStateOnlyExistsCanAskFor(t *testing.T) {
 		}
 	})
 }
+
+// The consequence of the grouping, measured against PostgreSQL rather than
+// asserted as a string.
+//
+// SQL binds AND tighter than OR and the tree does not, so a nested group joined
+// flat lets its OR branch escape every condition beside it. This asks the
+// question that shape gets wrong, "on port 443, and answering 200 or 301", with
+// an asset that satisfies only the OR branch and sits on another port. Flat, it
+// comes back and the answer is about the whole tenant; parenthesised, it does
+// not.
+func TestAnOrInsideAnAndDoesNotEscapeIt(t *testing.T) {
+	h := newHarness(t)
+
+	h.asset(t, h.org, "kept.target.test:443/tcp", map[string]any{
+		"port": 443, "scheme": "https", "status_code": 301,
+	})
+	h.asset(t, h.org, "other-port.target.test:8080/tcp", map[string]any{
+		"port": 8080, "scheme": "http", "status_code": 301,
+	})
+	h.asset(t, h.org, "other-status.target.test:443/tcp", map[string]any{
+		"port": 443, "scheme": "https", "status_code": 404,
+	})
+
+	h.scoped(t, h.org, func(tx pgx.Tx) {
+		page, err := search.List(context.Background(), tx, h.org, search.Request{
+			Filter: filter(t, `{"op":"and","clauses":[
+				{"op":"eq","field":"port","value":443},
+				{"op":"or","clauses":[
+					{"op":"eq","field":"status_code","value":200},
+					{"op":"eq","field":"status_code","value":301}]}]}`),
+		})
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+
+		keys := keysOf(page)
+		sort.Strings(keys)
+		for _, key := range keys {
+			if key == "other-port.target.test:8080/tcp" {
+				t.Fatal("an asset on another port came back through the OR branch, so the " +
+					"port condition beside it was not applied and the answer is about the " +
+					"whole tenant")
+			}
+		}
+		if len(keys) != 1 || keys[0] != "kept.target.test:443/tcp" {
+			t.Errorf("answered %v, want only the asset satisfying both halves", keys)
+		}
+	})
+}
