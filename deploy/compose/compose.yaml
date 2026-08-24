@@ -345,6 +345,24 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+  # The Certificate Transparency feed (7.5). An aggregator that follows the
+  # public logs and serves them as a websocket, deployed as an image the way
+  # FastRecon is: the matcher that walks the apex set is a loop in the control
+  # plane, not a second service.
+  #
+  # On the scan network, for a weaker reason than the browser's and with the
+  # same shape. It parses X.509 that anybody can get logged, so its input is
+  # controlled by somebody else, and it has no business reaching the database.
+  # The control plane dials it and it never dials back.
+  certstream:
+    networks: [scan]
+    image: ghcr.io/d-rickyy-b/certstream-server-go:v1.9.0
+    volumes:
+      - ./certstream.yml:/app/config/config.yaml:ro
+    ports:
+      - "127.0.0.1:${CERTSTREAM_PORT:-3002}:8080"
+    restart: unless-stopped
+
   # Renders pages controlled by a target, so it sits alone with its browser and
   # holds no credential of any kind. Everything it needs arrives in the request.
   fingerprinter:

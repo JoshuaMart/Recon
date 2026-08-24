@@ -239,7 +239,7 @@ before it is hardened. That is where the freshness advantage actually is.
 discovery run come back together on every round for good.
 
 **Promotion to `full` is where a candidate takes its jitter**, and the reason is the one above rather
-than a change of mind. A certificate carrying four hundred SANs promotes them within the same minute,
+than a change of mind. A certificate carrying tens of names promotes all of them within the same minute,
 and `full` is not a rung, it is the entry into a **recurring** cadence: a convoy formed there comes back
 every 72 hours for good, which is exactly what the jitter on a discovery run exists to prevent. The
 immediate first rung forms no convoy, because a candidate that answers leaves the curve.

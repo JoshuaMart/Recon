@@ -483,9 +483,9 @@ nothing else.
 **It is not a single host run, and that phrase was doing work it should not.** What makes a candidate's
 first check cheap is the [targets input](/architecture/discovery/#72-how-a-verification-run-gets-its-targets):
 stage 1 is replaced, so there is no enumeration and no source quota spent, whatever the list holds. A
-certificate carrying four hundred SANs therefore produces **one** run rather than four hundred, which is
-the same grouping the other two passes do and the only shape that survives a burst. One host is the
-common case, not the mechanism.
+certificate carrying eighty nine names, the widest in a measured sample of four thousand, therefore
+produces **one** run rather than eighty nine, which is the same grouping the other two passes do and the
+only shape that survives a burst. One host is the common case, not the mechanism.
 
 ### The pass for discovery
 

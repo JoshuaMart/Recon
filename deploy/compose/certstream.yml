@@ -1,0 +1,40 @@
+# The Certificate Transparency feed (7.5). Pinned here rather than left to the
+# image's default, because the three endpoint paths are a contract the matcher
+# dials: an image bumping them would move the socket under a client that has no
+# way to notice except by receiving nothing.
+#
+# It holds no credential and needs none. Everything it reads is public.
+
+webserver:
+  listen_addr: "0.0.0.0"
+  listen_port: 8080
+  real_ip: false
+  # The three shapes it serves. Recon dials the lite one: it carries the SANs
+  # and the issuer, which is what a candidate's lineage records, and it leaves
+  # out the DER that nothing here parses.
+  full_url: "/full-stream"
+  lite_url: "/"
+  domains_only_url: "/domains-only"
+  cert_path: ""
+  cert_key_path: ""
+  compression_enabled: false
+
+prometheus:
+  enabled: false
+
+general:
+  disable_default_logs: false
+  drop_old_logs: true
+
+  # Off, and it is a decision rather than the default being left alone.
+  #
+  # This resumes the aggregator's own reading of the logs after it restarts,
+  # which is a different question from the gap 7.5 describes: there is no per
+  # client buffer either way, so a matcher that disconnects loses that window
+  # whatever this says. What turning it on adds is a replay of everything since
+  # the stored index on every restart, which the upstream documentation puts at
+  # up to ten thousand certificates a second. The per program ceiling would hold,
+  # and it would spend the whole window holding.
+  recovery:
+    enabled: false
+    ct_index_file: "/app/config/ct_index.json"

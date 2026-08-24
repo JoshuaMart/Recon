@@ -190,6 +190,38 @@ Recon validates no signature and no SCT. Validating one would prove that a certi
 not the question being asked. The question is whether a name sits under an apex, and the answer is local.
 This is [P6](/architecture/principles/) applied to a feed rather than to a scanner.
 
+### What a frame actually carries
+
+Transcribed from the running image rather than from its README, and pinned in
+`internal/ct/testdata/stream.jsonl`, so a change on their side shows up in a decode here first. That is
+the habit [4.5](/architecture/data-model/#45-observations) already imposes on the scanner's report, for
+the reason a transcribed contract always eventually needs: the position of a field only exists once a
+real document has been decoded.
+
+Three endpoints, and Recon dials the middle one:
+
+| Endpoint | Carries | Verdict |
+|---|---|---|
+| `/full-stream` | the lite document plus the DER and the chain | nothing here parses a certificate |
+| `/` | the SANs, the issuer, the log and the index | **what Recon dials** |
+| `/domains-only` | the SANs, and nothing else | cheaper on the wire, and it loses the lineage |
+
+```
+message_type                "certificate_update"
+data.update_type            "PrecertLogEntry" | "X509LogEntry"
+data.leaf_cert.all_domains  the SAN list, wildcards included, DNS names only
+data.leaf_cert.issuer       CN and O, which is half of a candidate's lineage
+data.source.name, .url      which log it arrived from, the other half
+data.cert_index             its index in that log
+data.seen                   when the aggregator saw it
+```
+
+**`/domains-only` was measured and refused.** It is roughly fifteen times smaller on the wire, which
+would decide the question if decoding were the constraint, and the measurement at the end of this section
+says it is not by two orders of magnitude. What it drops is the issuer and the log, which is exactly the
+"why is this here" a candidate's [lineage](/architecture/data-model/#44-lineage) exists to record. Paying
+nothing to save nothing is still paying.
+
 ### What the set holds
 
 The set is built from `scope_rule`: **include rules whose matcher is `apex`**, in force, on programs that
@@ -259,8 +291,10 @@ be a second scope engine, disagreeing with the first at some point.
 Three kinds of SAN create nothing:
 
 - **A wildcard.** `*.target.com` names no host. It feeds the counters below instead.
-- **An address or an email SAN.** Refused by [canonicalization](/architecture/data-model/#43-canonical-keys),
-  which is where the question of what a key may contain already lives.
+- **A certificate with no DNS name at all.** The aggregator strips the non-DNS SANs itself, so an
+  IP-only certificate arrives as an **empty** `all_domains` rather than as something to refuse: the field
+  is present, the list is empty, and the subject's `CN` is empty too. It is 0.8 % of the stream, and it is
+  the case a decoder written from the README gets wrong first.
 - **A name that is already an asset.** The insert conflicts and does nothing, which is the deduplication
   the next section is careful not to claim for itself.
 
@@ -273,10 +307,18 @@ The lifecycle is `CANDIDATE` and the due date is immediate, which
 cache full and with the cache deleted, and the milestone that says ten sightings in a minute create one
 asset is an assertion about that constraint.
 
-What the cache buys is the round trip. A precertificate and its certificate carry the same SANs and both
-are logged, a name is reissued on rotation, and one certificate reaches several logs: exact duplicates are
-the normal case rather than the edge one, and each of them is otherwise an insert that changes nothing at
-stream rate.
+What the cache buys is the round trip, and measuring the feed narrowed what that is worth. **Only a SAN
+that matched an apex ever reaches the database**, so the baseline load is not the stream: it is a handful
+of names an hour on a small deployment, and a cache saves a tenth of a handful. The cache earns its place
+on the **burst** instead, which is the case that actually exists: an ACME loop reissuing across a large
+perimeter, a wildcard-heavy apex, and the replay an aggregator restart produces if its recovery option is
+ever turned on. Sizing it against the stream would have been sizing it against the wrong number.
+
+Exact duplicates are the normal case rather than the edge one, and the dominant cause is not the one to
+name first. Over four thousand consecutive certificates, 9.6 % repeat a SAN set already seen, and most of
+those are the same entry reaching **several logs**. A cache built around the precertificate followed by
+its certificate, which is the mechanism everybody reaches for, would have caught sixty six of the three
+hundred and eighty two.
 
 - Keyed on **(program_id, san)**, because the same name under two programs is two assets.
 - Fixed capacity with a TTL in minutes, since an unbounded map on a stream is a leak with a slow fuse.
@@ -340,6 +382,27 @@ That is acceptable here and nowhere else in this system. [P3](/architecture/prin
 journal, and this is not the journal: it is a metric about coverage. **An asset created from a certificate
 is written immediately** and is never in that window, which is the half that would not have been
 acceptable to lose.
+:::
+
+:::note[Measured against the running feed, 24 August 2026]
+`certstream-server-go` v1.9.0 in the local stack, following fifteen logs, sampled over four thousand
+consecutive certificates.
+
+**The matcher has roughly seventy times the headroom it needs, and that was measured before it was
+written.** Decoding one frame and walking every SAN of it through the set costs **6.8 µs** on a single
+goroutine, which is 146 000 frames per second and 227 MB/s of JSON. The feed delivers about 2 000 a second
+at steady state and around 4 000 while it catches up. So the milestone's single core is a question of
+margin rather than of fit, and the cheap endpoint that existed to protect it is not needed.
+
+**Wildcards are 22.8 % of SANs**, and 102 certificates out of 4 000 carry nothing else. The
+[blind spot below](#wildcard-certificates-and-the-metric-that-follows) is the common case rather than a
+corner of one, which is the whole argument for counting it per apex.
+
+**A SAN list is short, and so is its tail.** Median one name, p99 six, widest 89. The burst one
+certificate can produce is real and it is tens rather than hundreds.
+
+**Both entry types arrive**, 61 % `X509LogEntry` against 39 % `PrecertLogEntry`, so the distinction is on
+the wire and does not have to be inferred.
 :::
 
 ### What the console reads, and what stays out of the registry

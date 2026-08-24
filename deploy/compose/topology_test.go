@@ -14,8 +14,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// isolated are the services that render pages controlled by a target.
-var isolated = []string{"fingerprinter", "chrome-1"}
+// isolated are the services whose input is controlled by somebody else and
+// which therefore hold nothing: the browser and the service driving it, and the
+// Certificate Transparency feed, which parses X.509 anybody can get logged.
+var isolated = []string{"fingerprinter", "chrome-1", "certstream"}
 
 // unreachable names what must stay out of their reach.
 var unreachable = []string{"postgres", "controlplane"}
@@ -184,14 +186,16 @@ func TestTheRenderingSideHoldsNoCredential(t *testing.T) {
 		}
 	}
 
-	// And the file it is given is configuration rather than a secret store.
-	config, err := os.ReadFile("fingerprinter.yml")
-	if err != nil {
-		t.Fatalf("read the rendering config: %v", err)
-	}
-	for _, needle := range []string{"password:", "secret:", "token:", "api_key:"} {
-		if strings.Contains(strings.ToLower(string(config)), needle) {
-			t.Errorf("the rendering config carries %q", needle)
+	// And the files they are given are configuration rather than secret stores.
+	for _, name := range []string{"fingerprinter.yml", "certstream.yml"} {
+		config, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		for _, needle := range []string{"password:", "secret:", "token:", "api_key:"} {
+			if strings.Contains(strings.ToLower(string(config)), needle) {
+				t.Errorf("%s carries %q", name, needle)
+			}
 		}
 	}
 }

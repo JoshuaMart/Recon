@@ -8,7 +8,7 @@ sidebar:
 ## 10.1 Three principles
 
 **1. Never query the observation journal.** The interface reads `asset_current`. Observations exist for
-history and diff, and [10.10](#1010-the-asset-view) is the single, deliberate exception.
+history and diff, and [10.9](#109-the-asset-view) is the single, deliberate exception.
 
 **2. Promoted columns plus JSONB.** The hot fields, `host`, `port`, `scheme`, `status_code`,
 `cdn_provider`, `asn`, `country`, the layer states, live in typed indexed columns. The rest lives in
