@@ -1,0 +1,486 @@
+# The production stack, behind a Traefik that already runs on the host.
+#
+# The same components as compose.yaml and the same split, with the differences
+# that only start to matter once this sits on a public address:
+#
+#   1. Nothing publishes a port. Traefik reaches the console and the API over a
+#      network it is already on, and everything else is reachable only from
+#      inside this project.
+#   2. The control plane reaches the rendering side over a network of its own
+#      rather than through the host gateway. The local file uses a published
+#      port and host.docker.internal, which works because Docker Desktop proxies
+#      published ports to the host's loopback. On a Linux engine that path does
+#      not exist: traffic from one bridge to a container on another is dropped
+#      by DOCKER-ISOLATION-STAGE-2, after the DNAT it went through and before it
+#      arrives anywhere.
+#   3. The database has no port on the host and no route off this project.
+#
+# From the repository root, on the deployment host:
+#   make prod-config    # resolves the environment, and names what is missing
+#   make prod-up
+#
+# What this file gives up, on purpose and worth knowing: on the render network
+# the fingerprinter resolves `controlplane` by name. It cannot in the local
+# file, where the two share nothing at all. One host has no way to express a
+# link that only works in one direction, and the alternative is an iptables rule
+# on the host that the stack depends on without saying so, which is the kind of
+# dependency that survives exactly until the next reboot.
+#
+# What stays enforced is what the split is for, and topology_test.go checks each
+# of these against this file rather than against the local one only:
+#
+#   - the rendering side shares no network with the database, so an SSRF that
+#     gets past the fingerprinter's guard reaches an API that asks for a
+#     credential it does not have, not a PostgreSQL port;
+#   - the rendering side holds no credential, because everything it needs
+#     arrives in the scan request;
+#   - the browser, which is the one process here that runs code a target wrote,
+#     is on the scan network and on nothing else. It reaches neither the control
+#     plane nor the database nor the console, by name or otherwise.
+
+name: recon
+
+networks:
+  # The inventory and everything allowed to reach it: the database, the
+  # migrations, the control plane and the console.
+  control:
+  # The one way the control plane calls the rendering side. Internal, so it
+  # carries no route to the internet: the two services on it have their own,
+  # and a bridge that also NATs would be a second exit nobody asked for.
+  #
+  # Chrome is not on it. That is the line that matters, because Chrome is where
+  # a target's JavaScript actually runs.
+  render:
+    internal: true
+  # The rendering service, its browser, and the Certificate Transparency feed.
+  # Their egress, and nothing else.
+  scan:
+  # Traefik's own network, created outside this project. Only the two services
+  # that answer a public hostname join it.
+  traefik:
+    external: true
+    name: ${TRAEFIK_NETWORK:-traefik}
+
+volumes:
+  pgdata:
+
+# Container logs are the one thing here that grows without a bound. A daemon
+# wide setting would do it too, and this way the stack does not depend on the
+# host having one.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+# Applied to every long running service. It costs nothing and it removes the
+# setuid path out of a container, which is the one a process that already got
+# execution wants next.
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  postgres:
+    networks: [control]
+    image: postgres:18-alpine
+    <<: *hardening
+    logging: *logging
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-asm_owner}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-recon}
+      # Read at initdb and ignored afterwards, so this is a decision taken once,
+      # on the first start, and not one that can be applied to an existing
+      # cluster by editing this line. Checksums turn silent corruption on the
+      # storage below into an error naming the page.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    command:
+      # Continuous archiving, on from the first start. Turning it on later needs
+      # a restart and a fresh base backup, which is the kind of thing that gets
+      # postponed until the day it is needed.
+      - postgres
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_command=test ! -f /archive/wal/%f && cp %p /archive/wal/%f
+      - -c
+      - wal_level=replica
+      # A cold restore needs the WAL that follows the base backup, and the
+      # default keeps too little to survive a slow one.
+      - -c
+      - max_wal_size=1GB
+    # No ports. The only clients are on the control network, and psql for an
+    # operator is `docker compose exec`, which needs no listener on the host.
+    volumes:
+      # Mounted at /var/lib/postgresql rather than at its data subdirectory: the
+      # official image recommends this from 18 onwards so a later pg_upgrade
+      # --link does not run into a mount point boundary.
+      - pgdata:/var/lib/postgresql
+      # An absolute path on the deployment host, not a directory in the
+      # checkout. This is the half of the backup that a redeploy must not be
+      # able to remove.
+      #
+      # If this ever becomes a bucket, archive_command above starts needing
+      # egress and the control network has it. The render network is the one
+      # that does not.
+      - ${BACKUP_ARCHIVE_DIR:?set BACKUP_ARCHIVE_DIR to an absolute path on the host}:/archive
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-asm_owner} -d ${POSTGRES_DB:-recon}"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+      start_period: 10s
+    # Postgres wants its shutdown to be the fast one rather than the immediate
+    # one, and ten seconds is not enough for a busy cluster to write it out.
+    stop_grace_period: 1m
+    restart: unless-stopped
+
+  # The archive directory has to exist and be writable by postgres before the
+  # first archive_command fires, or every WAL segment fails to ship and the only
+  # sign is a line in the log.
+  archive-init:
+    networks: [control]
+    image: postgres:18-alpine
+    user: root
+    entrypoint: ["sh", "-c"]
+    command: ["mkdir -p /archive/wal /archive/base && chown -R postgres:postgres /archive"]
+    volumes:
+      - ${BACKUP_ARCHIVE_DIR:?set BACKUP_ARCHIVE_DIR to an absolute path on the host}:/archive
+    restart: "no"
+
+  # A service of its own rather than a step inside the control plane, so a
+  # failed migration is readable and the application is gated on it by the
+  # deployment rather than by an ordering somebody has to remember.
+  migrate:
+    networks: [control]
+    <<: *hardening
+    logging: *logging
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+      target: migrate
+      args:
+        VERSION: ${VERSION:-prod}
+    command: ["up"]
+    environment:
+      RECON_DATABASE__MIGRATION_URL: >-
+        postgres://${POSTGRES_USER:-asm_owner}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-recon}?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # The migration creates the roles NOLOGIN with their privileges and stops
+  # there. Granting LOGIN and a secret is the deployment's job, so that no
+  # password ever lives in a migration file.
+  db-app-role:
+    networks: [control]
+    image: postgres:18-alpine
+    <<: *hardening
+    entrypoint: ["sh", "-c"]
+    # Through stdin rather than -c: psql does not interpolate variables in -c.
+    # The passwords go in as psql variables so they never reach a command line
+    # that ps could show.
+    #
+    # The two roles get two passwords. What separates them is what row-level
+    # security lets them see, so one shared credential would turn that
+    # distinction into a comment.
+    command:
+      - >-
+        printf '%s;\n%s;\n'
+        "ALTER ROLE asm_app WITH LOGIN PASSWORD :'pw'"
+        "ALTER ROLE asm_sys WITH LOGIN PASSWORD :'syspw'"
+        | psql -v ON_ERROR_STOP=1 -v pw="$$APP_PASSWORD" -v syspw="$$SYSTEM_PASSWORD"
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-asm_owner}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB:-recon}
+      APP_PASSWORD: ${APP_PASSWORD:?set APP_PASSWORD}
+      SYSTEM_PASSWORD: ${SYSTEM_PASSWORD:?set SYSTEM_PASSWORD}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  # Reference data, reapplied on every deployment rather than by a one-off
+  # migration: the denylist grows as new frameworks and edges appear. It runs as
+  # the owner, because the application role has no write on that table.
+  seed:
+    networks: [control]
+    <<: *hardening
+    logging: *logging
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+      target: migrate
+      args:
+        VERSION: ${VERSION:-prod}
+    command: ["seed"]
+    environment:
+      RECON_DATABASE__MIGRATION_URL: >-
+        postgres://${POSTGRES_USER:-asm_owner}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-recon}?sslmode=disable
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  # The operational command line, run rather than served. Behind a profile so
+  # `make prod-up` does not start it: it is a command somebody invokes, and a
+  # container that exits immediately in the middle of a stack reads as a crash.
+  #
+  # It holds the owner credential, which is the whole reason it is not a route.
+  recon:
+    profiles: [tools]
+    networks: [control]
+    <<: *hardening
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+      target: recon
+      args:
+        VERSION: ${VERSION:-prod}
+    environment:
+      RECON_DATABASE__MIGRATION_URL: >-
+        postgres://${POSTGRES_USER:-asm_owner}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-recon}?sslmode=disable
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  controlplane:
+    networks: [control, render, traefik]
+    <<: *hardening
+    logging: *logging
+    # A static binary in a distroless image needs none of them, and dropping
+    # them here means the deployment says so rather than the base image being
+    # trusted to keep saying so.
+    cap_drop: [ALL]
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+      target: controlplane
+      args:
+        VERSION: ${VERSION:-prod}
+    environment:
+      RECON_ENV: prod
+      RECON_HTTP__ADDR: ":8080"
+      # asm_app, never the owner. RECON_DATABASE__MIGRATION_URL is deliberately
+      # absent, and the configuration refuses to start if it appears: role
+      # separation buys nothing if whoever reaches execution here finds the
+      # owner credentials next to the application ones.
+      RECON_DATABASE__URL: >-
+        postgres://asm_app:${APP_PASSWORD}@postgres:5432/${POSTGRES_DB:-recon}?sslmode=disable
+      # The second pool. The loops that serve every tenant in one tick connect
+      # with the role that is allowed past row-level security, and they say so
+      # by holding this credential rather than by omitting a filter. Both are
+      # required: with one credential those loops read zero rows and look
+      # healthy doing it.
+      RECON_DATABASE__SYSTEM_URL: >-
+        postgres://asm_sys:${SYSTEM_PASSWORD}@postgres:5432/${POSTGRES_DB:-recon}?sslmode=disable
+      # What makes a run's credentials unforgeable. There is nothing to store
+      # and nothing to revoke because everything rests on this.
+      RECON_SECURITY__SIGNING_KEY: ${SIGNING_KEY:?set SIGNING_KEY}
+      # Optional. A deployment with no database is a normal deployment, and the
+      # console is told which of the two it is rather than guessing from data
+      # that looks the same either way.
+      RECON_ENRICH__CITY_DATABASE: ${GEOIP_CITY_DATABASE:-}
+      RECON_ENRICH__ASN_DATABASE: ${GEOIP_ASN_DATABASE:-}
+      # Where a run comes back to, for its target list and its report. The
+      # scanner is a serverless job on somebody else's network, so this has to
+      # be the public name, and it is derived from the router below rather than
+      # configured twice: a value that disagrees with the route surfaces as a
+      # scanner that cannot fetch its targets, which is a long way from where
+      # the mistake was made.
+      RECON_VERIFICATION__PUBLIC_URL: https://${API_HOST:?set API_HOST to the public hostname of the API}
+      # Service names, because the render network is what puts them within
+      # reach. Setting either to an empty string turns that side off, and both
+      # are normal deployments: without the renderer the assets keep their due
+      # dates and nothing pretends to have looked at them, without the feed the
+      # periodic enumeration still walks every perimeter.
+      RECON_RENDER__URL: http://fingerprinter:3001
+      RECON_CT__URL: ws://certstream:8080/
+      # How a run is started. "none" renders the definition and starts nothing,
+      # which is not what a deployment on a public address usually wants.
+      RECON_RUNNER__PROVIDER: ${RUNNER_PROVIDER:-none}
+      RECON_RUNNER__REGION: ${RUNNER_REGION:-fr-par}
+      RECON_RUNNER__JOB_ID: ${RUNNER_JOB_ID:-}
+      RECON_RUNNER__SECRET_KEY: ${RUNNER_SECRET_KEY:-}
+      RECON_NOTIFY__WEBHOOK_URL: ${NOTIFY_WEBHOOK_URL:-}
+      RECON_NOTIFY__MIN_PRIORITY: ${NOTIFY_MIN_PRIORITY:-low}
+      # The tunables, passed through by name rather than mapped with a default.
+      #
+      # The form matters. Written as `RECON_X: ${X:-}` an unset variable reaches
+      # the container as an empty string, and an empty duration is a decode
+      # error that stops the process: the stack would refuse to start because
+      # somebody did not set an optional value. Written as `RECON_X: ${X:-72h}`
+      # the default lives in two places and drifts. Left without a value, an
+      # unset variable is simply absent from the container and the default in
+      # internal/config applies, which is the one place it is written down.
+      RECON_LOG__LEVEL:
+      RECON_VERIFICATION__RESOLVE:
+      RECON_VERIFICATION__FULL:
+      RECON_VERIFICATION__FINGERPRINT:
+      RECON_VERIFICATION__RENDER_SOLE:
+      RECON_VERIFICATION__RENDER_RECOVERY:
+      RECON_VERIFICATION__RENDER_BLIND:
+      RECON_VERIFICATION__INACTIVE:
+      RECON_VERIFICATION__JITTER:
+      RECON_VERIFICATION__FULL_FLOOR:
+      RECON_VERIFICATION__BATCH_SIZE:
+      RECON_VERIFICATION__SWEEP_INTERVAL:
+      RECON_VERIFICATION__TIMEOUT:
+      RECON_VERIFICATION__DISCOVERY_RETRY:
+      RECON_VERIFICATION__PORTS:
+      RECON_CT__INTERVAL:
+      RECON_CT__CEILING:
+      RECON_CT__WINDOW:
+      RECON_CT__CACHE_TTL:
+      RECON_CT__CACHE_SIZE:
+      RECON_RENDER__INTERVAL:
+      RECON_RENDER__BATCH:
+      RECON_RENDER__CONCURRENCY:
+      RECON_RENDER__COST:
+      RECON_RENDER__TIMEOUT:
+      RECON_NOTIFY__INTERVAL:
+      RECON_EXTERNAL__INTERVAL:
+      RECON_MAINTENANCE__INTERVAL:
+    volumes:
+      - ${GEOIP_DIR:-../../var/geoip}:/geoip:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.recon-api.rule=Host(`${API_HOST}`)"
+      - "traefik.http.routers.recon-api.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.recon-api.middlewares=security-headers@file"
+      - "traefik.http.services.recon-api.loadbalancer.server.port=8080"
+      # Named rather than inferred. This container is on three networks and
+      # Traefik picks one of them to dial: on the wrong one it reaches nothing
+      # and the route answers 502 with nothing in the access log to say why.
+      - "traefik.docker.network=${TRAEFIK_NETWORK:-traefik}"
+    depends_on:
+      db-app-role:
+        condition: service_completed_successfully
+      seed:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "/controlplane", "-health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    # Longer than the configured shutdown timeout, so a redeploy lets requests
+    # in flight finish instead of being the thing that ends them.
+    stop_grace_period: 45s
+    restart: unless-stopped
+
+  # The console. On the control network and nowhere near the rendering one: it
+  # is the only other process that talks to the control plane, and it holds a
+  # credential where the renderer holds none.
+  #
+  # It holds no database credential either, which is the decision behind the
+  # whole component. It reaches the control plane over HTTP with the
+  # organization's token, like any other API client, so a bug here cannot become
+  # a write to the inventory.
+  console:
+    networks: [control, traefik]
+    <<: *hardening
+    logging: *logging
+    cap_drop: [ALL]
+    build:
+      context: ../..
+      dockerfile: web/Dockerfile
+    environment:
+      # Over the control network, not through Traefik. The browser never calls
+      # this address: every request goes through the console's own server, which
+      # adds the Authorization header.
+      RECON_API_URL: http://controlplane:8080
+      # The node adapter compares the Origin header of a POST against the origin
+      # it believes it serves, and without this it infers it badly: it then
+      # rejects legitimate POSTs, the login screen included, and the fault shows
+      # at the first form rather than at startup. Derived from the router below
+      # for the same reason as the API's public URL.
+      ORIGIN: https://${CONSOLE_HOST:?set CONSOLE_HOST to the public hostname of the console}
+      PORT: "3000"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.recon-console.rule=Host(`${CONSOLE_HOST}`)"
+      - "traefik.http.routers.recon-console.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.recon-console.middlewares=security-headers@file"
+      - "traefik.http.services.recon-console.loadbalancer.server.port=3000"
+      - "traefik.docker.network=${TRAEFIK_NETWORK:-traefik}"
+    depends_on:
+      controlplane:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # The browser the rendering service drives over CDP, and the one process in
+  # this file that runs code somebody else wrote. On the scan network and on
+  # nothing else, so what it can reach is the internet and the service that
+  # drives it.
+  #
+  # One instance. Throughput is a capacity decision that belongs to the host
+  # this runs on: adding chrome-2 and chrome-3 here means adding them to
+  # control_urls in fingerprinter.yml, and that file is mounted by both stacks.
+  chrome-1:
+    networks: [scan]
+    image: ${CHROME_IMAGE:-chromedp/headless-shell:latest}
+    <<: *hardening
+    init: true
+    shm_size: '1g'
+    command:
+      - --remote-allow-origins=*
+      - --disable-dev-shm-usage
+      - --disable-gpu
+      - --disable-background-networking
+      - --disable-default-apps
+      - --disable-extensions
+      - --disable-sync
+      - --no-first-run
+      - --metrics-recording-only
+    logging:
+      driver: "none"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/9222' 2>/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  # The Certificate Transparency feed (7.5). An aggregator that follows the
+  # public logs and serves them as a websocket, deployed as an image the way
+  # FastRecon is: the matcher that walks the apex set is a loop in the control
+  # plane, not a second service.
+  #
+  # It parses X.509 that anybody can get logged, so its input is controlled by
+  # somebody else and it stays on the scan network. The control plane dials it
+  # over the render network and it never dials back.
+  certstream:
+    networks: [scan, render]
+    image: ghcr.io/d-rickyy-b/certstream-server-go:v1.9.0
+    <<: *hardening
+    logging: *logging
+    volumes:
+      - ./certstream.yml:/app/config/config.yaml:ro
+    restart: unless-stopped
+
+  # Renders pages controlled by a target, so it sits with its browser and holds
+  # no credential of any kind. Everything it needs arrives in the request, which
+  # is what makes "holds nothing" a shape rather than a promise: there is no
+  # variable to leak because there is no variable.
+  #
+  # :latest is a tag that moves, and here it moves on `make prod-pull`. Pin
+  # FINGERPRINTER_IMAGE to a digest or a release tag if a deployment should
+  # change only when somebody decides it does.
+  fingerprinter:
+    networks: [scan, render]
+    image: ${FINGERPRINTER_IMAGE:-ghcr.io/joshuamart/fingerprinter:latest}
+    <<: *hardening
+    logging: *logging
+    volumes:
+      - ./fingerprinter.yml:/app/config.yml:ro
+    depends_on:
+      chrome-1:
+        condition: service_healthy
+    restart: unless-stopped
