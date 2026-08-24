@@ -1,6 +1,6 @@
 ---
 title: Roadmap
-description: Nine phases in a constrained order, each closed by a milestone made of testable assertions.
+description: Ten phases in a constrained order, each closed by a milestone made of testable assertions.
 sidebar:
   order: 16
 ---
@@ -237,7 +237,7 @@ Inseparable from phase 2 in use.
 
 ### The two red lines of phase 3
 
-:::caution[Phase 3 is not closed, and phase 4 does not start]
+:::caution[Phase 3 is not closed, and the phases after it shipped anyway]
 **The SSRF guard is not implemented, and it is not implemented here.** Measured against the running
 image on 21 August 2026, the rendering service navigates to `169.254.169.254`, to `127.0.0.1` and to
 `10.0.0.0/8`: the errors it returns are Chrome reporting what happened *after* it sent the request. On a
@@ -250,6 +250,18 @@ The control plane refuses to submit such a target, so the guard exists on the ca
 two processes that fail differently. That does not close the line: a check on the caller is a convention
 where a check on the service is a property, and the service is not only ever called by this. **The
 request has been written and transmitted.**
+
+**This block used to say "phase 4 does not start", and phases 4 to 9 started.** That is a deviation from
+rule 1 rather than an exception written into it, and the honest thing is to record it here rather than to
+keep a sentence the repository contradicts six times over. What was actually decided each time is that the
+red assertion is about a component in another repository, on a request this project does not control the
+schedule of, and that stopping everything else until somebody else merges one function would have been the
+wrong trade. That reasoning is defensible and it is also exactly the reasoning rule 1 exists to refuse, so
+it is worth being able to see how many times it has been used.
+
+**What it costs is stated rather than argued away.** The assertions stay unticked and the guard stays
+missing, so every phase built on top of phase 3 carries a rendering service that will follow a redirect to
+a link local address. Nothing since has made that less true, and no later milestone covers it.
 
 **The cadence item was corrected rather than met.** It read "periodic cadence modulated by volatility",
 and this document's own post-v1 list defers volatility with an argument this phase does not overturn: the
@@ -796,12 +808,130 @@ shortfall. Widening the curve to satisfy the old wording would be paying for the
 that never becomes anything, on a source where most candidates never become anything at all.
 :::
 
+## Phase 9: Importing another tool's findings
+
+**Goal**: a scan run outside this platform becomes inventory, on
+[the terms 7.6 sets](/architecture/discovery/#76-importing-another-tools-findings). BBOT first, because it
+is the one already in use.
+
+- [x] A [decoder](/architecture/discovery/#the-file-and-what-the-parser-refuses-to-guess) for the event
+      stream: newline delimited, payload a string or an object, unknown types counted rather than refused
+- [x] `POST /programs/{program}/imports/bbot`, under `manage_scope` like
+      [every other assertion about a perimeter](/architecture/scope/#entering-an-asset-by-hand)
+- [x] `DNS_NAME` and `IP_ADDRESS` become hosts, `OPEN_TCP_PORT` and `URL` become
+      [services and never URLs](/architecture/data-model/#the-unit-of-a-web-asset-is-the-service-never-the-path)
+- [x] What the tool measured goes to [lineage](/architecture/data-model/#44-lineage) and
+      [never to the journal](/architecture/discovery/#an-import-declares-it-does-not-observe)
+- [x] Hosts due for `resolve` with the ordinary stagger, services scheduled through their host
+- [x] `seen_at` is [the moment of the import](/architecture/discovery/#the-date-on-the-row-is-the-imports-and-the-scans-date-is-in-the-lineage), with the scan's own date in the lineage ([corrected](#the-back-dating-was-withdrawn-after-the-review))
+- [x] An answer that says what every event type produced, per resulting scope status, with refusals named one by one
+- [x] The [route list check](/architecture/api/#153-the-description-is-written-not-generated) 15.3 describes, since adding an operation is the moment it is worth one test
+
+### Milestone 9
+
+- [x] Importing the reference scan creates every in-scope name it found, and the set matches the tool's own `subdomains.txt` exactly
+- [x] The same file imported twice creates nothing the second time, and no `first_seen` moves
+- [x] **A scan of a perimeter the programme has no rule for creates its assets and schedules not one of them**
+- [x] A name the tool called `affiliate` is stored `unknown`, is visible, and carries no due date
+- [x] `SELECT count(*) FROM observation` is identical before and after an import
+- [x] An imported name that resolves earns `next_full_at` on its first report, through the promotion phase 8 built and nothing this phase added
+- [x] An asset another producer found first keeps its `discovery_source` when an import names it again
+- [x] `first_seen` on a created asset is the moment of the import, and the event's own date is in the lineage ([corrected](#the-back-dating-was-withdrawn-after-the-review))
+- [x] An imported candidate keeps its whole budget, including one read from a file older than the budget itself
+- [x] An archived asset an import names carries no due date, and counts nowhere in `scheduled`
+- [x] A service whose host is not an identity is refused with it, rather than written with no parent
+- [x] A body of rubbish produces a bounded answer, and says how much it did not list
+- [x] An archived asset named by an import stays archived
+- [x] A JSON array, a malformed line, and an event type the decoder does not know are each answered by name, and the malformed line does not cost the rest of the file
+- [x] An import over the asset bound is refused by name rather than truncated
+- [x] The endpoint answers 404 for another organization's programme, and 403 for a token holding every action but `manage_scope`
+- [x] The operations in `openapi.yaml` and the routes in `cmd/controlplane/main.go` are the same list, checked in both directions
+
+
+### The back-dating was withdrawn after the review
+
+:::caution[Two assertions were ticked on a behaviour that has since been removed]
+The honest record is that the review found this, not the milestone.
+
+The phase wrote `first_seen` from the event's own timestamp, so an import back-dated an asset instead of
+announcing a surface that was already there as new. It was argued for in the design document, it had its
+own assertions, and both were green.
+
+It was also **wrong in a way the milestone could not see, because every assertion about it only ever looked
+at the column it wrote**. Two mechanisms read that column and neither was in the test: the feed walks it as
+a cursor from the present, so nothing an import created was ever emitted, and the candidate budget measures
+from it, so a file older than fourteen days produced candidates that were given up on after one check. The
+deeper fault is that back-dating contradicted this phase's own central decision, that an import declares and
+does not observe, since `first_seen` is a fact about observation history.
+
+`seen_at` is now the moment of the import and the scan's date is in the lineage, which costs nothing: the
+date was already written there. Three assertions were removed with the behaviour, and four were added for
+what the same review found beside it.
+
+**What this says about the milestone is worth keeping.** Every assertion here was written from inside the
+feature, and each one held. What none of them did was ask what else reads the column the feature writes.
+:::
+
+:::note[Measured]
+**The reference scan is 384 lines and 99 assets**, which is the ratio worth knowing before sizing
+anything: 203 distinct events after deduplication on the content hash, 35 hosts and 64 services. A file
+is roughly four lines per asset, and the four are the same host reported by four modules.
+
+**Every URL event produced nothing at all**, and that is the healthy case rather than a bug. All 71 of
+them sat on a port an `OPEN_TCP_PORT` had already created, so the service existed before the URL arrived.
+The fallback that derives a service from the URL itself is still there and still tested, because the
+event that carries no port is the one it exists for and this file does not happen to contain it.
+
+**The `subdomains.txt` cross check earned its place immediately.** It is the only assertion here that
+compares the decoder against something that is not the decoder, and both directions matter: the loop that
+checks the tool's list is covered would pass on a decoder that also invented a dozen names out of parsing
+artefacts.
+
+**The route list check found drift the moment it was written.** The coverage panel of phase 8 had been
+served with nothing in `openapi.yaml` naming it. 15.3 had described that check as a thing one could do for
+two phases; doing it took one test and one document entry.
+
+**The fixture had to be anonymised, and noticing that was luck rather than process.** A scan output is an
+attack surface map and this repository is public. The first version of the fixture carried real
+subdomains, real addresses, an SSH banner with its exact build, and the CPE list of what the host runs.
+Nothing in the tooling would have objected.
+
+**One assertion was written before its test and had to be caught.** "An imported name that resolves earns
+`next_full_at`" was ticked on the strength of the resolve half being tested, which is exactly the falsely
+green box rule 1 exists against. The promotion is phase 8's code, so the assertion is about wiring rather
+than about new behaviour, and that is precisely why it was easy to assume.
+
+**Two integration fixtures turned out to be timing the container's clock against this process's**, and
+finding them was luck: they had passed for months and both went red in the same run. A `scope_rule` whose
+`valid_from` defaulted to `now()` and an `asset_current` whose due dates did, each read back at the
+harness's own instant. One suite then reported that every asset classified `unknown`, the other that the
+queue had miscounted what was due, and neither message pointed anywhere near a clock. The rule
+[5.5](/architecture/scope/#the-optimistic-lock) states for the application binds fixtures too, and it now
+says so.
+
+**A first draft of the idempotence assertion measured the fixture rather than the write**, comparing every
+asset's `first_seen` against the minimum. That draft belonged to the back-dating and went with it; what
+survives is the per asset comparison, which is what the assertion always meant.
+
+**The review that closed this phase found seven things, and four of them were real defects rather than
+style.** The two that matter are above and in the caution block. The other two are worth naming for their
+shape: a service whose host `normalize` refused was written anyway, with no parent, because the decoder
+guarantees a host for every service it emits and the write trusted that guarantee across a boundary where
+`hostKey` and `normalize.Service` disagree on single label names. And the ten thousand asset bound turned
+out to bound nothing, since the decoder has to finish before anything can count assets: what actually
+bounded the work was the sixty four megabyte body, three orders of magnitude further out.
+
+**The lesson the two of them share is the one the milestone did not have.** Every assertion in this phase
+was written from inside the feature and each one held. None of them asked what else reads what the feature
+writes, or what happens at the seam between two components that each behave correctly.
+:::
+
 ## Post-v1
 
 - [ ] An MCP server in front of the search API
 - [ ] Per organization pivot display overrides, at the first request
 - [ ] RBAC, invitations, SSO, only if third parties use the platform
-- [ ] [Additional discovery sources](/architecture/discovery/#76-future-sources): reverse WHOIS, ASN, archives, public repositories
+- [ ] [Additional discovery sources](/architecture/discovery/#77-future-sources): reverse WHOIS, ASN, archives, public repositories
 - [ ] **Who writes the screenshot**, which brings back object storage and its key structure
 - [ ] **An outbound address distinct from the control plane's**, unverifiable without a production host
 - [ ] [Billing a render for real](/architecture/deployment/#95-rate-limiting): the service reports the requests it actually sent to the target

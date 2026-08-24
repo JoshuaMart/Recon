@@ -1,6 +1,6 @@
 ---
 title: Discovery
-description: FastRecon as the scanning engine, its two inputs, the curated port list, and the Certificate Transparency stream.
+description: FastRecon as the scanning engine, its two inputs, the curated port list, the Certificate Transparency stream, and importing another tool's findings.
 sidebar:
   order: 7
 ---
@@ -416,7 +416,196 @@ That is the same call [10.3](/architecture/search/#what-the-registry-holds) make
 somebody asks to filter an inventory on where a name came from, it is an `ALTER` and a line in that table,
 in that order.
 
-## 7.6 Future sources
+## 7.6 Importing another tool's findings
+
+Somebody runs [BBOT](https://github.com/blacklanternsecurity/bbot) outside this platform and comes back
+with a scan directory. `POST /programs/{program}/imports/bbot` takes its event stream and turns what it
+found into inventory.
+
+It is the same act as the [assets form](/architecture/scope/#entering-an-asset-by-hand) and the same act
+as a [certificate match](#what-a-match-creates-and-what-it-does-not): something outside the scanner
+declares that a thing exists, the perimeter classifies it, and the ordinary machinery does the rest. It
+adds no producer of observations, no run kind, no table and no loop.
+
+### An import declares, it does not observe
+
+A BBOT scan carries technologies, protocol banners and HTTP status codes. **None of them are written.**
+
+Not because they are worthless, but because of what an [observation](/architecture/data-model/#45-observations)
+claims. A row in that journal says a state held from `observed_at` to `last_confirmed_at`, as measured by
+an instrument this platform [dates](/architecture/verification/#87-dating-the-instrument) and versions.
+An import satisfies neither half. The tool ran somewhere else, at a moment the operator picked, and the
+file may be a week or a year old. Letting it into the journal would put a July scan into August's current
+state, and `last_confirmed_at` would quietly come to mean two things at once.
+
+So an import creates assets and the platform re-measures them. That is the same decision
+[7.5](#75-certificate-transparency) makes about a certificate, and for the same reason: a log entry proves
+a name was issued, not that anything answers on it.
+
+What BBOT saw survives in the asset's [lineage](/architecture/data-model/#44-lineage), which is where the
+question it answers belongs. "Why is this here" is answered by "shodan_idb reported it, on this date, with
+this banner". "What is it" is answered by a run.
+
+### BBOT's scope is not this perimeter's, and it does not filter
+
+Every event carries `scope_distance`, a `scope_description` of `in-scope`, `affiliate` or `distance-1`, and
+tags that repeat both. They are computed from the seed BBOT was given, which is a different perimeter
+described by a different person.
+
+**They are recorded and never acted on.** Every asset an import creates goes through the ordinary
+[classification](/architecture/scope/#52-re-evaluated-at-ingestion), like everything else that enters. A
+name BBOT called `affiliate` lands `unknown` if no rule matches it, which means stored, displayed and never
+probed. That is the outcome worth having rather than a compromise: `unknown` is
+[where acquisitions and affiliated domains show up](/architecture/scope/#53-three-states-not-two), and an
+import is unusually good at producing them.
+
+It is also what makes the endpoint safe to hand to somebody. **A scan of a perimeter the programme does not
+own creates assets and schedules none of them.** The blast radius of a wrong file in the wrong programme is
+bounded by rules that were already written, not by a check invented here, and the milestone asserts it from
+that direction.
+
+### A claim earns the cheap rung
+
+An imported name is due for `resolve`, immediately, and carries no `next_full_at`.
+
+The reasoning is the [candidate ladder's](/architecture/deployment/#a-third-kind-so-a-candidate-never-waits-behind-a-sweep),
+because an import is the same kind of evidence: somebody else's claim that a name exists. The cheap rung
+answers the only question worth asking of a claim, which is whether it is still true, and a name that
+answers earns the expensive rung through the promotion `reschedule` already performs. Nothing here schedules
+a port sweep. An import of twenty thousand names that all died last spring costs twenty thousand resolver
+round trips and nothing else.
+
+**The first date takes the ordinary stagger, not the immediate one a certificate gets.** A certificate is one
+name published seconds ago and the whole aggressive curve rests on checking it now. An import is thousands of
+names of unknown age arriving in one transaction, which is precisely the convoy the
+[jitter](/architecture/lifecycle/#63-scheduling-and-backoff) exists to break up.
+
+Services are created and never scheduled, exactly as
+[a declared URL's service is](/architecture/scope/#entering-an-asset-by-hand): a service is observed through
+its host's run, and giving one a date of its own puts it in a queue nothing dispatches from.
+
+### The date on the row is the import's, and the scan's date is in the lineage
+
+`first_seen` is the moment of the import, like every other act that writes an asset. The event's own
+timestamp goes into the lineage beside the module that reported it.
+
+An earlier draft of this section said the opposite. It back-dated the row to the event's date, on the
+argument that a name found in July has existed since July and a `first_seen` of today announces a surface
+that was already there. That reads well and it was wrong twice over.
+
+**It contradicted this chapter's own decision.** An import declares and does not observe, because the file
+comes from an instrument this platform neither runs nor dates. `first_seen` is a fact about observation
+history, so back-dating it let in through the row exactly what the section above refuses at the door.
+
+**And two mechanisms said so.** The [feed](/architecture/console/#143-what-the-console-does-not-decide)
+walks `first_seen` as a cursor and a fresh connection starts at the present, so every asset an import
+created was born below the cursor and never emitted: the inventory grew and the live view stayed empty.
+The [candidate budget](/architecture/lifecycle/#63-scheduling-and-backoff) measures from the same column,
+so importing a file older than the budget produced candidates that were already expired and were given up
+on after a single check, with none of the fourteen days spent. Both of them read `first_seen` as "when this
+platform knew", and both are right to.
+
+Nothing is lost by dropping it. The scan's date is in the lineage, which is where an answer about another
+tool's observation belongs, and that is the same place the module and its sentence already go.
+
+### An import does not revive an archived asset, and therefore does not schedule one
+
+The assets form does revive, and so does a certificate. Both are evidence the platform dates itself: a
+person is typing now, a log published seconds ago. A file is dated by whoever ran the scan, and it can
+easily be older than the archival it would undo, so an import that revived would let a stale file
+resurrect names this system spent weeks concluding were gone.
+
+Dropped from v1 with the condition that brings it back: comparing the event's timestamp against the date
+the asset was archived, which the file makes possible and nothing yet needs.
+
+**Not reviving has a second half, and it took a review to find it.** The write hands a new asset its due
+dates, and an archived row has none, so the upsert's `COALESCE` was giving the archived asset the import's
+date while its lifecycle stayed `archived`. Every selection filters archived rows out again, so nothing
+would ever claim that date, and the [queue](/architecture/deployment/#99-reading-the-queue), which does not
+filter on lifecycle, would have counted it as due forever.
+
+So the two now travel together in the statement: **a write that does not revive does not schedule**, and
+the flag that moves the lifecycle is the flag that guards the due dates. A caller cannot set one and forget
+the other, which is what the first version relied on. The answer follows the same rule and reports what was
+written rather than what was asked for: an archived asset an import names counts nowhere in `scheduled`.
+
+### What each event becomes
+
+| Event | What it creates |
+|---|---|
+| `DNS_NAME` | an `fqdn` asset, due for `resolve` |
+| `IP_ADDRESS` | an `ip` asset, due for `resolve` |
+| `OPEN_TCP_PORT` | a `service`, parent the host, no date of its own |
+| `URL` | the **service** its URL implies, when no open port already produced it |
+| `PROTOCOL` | nothing. Its protocol and banner join the service's lineage |
+| `TECHNOLOGY` | nothing. It joins the host's lineage |
+| `SCAN` | nothing. It is read for the provenance of the import |
+| `ASN`, `ORG_STUB` | nothing. [Enrichment](/architecture/verification/#88-geo-ip-and-asn-enrichment) is the platform's own |
+
+**No `url` asset is created**, whatever the file contains.
+[4.3](/architecture/data-model/#the-unit-of-a-web-asset-is-the-service-never-the-path) says no producer
+creates one, and a URL event is a producer's output rather than somebody framing a path. The service is
+the identity and the path stays out.
+
+`ASN` events are ignored rather than merged, and it is worth saying why they look tempting: the event
+itself carries only a number, and the name and country a reader wants live in a table file beside the
+stream. Recon already resolves both from its own database, on the address it connected to, which is a
+fact about this platform's observation rather than about somebody's scan.
+
+### The file, and what the parser refuses to guess
+
+`output.json` is **newline delimited JSON despite its name**. A body that is a JSON array is refused by
+name, because somebody will have piped the file through `jq` first and an array is the shape that produces.
+
+The payload is either a string `data` or an object `data_json`, never both and never neither, so the
+decoder branches on which is present rather than on the type name. Events reference parents that were never
+written, `SCAN` is its own parent, and the stream is not sorted by time. None of that is read: an asset is
+built from the event's own `host`, `port` and payload, and the parent chain is never walked.
+
+**The answer is bounded even when the file is not.** The refusal list stops at a hundred entries and the
+type list at two hundred, both with the remainder counted rather than hidden. Neither bound is reachable by
+a real scan: they exist because the asset bound in front of the endpoint cannot help here, since the
+decoder has to finish before anything can count assets, and sixty four megabytes of one byte lines is
+thirty million refusals collected and then serialized back to somebody who already knows their file is
+broken.
+
+**An event type this platform does not know is counted, never refused.** The stream carries no schema
+version at all, unlike [a report](/architecture/deployment/#93-ingesting-a-report), so the decoder is
+written against an observed shape and a new release of the tool will emit something it has not seen. The
+counts come back in the answer, which is what turns that from a silence into a line somebody can read.
+
+That is also the shape of the answer generally. It reports **every type it saw and what each produced**,
+including the ones that produced nothing, per resulting scope status, with refusals named individually the
+way [the assets form](/architecture/scope/#entering-an-asset-by-hand) names them. A file of four hundred
+events that answers "two hundred assets" without saying where the other two hundred went is the failure
+mode this endpoint has.
+
+### Why it is one request rather than a job
+
+The bound on the assets form says a list longer than five thousand is an import and belongs behind a job.
+This is that import, and it is still a request, because the two halves of that sentence turned out to be
+separable: what makes a job necessary is duration, and what makes it expensive is a second place where
+assets are written.
+
+An import writes through the same statement every other asset goes through, one round trip each. The bound
+is therefore **ten thousand assets**, refused by name rather than truncated, which keeps the request inside
+a few seconds on the largest file anybody has produced here. The batched write that
+[a run's target list](/architecture/deployment/#98-starting-runs) already demonstrates is the way past that
+bound, and the thing that should trigger it is a measured import that takes too long, not this paragraph.
+
+:::note[The reference scan is in the repository, and it is not somebody's]
+The milestone compares what an import created against `subdomains.txt`, which the tool writes
+independently of the event stream. Two files that cross-check each other is the point: a name the decoder
+silently dropped is exactly what a test reading only the stream would miss.
+
+Both files are **anonymised**, consistently, and that is a requirement rather than tidiness. A real scan
+output is an attack surface map, and this repository is public: the names, the addresses, the open ports
+and the banner versions of whoever was scanned would be published permanently by committing one. The
+mapping is applied to every field at once, so the two files still agree with each other and the assertion
+keeps its force.
+:::
+
+## 7.7 Future sources
 
 Reverse WHOIS and ASN walking for organization discovery, archives such as Wayback for historical
 URLs, public code repositories for secrets and endpoints.
