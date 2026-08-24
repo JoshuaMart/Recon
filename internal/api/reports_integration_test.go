@@ -202,9 +202,15 @@ func (h *harness) run(t *testing.T, kind string) (uuid.UUID, string) {
 	t.Helper()
 
 	id := uuid.New()
+	// A candidate run is pinned to resolve by a CHECK, so the scope follows the
+	// kind here rather than being one value for every one of them.
+	scope := "full"
+	if kind == "candidate" {
+		scope = "resolve"
+	}
 	h.exec(t, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline)
-	           VALUES ($1, $2, $3, $4, 'full', 'pending', now() + interval '1 hour')`,
-		id, h.org, h.program, kind)
+	           VALUES ($1, $2, $3, $4, $5, 'pending', now() + interval '1 hour')`,
+		id, h.org, h.program, kind, scope)
 	return id, h.signer.Mint(auth.PurposeReport, id, time.Now().Add(time.Hour))
 }
 
@@ -444,5 +450,42 @@ func TestTheCredentialIsRequiredAndBound(t *testing.T) {
 	unknown := h.signer.Mint(auth.PurposeReport, uuid.New(), time.Now().Add(time.Hour))
 	if resp := h.post(t, unknown, report("api.target.test", true)); resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("an unknown run: status %d, want 401", resp.StatusCode)
+	}
+}
+
+// The frozen list is the whole of the reservation, and a candidate run gets one
+// exactly like a verification run does. Reading the gate as "is verification"
+// left its reports unchecked against the list they were given, which is the
+// scanner-chooses-its-own-perimeter hole the list exists to close.
+func TestACandidateRunsReportIsCheckedAgainstItsFrozenList(t *testing.T) {
+	h := newHarness(t)
+
+	runID, token := h.run(t, "candidate")
+	listed := uuid.New()
+	h.exec(t, `INSERT INTO asset
+		(id, org_id, program_id, kind, key, host, discovery_source, scope_status, first_seen, last_seen)
+		VALUES ($1,$2,$3,'fqdn','listed.target.test','listed.target.test','certstream','in_scope',now(),now())`,
+		listed, h.org, h.program)
+	h.exec(t, `INSERT INTO run_target (run_id, asset_id, org_id, key)
+		VALUES ($1,$2,$3,'listed.target.test')`, runID, listed, h.org)
+
+	resp := h.post(t, token, ingest.Report{
+		SchemaVersion: "1.0",
+		Run:           ingest.RunInfo{Input: "targets", Scope: "resolve", Completed: true, Version: "1.2.3"},
+		Hosts: []ingest.Host{
+			{Host: "listed.target.test", Status: ingest.StatusLive, Addresses: []string{"93.184.216.34"}},
+			{Host: "elsewhere.target.test", Status: ingest.StatusLive, Addresses: []string{"93.184.216.34"}},
+		},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the report answered %d", resp.StatusCode)
+	}
+
+	if n := h.count(t, `SELECT count(*) FROM asset WHERE key = 'elsewhere.target.test'`); n != 0 {
+		t.Error("a host outside the frozen list of a candidate run became an asset, so the run " +
+			"chose its own perimeter")
+	}
+	if n := h.count(t, `SELECT count(*) FROM asset WHERE key = 'listed.target.test'`); n != 1 {
+		t.Errorf("%d rows for the listed host, so this asserted a report that did nothing", n)
 	}
 }

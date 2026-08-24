@@ -822,6 +822,9 @@ func discoverySource(run Run, host Host) string {
 	if run.Kind == "discovery" {
 		return "fastrecon"
 	}
+	if run.Kind == "candidate" {
+		return "certstream"
+	}
 	return "verification"
 }
 

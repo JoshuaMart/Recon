@@ -354,3 +354,33 @@ func fixtureSANs(t *testing.T) []string {
 	}
 	return sans
 }
+
+// A scope rule is stored exactly as somebody typed it: the console validates a
+// throwaway copy and writes the original. So the set has to canonicalize, and it
+// has to do it the way the perimeter does, or an apex is held in a spelling no
+// SAN will ever match while the set reports itself as holding it.
+func TestTheSetCanonicalizesAnApexTheWayThePerimeterDoes(t *testing.T) {
+	cases := []struct {
+		pattern string
+		host    string
+		why     string
+	}{
+		{"ACME.test", "staging.acme.test", "a rule typed in capitals"},
+		{" acme.test ", "staging.acme.test", "a rule with the spaces a form leaves"},
+		{"acme.test.", "staging.acme.test", "a fully qualified rule with its root dot"},
+		{"café.test", "www.xn--caf-dma.test", "an IDN rule, which the perimeter holds in punycode"},
+	}
+
+	for _, c := range cases {
+		set := ct.NewSet([]ct.Claim{claim(c.pattern)})
+		if got := set.Match(c.host); len(got) == 0 {
+			t.Errorf("%s: %q holds no claim on %q", c.why, c.pattern, c.host)
+		}
+	}
+
+	// And a pattern that is not a name at all is dropped rather than held in a
+	// spelling nothing matches. It cannot be in the perimeter either.
+	if set := ct.NewSet([]ct.Claim{claim("not a host name")}); set.Apexes() != 0 {
+		t.Errorf("an unusable pattern is in the set, which reports %d apexes", set.Apexes())
+	}
+}

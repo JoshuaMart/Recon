@@ -26,7 +26,7 @@ func TestThreeInformativeFailuresOverADayAreADeath(t *testing.T) {
 	if counters.State != lifecycle.LayerDead {
 		t.Fatalf("three nxdomains spread over 24 h left the layer %q", counters.State)
 	}
-	if state := lifecycle.Decide(lifecycle.Active, lifecycle.Reach{}, counters); state != lifecycle.Inactive {
+	if state := lifecycle.Decide(lifecycle.Active, true, lifecycle.Reach{}, counters); state != lifecycle.Inactive {
 		t.Fatalf("a dead layer left the asset %q", state)
 	}
 }
@@ -40,7 +40,7 @@ func TestThreeInformativeFailuresInNinetyMinutesAreNot(t *testing.T) {
 	if counters.State != lifecycle.LayerFailing {
 		t.Fatalf("three nxdomains inside 90 min left the layer %q, and the 24 h floor is what separates them", counters.State)
 	}
-	if state := lifecycle.Decide(lifecycle.Active, lifecycle.Reach{}, counters); state != lifecycle.Flapping {
+	if state := lifecycle.Decide(lifecycle.Active, true, lifecycle.Reach{}, counters); state != lifecycle.Flapping {
 		t.Fatalf("the asset went to %q on failures that span less than a day", state)
 	}
 }
@@ -59,14 +59,14 @@ func TestARepeatedTimeoutNeverProducesADeath(t *testing.T) {
 	if counters.NonInformative != 6 {
 		t.Fatalf("the non informative counter is %d, and it is what phase 3 reads", counters.NonInformative)
 	}
-	if state := lifecycle.Decide(lifecycle.Active, lifecycle.Reach{}, counters); state != lifecycle.Active {
+	if state := lifecycle.Decide(lifecycle.Active, true, lifecycle.Reach{}, counters); state != lifecycle.Active {
 		t.Fatalf("timeouts moved the asset to %q, when nothing was measured at all", state)
 	}
 }
 
 func TestOneSuccessIsTheWholeOfTheRecoveryRule(t *testing.T) {
 	failing := run(12*time.Hour, lifecycle.OutcomeFail, lifecycle.OutcomeFail)
-	if state := lifecycle.Decide(lifecycle.Active, lifecycle.Reach{}, failing); state != lifecycle.Flapping {
+	if state := lifecycle.Decide(lifecycle.Active, true, lifecycle.Reach{}, failing); state != lifecycle.Flapping {
 		t.Fatalf("two failures left the asset %q", state)
 	}
 
@@ -75,7 +75,7 @@ func TestOneSuccessIsTheWholeOfTheRecoveryRule(t *testing.T) {
 		t.Fatalf("a success left %d failures and a first failure at %s",
 			recovered.Informative, recovered.FirstFailureAt)
 	}
-	if state := lifecycle.Decide(lifecycle.Flapping, lifecycle.Reach{}, recovered); state != lifecycle.Active {
+	if state := lifecycle.Decide(lifecycle.Flapping, true, lifecycle.Reach{}, recovered); state != lifecycle.Active {
 		t.Fatalf("a single success left the asset %q", state)
 	}
 }
@@ -103,7 +103,7 @@ func TestADeadOriginBehindALiveEdgeStillDies(t *testing.T) {
 	edge := run(24*time.Hour, lifecycle.OutcomeOK)
 	origin := run(12*time.Hour, lifecycle.OutcomeFail, lifecycle.OutcomeFail, lifecycle.OutcomeFail)
 
-	if state := lifecycle.Decide(lifecycle.Active, lifecycle.Reach{}, edge, edge, origin); state != lifecycle.Inactive {
+	if state := lifecycle.Decide(lifecycle.Active, true, lifecycle.Reach{}, edge, edge, origin); state != lifecycle.Inactive {
 		t.Fatalf("dns ok, tcp ok and a dead http layer gave %q", state)
 	}
 }
@@ -111,10 +111,10 @@ func TestADeadOriginBehindALiveEdgeStillDies(t *testing.T) {
 func TestALayerNothingMeasuredHasNoOpinion(t *testing.T) {
 	healthy := run(0, lifecycle.OutcomeOK)
 
-	if state := lifecycle.Decide(lifecycle.Candidate, lifecycle.Reach{}, healthy, lifecycle.Counters{}); state != lifecycle.Active {
+	if state := lifecycle.Decide(lifecycle.Candidate, true, lifecycle.Reach{}, healthy, lifecycle.Counters{}); state != lifecycle.Active {
 		t.Fatalf("an unmeasured layer beside a healthy one gave %q", state)
 	}
-	if state := lifecycle.Decide(lifecycle.Candidate, lifecycle.Reach{}, lifecycle.Counters{}); state != lifecycle.Candidate {
+	if state := lifecycle.Decide(lifecycle.Candidate, true, lifecycle.Reach{}, lifecycle.Counters{}); state != lifecycle.Candidate {
 		t.Fatalf("an asset nothing has probed became %q", state)
 	}
 }
@@ -140,7 +140,7 @@ func TestArchivedComesBackOnASuccessAndOnNothingElse(t *testing.T) {
 	// holds the state of its last conclusive measurement, so an archived asset
 	// still carrying a healthy layer would be revived by a timeout.
 	healthy := run(0, lifecycle.OutcomeOK)
-	if state := lifecycle.Decide(lifecycle.Archived, lifecycle.Reach{}, healthy); state != lifecycle.Archived {
+	if state := lifecycle.Decide(lifecycle.Archived, true, lifecycle.Reach{}, healthy); state != lifecycle.Archived {
 		t.Fatalf("a stale healthy layer reopened an archived asset as %q", state)
 	}
 }
@@ -223,7 +223,7 @@ func TestNeitherObserverGettingThroughIsNotADeath(t *testing.T) {
 	healthy := run(0, lifecycle.OutcomeOK)
 	blind := lifecycle.Reach{HTTP: -3, Fingerprint: -3}
 
-	if state := lifecycle.Decide(lifecycle.Active, blind, healthy); state != lifecycle.Unobservable {
+	if state := lifecycle.Decide(lifecycle.Active, true, blind, healthy); state != lifecycle.Unobservable {
 		t.Fatalf("an asset neither observer reaches is %q", state)
 	}
 
@@ -232,14 +232,14 @@ func TestNeitherObserverGettingThroughIsNotADeath(t *testing.T) {
 	// asset the renderer has not reached yet into a state that means something
 	// else entirely.
 	half := lifecycle.Reach{HTTP: -9, Fingerprint: 0}
-	if state := lifecycle.Decide(lifecycle.Active, half, healthy); state == lifecycle.Unobservable {
+	if state := lifecycle.Decide(lifecycle.Active, true, half, healthy); state == lifecycle.Unobservable {
 		t.Fatal("an asset the renderer never ran on was called unobservable")
 	}
 
 	// One probe getting through ends it, on a single success, which is why the
 	// counter is read after this observation rather than the settled flag.
 	back := lifecycle.Reach{HTTP: -3, Fingerprint: 1}
-	if state := lifecycle.Decide(lifecycle.Unobservable, back, healthy); state != lifecycle.Active {
+	if state := lifecycle.Decide(lifecycle.Unobservable, true, back, healthy); state != lifecycle.Active {
 		t.Fatalf("one observer got through and the asset is %q", state)
 	}
 }
@@ -252,7 +252,7 @@ func TestADeathBeatsUnmeasurability(t *testing.T) {
 	dead := run(12*time.Hour, lifecycle.OutcomeFail, lifecycle.OutcomeFail, lifecycle.OutcomeFail)
 	blind := lifecycle.Reach{HTTP: -4, Fingerprint: -4}
 
-	if state := lifecycle.Decide(lifecycle.Active, blind, dead); state != lifecycle.Inactive {
+	if state := lifecycle.Decide(lifecycle.Active, true, blind, dead); state != lifecycle.Inactive {
 		t.Fatalf("an observed death on an unreachable asset gave %q", state)
 	}
 }
@@ -340,5 +340,20 @@ func TestACandidateIsGivenUpOnAtItsBudgetAndNotBefore(t *testing.T) {
 	if !lifecycle.Exhausted(born, born.Add(lifecycle.CandidateBudget)) {
 		t.Error("a candidate is still chased past its budget, and a name reissued forever by " +
 			"an automation pointing nowhere would be chased forever with it")
+	}
+}
+
+// The two exits belong to the kinds the budget can archive. A service is a
+// candidate until something addresses the service, and a dead layer is
+// something addressing it: holding one here would close an exit nothing else
+// opens, and the death would never be emitted.
+func TestOnlyAScheduledCandidateKeepsItsTwoExits(t *testing.T) {
+	dead := lifecycle.Counters{State: lifecycle.LayerDead, Informative: 3}
+
+	if state := lifecycle.Decide(lifecycle.Candidate, true, lifecycle.Reach{}, dead); state != lifecycle.Candidate {
+		t.Errorf("a host candidate became %q on a death, and a name that never existed did not die", state)
+	}
+	if state := lifecycle.Decide(lifecycle.Candidate, false, lifecycle.Reach{}, dead); state != lifecycle.Inactive {
+		t.Errorf("a service candidate stayed %q on a death, and nothing else would ever move it", state)
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/JoshuaMart/recon/internal/auth"
 	"github.com/JoshuaMart/recon/internal/ingest"
 	"github.com/JoshuaMart/recon/internal/notify"
+	"github.com/JoshuaMart/recon/internal/runs"
 	"github.com/JoshuaMart/recon/internal/scope"
 	"github.com/JoshuaMart/recon/internal/store"
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
@@ -268,7 +269,13 @@ func (h *Reports) perimeter(
 		return nil, nil, fmt.Errorf("compile scope: %w", err)
 	}
 
-	if run.Kind != "verification" {
+	// Discovery is the only kind with no list, because it is the one allowed to
+	// find things. Written as "not discovery" rather than "is verification":
+	// the candidate lane freezes a list and is handed a targets URL exactly
+	// like a verification run, and reading the second form left its reports
+	// unchecked against the list they were given, which is precisely the
+	// scanner-chooses-its-own-perimeter hole the frozen list exists to close.
+	if run.Kind == runs.KindDiscovery {
 		return set, nil, nil
 	}
 

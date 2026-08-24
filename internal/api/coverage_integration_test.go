@@ -52,8 +52,9 @@ func TestCoverageStatesTheNumbersAndNeverAScore(t *testing.T) {
 			Wildcards      int64      `json:"wildcards"`
 			Dropped        int64      `json:"dropped"`
 			LastName       *time.Time `json:"last_name_at"`
+			SpanFrom       time.Time  `json:"span_from"`
 			FeedMinutes    int64      `json:"feed_minutes"`
-			WatchedMinutes int64      `json:"watched_minutes"`
+			WatchedMinutes int64      `json:"span_minutes"`
 		} `json:"apexes"`
 	}](t, payload)
 

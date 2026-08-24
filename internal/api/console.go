@@ -18,6 +18,7 @@ import (
 
 	"github.com/JoshuaMart/recon/internal/auth"
 	"github.com/JoshuaMart/recon/internal/ingest"
+	"github.com/JoshuaMart/recon/internal/maintenance"
 	"github.com/JoshuaMart/recon/internal/scope"
 	"github.com/JoshuaMart/recon/internal/store"
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
@@ -744,34 +745,59 @@ func (h *Console) Coverage(w http.ResponseWriter, r *http.Request, principal aut
 		Dropped      int64      `json:"dropped"`
 		LastName     *time.Time `json:"last_name_at,omitempty"`
 		LastWildcard *time.Time `json:"last_wildcard_at,omitempty"`
-		// FeedMinutes is how many minutes the feed delivered anything since
-		// this apex was first watched, against WatchedMinutes. Two numbers
-		// rather than a ratio, for the reason the whole endpoint gives.
-		FeedMinutes    int64 `json:"feed_minutes"`
-		WatchedMinutes int64 `json:"watched_minutes"`
+		// SpanFrom is where the feed's record actually starts, and it is not
+		// always WatchedSince. That record is purged past a retention horizon,
+		// so an apex watched for a year would otherwise report a year of span
+		// against six months of recorded minutes and a healthy feed would read
+		// as half down. The span is clipped and says where it was clipped to.
+		SpanFrom time.Time `json:"span_from"`
+		// FeedMinutes is how many minutes of the span the feed delivered
+		// anything, against SpanMinutes. Two numbers rather than a ratio, for
+		// the reason the whole endpoint gives.
+		FeedMinutes int64 `json:"feed_minutes"`
+		SpanMinutes int64 `json:"span_minutes"`
 	}
+
+	// One query per distinct span rather than one per apex. The apexes of a
+	// programme almost always enter the set together, so this is one statement
+	// in practice, and the alternative is a scan of the whole feed record per
+	// row on a console request.
+	uptimes := map[time.Time]int64{}
+	horizon := at.Add(-maintenance.FeedMinuteRetention)
 
 	out := make([]apex, 0, len(rows))
 	for _, row := range rows {
-		uptime, err := q.FeedUptime(ctx, sqlcgen.FeedUptimeParams{Since: row.WatchedSince})
-		if err != nil {
-			h.unavailable(ctx, w, "read feed uptime failed", err)
-			return
+		from := row.WatchedSince.Time
+		if from.Before(horizon) {
+			from = horizon
 		}
-		watched := int64(at.Sub(row.WatchedSince.Time) / time.Minute)
-		if watched < 0 {
-			watched = 0
+
+		minutes, known := uptimes[from]
+		if !known {
+			uptime, err := q.FeedUptime(ctx, sqlcgen.FeedUptimeParams{Since: stamp(from)})
+			if err != nil {
+				h.unavailable(ctx, w, "read feed uptime failed", err)
+				return
+			}
+			minutes = uptime.Minutes
+			uptimes[from] = minutes
+		}
+
+		span := int64(at.Sub(from) / time.Minute)
+		if span < 0 {
+			span = 0
 		}
 		out = append(out, apex{
-			Apex:           row.Apex,
-			WatchedSince:   row.WatchedSince.Time,
-			Names:          row.SanCount,
-			Wildcards:      row.WildcardCount,
-			Dropped:        row.Dropped,
-			LastName:       instant(row.LastSanAt),
-			LastWildcard:   instant(row.LastWildcardAt),
-			FeedMinutes:    uptime.Minutes,
-			WatchedMinutes: watched,
+			Apex:         row.Apex,
+			WatchedSince: row.WatchedSince.Time,
+			Names:        row.SanCount,
+			Wildcards:    row.WildcardCount,
+			Dropped:      row.Dropped,
+			LastName:     instant(row.LastSanAt),
+			LastWildcard: instant(row.LastWildcardAt),
+			SpanFrom:     from,
+			FeedMinutes:  minutes,
+			SpanMinutes:  span,
 		})
 	}
 

@@ -18,6 +18,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+
+	"github.com/JoshuaMart/recon/internal/normalize"
 )
 
 // Claim is one programme's declaration of one apex.
@@ -40,17 +42,37 @@ type Set struct {
 	byApex map[string][]Claim
 }
 
+// NormalizeApex is the one spelling of an apex this package uses.
+//
+// It is the project's own canonicalization rather than a lowercase, and the
+// difference is not cosmetic. A scope rule is stored exactly as somebody typed
+// it: the console validates a throwaway copy and writes the original, so the
+// pattern can carry capitals, a trailing dot, or a name in Unicode. The
+// perimeter engine compiles it through normalize.Hostname, which converts IDN to
+// punycode, and every SAN reaching the walk has been through the same function.
+// Lowercasing here instead would leave an IDN apex in Unicode and matching
+// nothing, in a set that reports itself as holding it.
+//
+// It is also what the counters are keyed on, so a set and the rows beside it
+// cannot spell the same apex two ways.
+func NormalizeApex(pattern string) (string, bool) {
+	host, err := normalize.Hostname(strings.TrimSpace(pattern))
+	if err != nil || host == "" {
+		return "", false
+	}
+	return host, true
+}
+
 // NewSet compiles the claims into the set the walk reads.
 //
-// Apexes arrive already normalized, because they are `scope_rule` patterns and
-// those were normalized when the rule was written. Lowercasing again here is
-// cheap and it means a caller assembling a set by hand cannot produce one that
-// silently matches nothing.
+// A claim whose apex is not a usable name is dropped rather than kept in a
+// spelling nothing will ever match. It cannot be in the perimeter either, since
+// the same function refuses it there.
 func NewSet(claims []Claim) *Set {
 	byApex := make(map[string][]Claim, len(claims))
 	for _, claim := range claims {
-		apex := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(claim.Apex), "."))
-		if apex == "" {
+		apex, ok := NormalizeApex(claim.Apex)
+		if !ok {
 			continue
 		}
 		claim.Apex = apex

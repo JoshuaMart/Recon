@@ -41,8 +41,13 @@ const (
 	// FeedMinuteRetention bounds the Certificate Transparency feed's own
 	// record. One row a minute is half a million a year: small, and unbounded,
 	// and unbounded is the half that matters, because nothing else in this
-	// schema grows forever. Longer than any coverage reading looks back, since
-	// that reading never goes further than an apex has been watched.
+	// schema grows forever.
+	//
+	// It is a horizon rather than a window nothing reaches. An apex watched for
+	// a year has a span longer than this, so the coverage reading clips its span
+	// to this value and says where it clipped: without that, a perfectly healthy
+	// feed reads as half down on any apex older than the horizon, which is the
+	// reading this record exists to prevent rather than produce.
 	FeedMinuteRetention = 180 * 24 * time.Hour
 	// StuckAfter is when a queue that is not draining becomes an alert. A
 	// broken notifier is a silent failure by nature: nothing else announces

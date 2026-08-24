@@ -143,14 +143,25 @@ func (m *Matcher) Reload(ctx context.Context) error {
 	programs := make([]pgtype.UUID, 0, len(rows))
 	apexes := make([]string, 0, len(rows))
 	for _, row := range rows {
+		// The normalized spelling, for the set and for the rows alike. Written
+		// raw, WatchApexes created a row under the pattern as typed while the
+		// counters landed under the canonical one, and the next reload's
+		// reconciliation then deleted the counted row: coverage read zero for
+		// that apex for good, once a minute, silently.
+		apex, ok := NormalizeApex(row.Apex)
+		if !ok {
+			m.log.WarnContext(ctx, "an apex rule is not a usable name and is watched by nothing",
+				"program", uuid.UUID(row.ProgramID.Bytes), "pattern", row.Apex)
+			continue
+		}
 		claims = append(claims, Claim{
 			OrgID:     uuid.UUID(row.OrgID.Bytes),
 			ProgramID: uuid.UUID(row.ProgramID.Bytes),
-			Apex:      row.Apex,
+			Apex:      apex,
 		})
 		orgs = append(orgs, row.OrgID)
 		programs = append(programs, row.ProgramID)
-		apexes = append(apexes, row.Apex)
+		apexes = append(apexes, apex)
 	}
 
 	m.Swap(NewSet(claims))
@@ -194,6 +205,18 @@ func (m *Matcher) Handle(ctx context.Context, frame *Frame) {
 	at := m.now()
 	byProgram := map[uuid.UUID]*pending{}
 
+	// One name is written once per programme, whatever produced it twice.
+	//
+	// Two things do. A programme holding both an apex and something under it
+	// claims a name through each, and the walk returns both on purpose because
+	// each apex did deliver it. And two spellings of one name inside a
+	// certificate survive Sightings, which dedupes on the raw string. Left
+	// alone, both spend the ceiling twice and enter the same key twice.
+	//
+	// The counters still move per claim, because what an apex delivered is a
+	// fact about that apex and not about what was written.
+	written := make(map[counterKey]struct{}, len(sightings))
+
 	m.mu.Lock()
 	m.frames++
 	m.malformed += int64(malformed)
@@ -204,6 +227,12 @@ func (m *Matcher) Handle(ctx context.Context, frame *Frame) {
 			continue
 		}
 		counter.sans++
+
+		once := counterKey{program: sighting.Claim.ProgramID, apex: sighting.Name}
+		if _, already := written[once]; already {
+			continue
+		}
+		written[once] = struct{}{}
 
 		if m.cache.seen(sighting.Claim.ProgramID, sighting.Name, at) {
 			continue
@@ -347,21 +376,61 @@ func (m *Matcher) Flush(ctx context.Context) error {
 
 	q := sqlcgen.New(m.sys)
 
-	if frames > 0 {
-		if err := q.RecordFeedMinute(ctx, sqlcgen.RecordFeedMinuteParams{
-			At: stamp(at), Frames: frames,
-		}); err != nil {
-			return fmt.Errorf("record the feed minute: %w", err)
-		}
-	}
 	if malformed > 0 {
 		m.log.WarnContext(ctx, "SANs that were not names",
 			"count", malformed, "frames", frames)
 	}
-	if len(counters) == 0 {
-		return nil
+
+	// The counters go first, and a failure puts them back rather than dropping
+	// them. Detached from the matcher and never written, a transient error on
+	// either statement lost a whole window, including the dropped figure the
+	// migration was added to make readable. Losing a minute to a crash is what
+	// this design accepts; losing one to a deadlock is not.
+	if len(counters) > 0 {
+		if err := m.bump(ctx, q, at, counters); err != nil {
+			m.restore(counters, frames)
+			return err
+		}
 	}
 
+	if frames > 0 {
+		if err := q.RecordFeedMinute(ctx, sqlcgen.RecordFeedMinuteParams{
+			At: stamp(at), Frames: frames,
+		}); err != nil {
+			// The counters are already written, so only the presence record is
+			// put back. A minute that says nothing arrived is the one reading
+			// this table must never produce by accident.
+			m.restore(nil, frames)
+			return fmt.Errorf("record the feed minute: %w", err)
+		}
+	}
+	return nil
+}
+
+// restore folds a failed flush back into the accumulator.
+//
+// Merged rather than assigned: the stream kept running while the write was in
+// flight, so the matcher may already hold newer counts for the same apexes.
+func (m *Matcher) restore(counters map[counterKey]*counts, frames int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.frames += frames
+	for key, count := range counters {
+		current := m.counters[key]
+		if current == nil {
+			m.counters[key] = count
+			continue
+		}
+		current.sans += count.sans
+		current.wildcards += count.wildcards
+		current.dropped += count.dropped
+	}
+}
+
+func (m *Matcher) bump(
+	ctx context.Context, q *sqlcgen.Queries, at time.Time, counters map[counterKey]*counts,
+) error {
 	orgs := make([]pgtype.UUID, 0, len(counters))
 	programs := make([]pgtype.UUID, 0, len(counters))
 	apexes := make([]string, 0, len(counters))

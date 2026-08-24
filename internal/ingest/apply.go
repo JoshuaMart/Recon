@@ -151,7 +151,10 @@ func (s *state) decide(layer normalize.Layer, outcome string, at time.Time) (lif
 	if lifecycle.Revived(current, outcome) {
 		current = ""
 	}
-	s.lifecycle = lifecycle.Decide(current, s.reach, all...)
+	// Scheduled is what separates a host, which the budget can archive, from a
+	// service or a URL, which the rescheduling path never touches.
+	scheduled := s.kind == normalize.KindFQDN || s.kind == normalize.KindIP
+	s.lifecycle = lifecycle.Decide(current, scheduled, s.reach, all...)
 	return counters, s.lifecycle
 }
 

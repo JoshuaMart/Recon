@@ -554,3 +554,82 @@ func TestTheCountTheCeilingDroppedIsReadable(t *testing.T) {
 		t.Errorf("the row says %d were dropped, and the ceiling of one refused two", dropped)
 	}
 }
+
+// The reconciliation deletes what the set does not hold, so the set and the
+// rows have to spell an apex the same way. Written raw, WatchApexes created a
+// row under the pattern as typed while the counters landed under the canonical
+// one, and the next reload deleted the counted row: coverage read zero for that
+// apex for good, once a minute, silently.
+func TestAnApexTypedInCapitalsKeepsItsCounters(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.rule(t, "include", "apex", "ACME.test")
+
+	m := h.matcher(options())
+	if err := m.Reload(ctx); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	m.Handle(ctx, frame(t, "staging.acme.test"))
+	if err := m.Flush(ctx); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	// The reload that used to delete the row the flush had just written.
+	if err := m.Reload(ctx); err != nil {
+		t.Fatalf("second reload: %v", err)
+	}
+
+	var apex string
+	var sans int64
+	if err := h.pool.QueryRow(ctx,
+		`SELECT apex, san_count FROM ct_apex WHERE program_id = $1`, h.program).
+		Scan(&apex, &sans); err != nil {
+		t.Fatalf("the apex has no row at all: %v", err)
+	}
+	if apex != "acme.test" {
+		t.Errorf("the row spells the apex %q, and the set holds it canonicalized", apex)
+	}
+	if sans != 1 {
+		t.Errorf("the apex counted %d SANs after a reload", sans)
+	}
+	if n := h.count(t, `SELECT count(*) FROM ct_apex WHERE program_id = $1`, h.program); n != 1 {
+		t.Errorf("%d rows for one apex, so the two spellings each made one", n)
+	}
+}
+
+// A programme holding an apex and something under it claims a name through
+// each, and the walk returns both on purpose. The name is still one asset and
+// one unit of ceiling.
+func TestANameClaimedTwiceByOneProgrammeIsWrittenOnce(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.rule(t, "include", "apex", "acme.test")
+	h.rule(t, "include", "apex", "api.acme.test")
+
+	opts := options()
+	opts.Ceiling = 1
+	m := h.matcher(opts)
+	if err := m.Reload(ctx); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+
+	m.Handle(ctx, frame(t, "staging.api.acme.test"))
+	if err := m.Flush(ctx); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	if n := h.count(t, `SELECT count(*) FROM asset WHERE program_id = $1`, h.program); n != 1 {
+		t.Fatalf("%d assets for one name claimed by two apexes of one programme", n)
+	}
+	// Nothing was refused, because the name cost one unit and the ceiling is one.
+	if n := h.count(t, `SELECT coalesce(sum(dropped),0)::int FROM ct_apex WHERE program_id = $1`,
+		h.program); n != 0 {
+		t.Errorf("the ceiling refused %d, so one name spent it twice", n)
+	}
+	// Both apexes count it, because what each delivered is a fact about that
+	// apex rather than about what was written.
+	if n := h.count(t, `SELECT coalesce(sum(san_count),0)::int FROM ct_apex WHERE program_id = $1`,
+		h.program); n != 2 {
+		t.Errorf("the two apexes counted %d SANs between them, and each delivered the name", n)
+	}
+}

@@ -156,7 +156,7 @@ func Revived(current, outcome string) bool {
 //
 // The counterpart holds: a success on the failing layer resets its counters, so
 // the asset returns to active in a single probe.
-func Decide(current string, reach Reach, layers ...Counters) string {
+func Decide(current string, scheduled bool, reach Reach, layers ...Counters) string {
 	worst := ""
 	for _, layer := range layers {
 		if !layer.Measured() {
@@ -186,6 +186,14 @@ func Decide(current string, reach Reach, layers ...Counters) string {
 	// draws and what 6.6 depends on: a success makes it active, and its budget
 	// archives it. Nothing else moves it.
 	//
+	// It applies to the kinds that carry a schedule, and that bound is the rule
+	// rather than a detail. The budget runs in the rescheduling path, which only
+	// touches hosts, so holding a *service* here would be closing an exit
+	// nothing else opens: a derived service whose HTTP layer reports a death
+	// would sit in candidate for good and never emit the death. A service is a
+	// candidate until something addresses the service, and a dead layer is
+	// something addressing it.
+	//
 	// Failing to find a name that has never been found is the expected outcome
 	// rather than news. Sending a candidate through flapping and into inactive
 	// would say a name died, when what happened is that it never existed, and
@@ -197,7 +205,7 @@ func Decide(current string, reach Reach, layers ...Counters) string {
 	// Unobservable is refused here for the same reason and not by exception. It
 	// is another way of saying nothing can be said, which is where a candidate
 	// already is, and entering it would close the same exit.
-	if current == Candidate {
+	if current == Candidate && scheduled {
 		if worst == LayerHealthy {
 			return Active
 		}
