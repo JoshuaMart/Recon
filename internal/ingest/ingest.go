@@ -57,6 +57,11 @@ type Run struct {
 	// Certificate is what revealed the names, when the source is the
 	// Certificate Transparency stream. Nil everywhere else.
 	Certificate *Certificate
+	// Revive brings an archived asset back. It is true for the two acts this
+	// platform dates itself, somebody typing and a log publishing, and false
+	// for an import, whose file is dated by whoever ran the scan and can be
+	// older than the archival it would undo.
+	Revive bool
 	// Due is when a freshly created asset becomes due. The arithmetic lives in
 	// Go, where it is testable, rather than in the statement that stores it.
 	Due Schedule

@@ -133,6 +133,8 @@ func newHarness(t *testing.T) *harness {
 	programs := api.NewPrograms(scoped, h.sched, ingestor, time.Minute, quiet)
 	mux.Handle("POST /programs/{program}/runs", guard.Require(auth.ActionManageJobs, programs.StartRun))
 	mux.Handle("POST /programs/{program}/assets", guard.Require(auth.ActionManageScope, programs.EnterAssets))
+	mux.Handle("POST /programs/{program}/imports/bbot",
+		guard.Require(auth.ActionManageScope, programs.ImportBBOT))
 	renders := api.NewRenders(scoped, 72*time.Hour, quiet)
 	mux.Handle("POST /assets/{asset}/render", guard.Require(auth.ActionManageJobs, renders.Request))
 	mux.Handle("POST /renders/replan", guard.Require(auth.ActionManageJobs, renders.Replan))

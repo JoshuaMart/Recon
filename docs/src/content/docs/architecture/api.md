@@ -6,7 +6,7 @@ sidebar:
 ---
 
 The control plane's whole surface is described in [`openapi.yaml`](/openapi.yaml), an OpenAPI 3.1 document
-covering twenty two operations. It is the file to hand to anything that has to call this without reading the
+covering twenty four operations. It is the file to hand to anything that has to call this without reading the
 Go.
 
 This chapter is not a copy of it. It says what the surface is shaped by, which a schema cannot carry.
@@ -72,9 +72,14 @@ changes shape and the document does not, so the two can drift in silence, which 
 
 Two things bound it.
 
-The route list is checkable mechanically: the operations in the document and the `mux.Handle` calls in
-`cmd/controlplane/main.go` are two lists of the same thing, and comparing them catches an endpoint added
-without a description.
+The route list is checked mechanically: the operations in the document and the `mux.Handle` calls in
+`cmd/controlplane/main.go` are two lists of the same thing, and a test compares them in both directions. An
+endpoint served and undescribed is the one somebody calling this without reading the Go finds out about the
+hard way; an operation described and unserved is the one they trust and get a 404 from.
+
+The check was written when it was one line of work and it found one immediately, which is the argument for
+it: the coverage panel of phase 8 had been served for a while with nothing in the document naming it, and
+nothing anywhere had said so.
 
 The search vocabulary is not, and that is the part most likely to fall behind. The field list appears twice,
 once in the document and once served live by `GET /assets/fields`. The served one is authoritative and the

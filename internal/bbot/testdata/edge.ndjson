@@ -1,0 +1,7 @@
+{"type": "DNS_NAME", "id": "DNS_NAME:a", "data": "good.example.com", "host": "good.example.com", "module": "crt_db", "timestamp": 1785346188.5, "scope_description": "in-scope", "discovery_context": "crt_db found it"}
+{"type":"DNS_NAME","id":"DNS_NAME:b","data":"broken.example.com"
+
+{"type": "WEBSOCKET", "id": "WEBSOCKET:a", "data": "ws://x", "host": "x.example.com", "module": "future", "timestamp": 1785346188.5}
+{"id": "NOTYPE:a", "data": "x.example.com"}
+{"type": "DNS_NAME", "id": "DNS_NAME:c", "data": "AFTER.Example.COM.", "host": "", "module": "crt_db", "timestamp": 1785346189.5}
+{"type": "OPEN_TCP_PORT", "id": "P:a", "data": "orphan.example.com:8443", "host": "orphan.example.com", "port": 8443, "module": "portscan", "timestamp": 1785346190.0}

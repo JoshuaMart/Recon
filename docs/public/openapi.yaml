@@ -844,6 +844,142 @@ paths:
         '500':
           $ref: '#/components/responses/Unavailable'
 
+  /programs/{program}/coverage:
+    get:
+      tags: [programs]
+      operationId: programCoverage
+      summary: What Certificate Transparency has delivered under a perimeter's apexes.
+      description: |
+        Numbers and the span they cover, and **no score**. A coverage confidence
+        collapsed into one figure is the composite score this console is built
+        without: a reader can tell "watched a month, no certificate" from
+        "watched since this morning", and a single number cannot. What is
+        returned instead is every input somebody would have used to compute one.
+
+        The feed's uptime travels beside the counters because without it an apex
+        the logs are silent about and a socket that was down read identically,
+        and only the second is this deployment's problem.
+
+        Requires `read_assets`.
+      security:
+        - consoleToken: [read_assets]
+      parameters:
+        - $ref: '#/components/parameters/ProgramID'
+      responses:
+        '200':
+          description: One entry per apex the programme watches.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  apexes:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ApexCoverage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/Unavailable'
+
+  /programs/{program}/imports/bbot:
+    post:
+      tags: [programs]
+      operationId: importBbot
+      summary: Import a BBOT scan run outside this platform.
+      description: |
+        Takes the event stream a BBOT scan writes, `output.json`, and turns what
+        it found into inventory. It is an assertion about the perimeter like the
+        assets form, so it holds `manage_scope` and not `ingest`.
+
+        **The body is newline delimited JSON despite the file's name**, one
+        event per line. A JSON array is refused by name, because that is the
+        shape `jq` produces and the mistake is about the container rather than
+        the content. A line that is not an event is reported in `refused` and
+        costs only itself.
+
+        **An import declares assets and writes no observation.** The
+        technologies, protocol banners and HTTP statuses the tool measured are
+        recorded in each asset's lineage and never as state: an observation
+        claims a state held between two dates as measured by an instrument this
+        platform versions, and a file satisfies neither half. This platform
+        re-measures what it is told exists.
+
+        `DNS_NAME` and `IP_ADDRESS` become hosts due for `resolve`.
+        `OPEN_TCP_PORT` and `URL` become services, which carry no due date of
+        their own and are observed through their host. No `url` asset is ever
+        created. `ASN`, `ORG_STUB` and `SCAN` create nothing. An event type this
+        deployment does not know is counted rather than refused, and appears in
+        `events` with a note saying so.
+
+        **The tool's own scope does not filter.** Every asset is classified
+        against the rules in force, so a name the tool called `affiliate` is
+        stored `unknown`, displayed, and never probed. A scan of a perimeter
+        this programme has no rule for therefore creates assets and schedules
+        none of them.
+
+        `first_seen` is the moment of the import, like every other act that
+        writes an asset; the event's own date goes into the lineage. An archived
+        asset named by an import stays archived and is given no due date, so it
+        counts nowhere in `scheduled`.
+
+        An import over the asset bound is refused rather than truncated, and the
+        refusal list and the type list are bounded with the remainder counted,
+        so a body of rubbish cannot produce an answer bigger than the file.
+      security:
+        - consoleToken: [manage_scope]
+      parameters:
+        - $ref: '#/components/parameters/ProgramID'
+      requestBody:
+        required: true
+        content:
+          application/x-ndjson:
+            schema:
+              type: string
+              description: |
+                The contents of the scan's `output.json`, one BBOT event object
+                per line. `output.csv` and `output.txt` are lossy and are not
+                accepted.
+            example: |
+              {"type":"SCAN","id":"SCAN:b6aa9a","data_json":{"id":"SCAN:b6aa9a","name":"jomar","target":{"seeds":["example.com"]},"started_at":1785346188.57},"timestamp":1785346188.58}
+              {"type":"DNS_NAME","id":"DNS_NAME:2fccb7","data":"api.example.com","host":"api.example.com","module":"crt_db","timestamp":1785346188.59,"scope_description":"in-scope","discovery_context":"crt_db searched crt_db API for \"example.com\" and found DNS_NAME: api.example.com"}
+              {"type":"OPEN_TCP_PORT","id":"OPEN_TCP_PORT:c9bf87","data":"api.example.com:443","host":"api.example.com","port":443,"module":"portscan","timestamp":1785346250.96}
+      responses:
+        '200':
+          description: What the file became, and where every line went.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Imported'
+        '400':
+          description: |
+            A body that is not an event stream at all: a JSON array, or nothing
+            but blank lines.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          description: |
+            A stream over the byte bound, or a file naming more assets than one
+            import takes. Refused rather than truncated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          $ref: '#/components/responses/Unavailable'
+
   /programs/{program}/runs:
     post:
       tags: [programs, runs]
@@ -1729,6 +1865,137 @@ components:
           description: |
             Each with the entry as typed and why it was not taken, so a typo
             reads as a typo rather than as a failure.
+          items:
+            type: object
+            properties:
+              entry: { type: string }
+              reason: { type: string }
+
+    ApexCoverage:
+      type: object
+      description: |
+        One apex, its counters, and how much of the span the feed was actually
+        alive for. Two numbers rather than a ratio, for the reason the endpoint
+        gives.
+      properties:
+        apex: { type: string }
+        watched_since: { type: string, format: date-time }
+        names:
+          type: integer
+          description: Names seen under this apex, which became candidates.
+        wildcards:
+          type: integer
+          description: |
+            Wildcard SANs, which name no host and create nothing. They are
+            counted here because the blind spot they leave is the common case
+            rather than a corner of one.
+        dropped:
+          type: integer
+          description: |
+            Held back by the per programme ceiling. A silent cap reads as a
+            small answer rather than a truncated one, so it is reported.
+        last_name_at: { type: string, format: date-time }
+        last_wildcard_at: { type: string, format: date-time }
+        span_from:
+          type: string
+          format: date-time
+          description: |
+            Where the feed's record actually starts, which is not always
+            `watched_since`. That record is purged past a retention horizon, so
+            an apex watched for a year would otherwise report a year of span
+            against six months of recorded minutes, and a healthy feed would
+            read as half down.
+        feed_minutes:
+          type: integer
+          description: Minutes of the span the feed delivered anything.
+        span_minutes:
+          type: integer
+          description: Minutes in the span, against which feed_minutes is read.
+
+    Imported:
+      type: object
+      description: |
+        What one file became. Counts rather than a row per asset, because an
+        import is the case the assets form's bound points at and a list of ten
+        thousand entries is not an answer anybody reads. Refusals stay
+        individual: entries that silently went nowhere are the failure mode this
+        endpoint has, and a total hides exactly that.
+      properties:
+        scan:
+          type: object
+          description: |
+            What the SCAN event said about the run that wrote the file. Empty
+            when the stream carries no SCAN event, which a truncated or filtered
+            one legitimately does not.
+          properties:
+            id: { type: string }
+            name: { type: string }
+            target:
+              type: array
+              items: { type: string }
+            started_at: { type: string, format: date-time }
+        events:
+          type: object
+          description: |
+            Every event type the file carried and what each produced, including
+            the types that produced nothing. A count of assets on its own reads
+            as the whole answer and never is.
+          additionalProperties:
+            type: object
+            properties:
+              seen:
+                type: integer
+                description: Lines of this type, before deduplication.
+              hosts:
+                type: integer
+                description: |
+                  Distinct hosts this type was the first to name. Zero rather
+                  than absent, so a reader cannot mistake a key this deployment
+                  omitted for one it never knew about.
+              services:
+                type: integer
+                description: Distinct services this type was the first to name.
+              note:
+                type: string
+                description: |
+                  Why a type produced less than it looks like it should, present
+                  whenever it did. An unknown type carries one saying so.
+        assets:
+          type: object
+          properties:
+            created: { type: integer }
+            existing:
+              type: integer
+              description: |
+                Already in the inventory. A repeat of the same file is all
+                existing and nothing created, which is the unique constraint
+                rather than a cache.
+            hosts: { type: integer }
+            services: { type: integer }
+            by_scope:
+              type: object
+              description: |
+                The perimeter's verdict, and the number worth reading first. A
+                file whose assets are all `unknown` was imported into the wrong
+                programme, and nothing else here says so.
+              additionalProperties: { type: integer }
+            scheduled:
+              type: integer
+              description: |
+                How many will actually be looked at. Everything outside the
+                perimeter is stored and never probed.
+        types_beyond:
+          type: integer
+          description: |
+            Event types the decoder stopped naming individually. Absent on any
+            real scan; a malformed body reaches the bound at once.
+        refused:
+          type: array
+          description: |
+            Names the platform could not turn into an identity, and lines that
+            were not events. Individually, with the reason. The list is bounded,
+            and when it stops it carries a final entry counting what it did not
+            name.
           items:
             type: object
             properties:

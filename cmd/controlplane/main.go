@@ -297,6 +297,12 @@ func routes(
 	// a different privilege from writing what a scanner found.
 	mux.Handle("POST /programs/{program}/assets", guard.Require(auth.ActionManageScope, programs.EnterAssets))
 
+	// An import is an assertion about the perimeter, like the form above and
+	// unlike a report, so it holds manage_scope and not ingest. A credential
+	// that could import could otherwise widen the mandate it spends a budget
+	// on, which is the whole reason those two actions are separate.
+	mux.Handle("POST /programs/{program}/imports/bbot", guard.Require(auth.ActionManageScope, programs.ImportBBOT))
+
 	// The two render triggers that are API entry points. They hold manage_jobs
 	// rather than ingest: something holding ingest could otherwise schedule
 	// renders of its choosing and spend a programme's budget on targets it

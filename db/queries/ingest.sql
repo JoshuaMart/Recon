@@ -125,9 +125,22 @@ projected AS (
         -- Only in-scope assets are scheduled. An asset leaving the perimeter
         -- loses its due dates in the same statement that reclassifies it,
         -- otherwise it keeps being scanned outside the authorization.
+        --
+        -- And only assets something will actually select. An archived row has
+        -- no due dates, so COALESCE would hand it the caller's, and every
+        -- selection filters archived out again: the date would be claimed by
+        -- nothing and drained by nothing, while the queue counted it as due
+        -- forever. A caller that means to bring an archived asset back says so
+        -- with revive, which is the same flag that moves the lifecycle two
+        -- lines below. The two now agree by construction rather than by the
+        -- caller remembering to set both.
         next_resolve_at = CASE WHEN EXCLUDED.scope_status = 'in_scope'
+                                AND (asset_current.lifecycle <> 'archived'
+                                     OR (SELECT i.revive FROM input i))
                                THEN COALESCE(asset_current.next_resolve_at, EXCLUDED.next_resolve_at) END,
         next_full_at    = CASE WHEN EXCLUDED.scope_status = 'in_scope'
+                                AND (asset_current.lifecycle <> 'archived'
+                                     OR (SELECT i.revive FROM input i))
                                THEN COALESCE(asset_current.next_full_at, EXCLUDED.next_full_at) END,
         next_fingerprint_at = CASE WHEN EXCLUDED.scope_status = 'in_scope'
                                    THEN asset_current.next_fingerprint_at END,

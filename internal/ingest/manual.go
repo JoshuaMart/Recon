@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/JoshuaMart/recon/internal/lifecycle"
 	"github.com/JoshuaMart/recon/internal/normalize"
 	"github.com/JoshuaMart/recon/internal/scope"
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
@@ -50,6 +51,10 @@ const (
 	SourceManual     = "manual"
 	SourceRule       = "scope_rule"
 	SourceCertstream = "certstream"
+	// SourceBBOT is a scan run outside this platform, imported. It is a fourth
+	// act rather than a variant of the first three: nobody typed it, no rule
+	// declared it, and no log published it. Somebody handed over a file.
+	SourceBBOT = "bbot"
 )
 
 // Certificate is what a candidate's lineage records about the certificate that
@@ -75,6 +80,8 @@ func (r Run) origin() (string, string) {
 		return SourceRule, "declared_in_scope"
 	case SourceCertstream:
 		return SourceCertstream, "certificate_transparency"
+	case SourceBBOT:
+		return SourceBBOT, "imported"
 	default:
 		return SourceManual, "entered_by_hand"
 	}
@@ -98,6 +105,7 @@ func (i *Ingestor) Enter(
 ) (Entered, error) {
 	at := i.now()
 	run.Due = Schedule{Resolve: &at, Full: &at}
+	run.Revive = true
 
 	out := Entered{Accepted: []Accepted{}, Refused: []Refused{}}
 	for _, entry := range entries {
@@ -126,7 +134,7 @@ func (i *Ingestor) enter(
 	if err != nil {
 		return nil, &refusal{reason: err.Error()}
 	}
-	accepted, err := i.enterAsset(ctx, q, run, set, key, nil, run.Due)
+	accepted, err := i.enterAsset(ctx, q, run, set, key, placement{due: run.Due})
 	if err != nil {
 		return nil, err
 	}
@@ -160,19 +168,19 @@ func (i *Ingestor) enterURL(
 
 	// The host is what a run targets, so it is the one that carries the due
 	// date. Scheduling the service means scheduling the host it sits on.
-	hostAsset, err := i.enterAsset(ctx, q, run, set, host, nil, run.Due)
+	hostAsset, err := i.enterAsset(ctx, q, run, set, host, placement{due: run.Due})
 	if err != nil {
 		return nil, err
 	}
 	hostID := hostAsset.AssetID
 
-	serviceAsset, err := i.enterAsset(ctx, q, run, set, service, &hostID, Schedule{})
+	serviceAsset, err := i.enterAsset(ctx, q, run, set, service, placement{parent: &hostID})
 	if err != nil {
 		return nil, err
 	}
 	serviceID := serviceAsset.AssetID
 
-	urlAsset, err := i.enterAsset(ctx, q, run, set, url, &serviceID, Schedule{})
+	urlAsset, err := i.enterAsset(ctx, q, run, set, url, placement{parent: &serviceID})
 	if err != nil {
 		return nil, err
 	}
@@ -180,11 +188,30 @@ func (i *Ingestor) enterURL(
 	return []Accepted{hostAsset, serviceAsset, urlAsset}, nil
 }
 
+// placement is what one asset carries beyond its key: where it sits, when it is
+// due, and why it is here.
+//
+// A struct rather than three parameters, because two of the three are usually
+// zero and a call site reading enterAsset(..., nil, Schedule{}, nil) says
+// nothing about which of them mattered.
+//
+// There is deliberately no date here. Every act that writes an asset writes it
+// at the moment it happens, including an import, whose file carries a date that
+// belongs in lineage and not on the row. 7.6 says why.
+type placement struct {
+	parent *uuid.UUID
+	due    Schedule
+	// lineage is merged into the step this source records, for the facts that
+	// belong to one asset rather than to the whole batch.
+	lineage map[string]any
+}
+
 func (i *Ingestor) enterAsset(
 	ctx context.Context, q *sqlcgen.Queries, run Run, set *scope.Set,
-	key normalize.Key, parent *uuid.UUID, due Schedule,
+	key normalize.Key, e placement,
 ) (Accepted, error) {
 	status := set.Classify(scope.Target{Key: key})
+	parent, due := e.parent, e.due
 
 	source, step := run.origin()
 	lineage := map[string]any{
@@ -195,6 +222,9 @@ func (i *Ingestor) enterAsset(
 		lineage["issuer"] = run.Certificate.Issuer
 		lineage["log"] = run.Certificate.Log
 		lineage["cert_index"] = run.Certificate.Index
+	}
+	for name, value := range e.lineage {
+		lineage[name] = value
 	}
 	path, err := json.Marshal([]any{lineage})
 	if err != nil {
@@ -213,8 +243,10 @@ func (i *Ingestor) enterAsset(
 		ScopeStatus:     string(status),
 		SeenAt:          stamp(i.now()),
 		// An act rather than an observation, and the one documented way an
-		// archived asset comes back by hand.
-		Revive: true,
+		// archived asset comes back by hand. Carried by the run rather than
+		// hardcoded here, because an import is dated by whoever ran the scan
+		// and must not resurrect what this system concluded was gone.
+		Revive: run.Revive,
 	}
 	if key.Port != 0 {
 		params.Port = portPtr(key.Port)
@@ -235,13 +267,20 @@ func (i *Ingestor) enterAsset(
 		return Accepted{}, fmt.Errorf("enter %s: %w", key.Value, err)
 	}
 
+	// Scheduled reports what the write did, not what the caller asked for. The
+	// statement refuses a due date on a row that stays archived, so a caller
+	// deciding this from its own inputs would answer that something will be
+	// looked at when the row it just wrote says otherwise.
+	archived := row.PreviousLifecycle != nil &&
+		*row.PreviousLifecycle == lifecycle.Archived && !run.Revive
+
 	return Accepted{
 		AssetID:   uuid.UUID(row.AssetID.Bytes),
 		Kind:      string(key.Kind),
 		Key:       key.Value,
 		Scope:     string(status),
 		Created:   row.Created,
-		Scheduled: status == scope.InScope && (due.Full != nil || due.Resolve != nil),
+		Scheduled: status == scope.InScope && (due.Full != nil || due.Resolve != nil) && !archived,
 	}, nil
 }
 
@@ -275,6 +314,7 @@ func (i *Ingestor) EnterCandidates(
 	at := i.now()
 	run.Source = SourceCertstream
 	run.Due = Schedule{Resolve: &at}
+	run.Revive = true
 
 	out := Entered{Accepted: []Accepted{}, Refused: []Refused{}}
 	for _, name := range names {
@@ -284,7 +324,7 @@ func (i *Ingestor) EnterCandidates(
 			continue
 		}
 
-		accepted, err := i.enterAsset(ctx, q, run, set, key, nil, run.Due)
+		accepted, err := i.enterAsset(ctx, q, run, set, key, placement{due: run.Due})
 		if err != nil {
 			return out, err
 		}
