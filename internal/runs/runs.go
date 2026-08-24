@@ -36,6 +36,14 @@ import (
 const (
 	KindDiscovery    = "discovery"
 	KindVerification = "verification"
+	// KindCandidate is the lane a Certificate Transparency candidate takes.
+	//
+	// A third value rather than a second reservation scheme: the bound is
+	// already per kind, so this costs a partial unique index and a selection.
+	// It exists because one live verification run holds its slot for its whole
+	// deadline, and the aggressive curve rests on a candidate's first check
+	// happening at sixty seconds.
+	KindCandidate = "candidate"
 )
 
 // Errors a caller acts on.
@@ -249,7 +257,7 @@ func (s *Scheduler) Verification(
 		return nil, ErrNothingDue
 	}
 
-	def, err := s.create(ctx, q, org, program, KindVerification, rung, len(due))
+	def, err := s.create(ctx, q, org, program, KindVerification, rung, len(due), s.cfg.Timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -285,6 +293,85 @@ func (s *Scheduler) Verification(
 	return def, nil
 }
 
+// Candidate freezes the candidates that are due and returns their run.
+//
+// The same shape as Verification and deliberately not a parameter of it, because
+// what differs is what it does *not* check. A live verification does not hold
+// this back, which is the whole reason the lane exists: a sweep holds its slot
+// for its whole deadline, and the aggressive curve rests on a candidate's first
+// check happening at sixty seconds rather than half an hour later.
+//
+// Nor does a live discovery, and that is a decision. Discovery blocks
+// verification because a full sweep sends a second scanner at hosts the first
+// one is connected to. A resolve sends nothing to the target at all, so there is
+// nothing to collide with, and blocking here would spend the freshness advantage
+// on a run that cannot interfere with it.
+//
+// What still holds it back is another candidate run, kept by the partial unique
+// index, and the frozen list: a host held by a verification run is not taken
+// here either, because the lease is one lease across the lanes rather than one
+// per lane.
+func (s *Scheduler) Candidate(
+	ctx context.Context, q *sqlcgen.Queries, org, program uuid.UUID,
+) (*Definition, error) {
+	if live, err := s.InFlight(ctx, q, program, KindCandidate); err != nil {
+		return nil, err
+	} else if live != nil {
+		return nil, fmt.Errorf("%w: %s", ErrRunInFlight, live.Error())
+	}
+
+	at := s.now()
+	due, err := q.SelectDueCandidates(ctx, sqlcgen.SelectDueCandidatesParams{
+		OrgID:     pgUUID(org),
+		ProgramID: pgUUID(program),
+		At:        stamp(at),
+		Batch:     bounded(s.cfg.BatchSize),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("select due candidates: %w", err)
+	}
+	if len(due) == 0 {
+		return nil, ErrNothingDue
+	}
+
+	// A shorter deadline than a sweep, because this does one rung over a short
+	// list. A slot held for thirty minutes by a run that had one thing to do
+	// turns the bound this lane exists for back into the problem it solves.
+	def, err := s.create(ctx, q, org, program, KindCandidate,
+		lifecycle.RungResolve, len(due), s.cfg.CandidateTimeout)
+	if err != nil {
+		return nil, err
+	}
+
+	assets := make([]pgtype.UUID, 0, len(due))
+	keys := make([]string, 0, len(due))
+	for _, row := range due {
+		assets = append(assets, row.AssetID)
+		keys = append(keys, row.Key)
+	}
+	if _, err := q.AddRunTargets(ctx, sqlcgen.AddRunTargetsParams{
+		RunID:    pgUUID(def.RunID),
+		OrgID:    pgUUID(org),
+		AssetIds: assets,
+		Keys:     keys,
+	}); err != nil {
+		return nil, fmt.Errorf("freeze target list: %w", err)
+	}
+
+	// The targets input is what makes this cheap, and it is the input rather
+	// than the length of the list: stage 1 is replaced, so no enumeration runs
+	// and no source quota is spent whatever the list holds. One host is the
+	// common case, not the mechanism.
+	def.Args = append(def.Args,
+		"--stages", lifecycle.RungResolve,
+		"--targets-url", s.targetsURL(def.RunID),
+		"--targets-header", "Authorization: Bearer "+s.mint(auth.PurposeTargets, def.RunID, def.Deadline),
+	)
+	s.log.InfoContext(ctx, "candidate run defined",
+		"run", def.RunID, "program", program, "targets", len(keys))
+	return def, nil
+}
+
 // Discovery provisions one enumeration over a programme's apexes.
 //
 // A discovery run gets no targets URL and a domain instead. That is the whole
@@ -312,7 +399,7 @@ func (s *Scheduler) Discovery(
 		return nil, fmt.Errorf("read exclusions: %w", err)
 	}
 
-	def, err := s.create(ctx, q, org, program, KindDiscovery, ScopeFull, 0)
+	def, err := s.create(ctx, q, org, program, KindDiscovery, ScopeFull, 0, s.cfg.Timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -359,7 +446,7 @@ func (s *Scheduler) Discovery(
 // create writes the row and builds everything a run receives.
 func (s *Scheduler) create(
 	ctx context.Context, q *sqlcgen.Queries, org, program uuid.UUID,
-	kind, scope string, targets int,
+	kind, scope string, targets int, timeout time.Duration,
 ) (*Definition, error) {
 	live, err := s.InFlight(ctx, q, program, kind)
 	if err != nil {
@@ -386,7 +473,7 @@ func (s *Scheduler) create(
 		ProgramID:   program,
 		Kind:        kind,
 		Scope:       scope,
-		Deadline:    at.Add(s.cfg.Timeout),
+		Deadline:    at.Add(timeout),
 		TargetCount: targets,
 	}
 
@@ -421,7 +508,7 @@ func (s *Scheduler) create(
 		"--scan-rate", strconv.Itoa(int(program1.RateLimitRps)),
 		"--webhook-url", strings.TrimSuffix(s.cfg.PublicURL, "/") + "/reports",
 		"--webhook-header", "Authorization: Bearer " + report,
-		"--timeout", s.cfg.Timeout.String(),
+		"--timeout", timeout.String(),
 	}
 	def.Env = map[string]string{}
 	return def, nil

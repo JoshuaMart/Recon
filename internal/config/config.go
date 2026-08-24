@@ -236,6 +236,11 @@ type Verification struct {
 	// delivers nothing, where one that runs out of its own time still delivers
 	// a truncated report.
 	Timeout time.Duration `koanf:"timeout"`
+	// CandidateTimeout is a candidate run's budget, and it is much shorter
+	// because that run does one rung over a short list. The deadline is how
+	// long the lane's slot is held, so a candidate run given a sweep's budget
+	// would turn the bound the lane exists for back into the problem it solves.
+	CandidateTimeout time.Duration `koanf:"candidate_timeout"`
 	// Grace is how long past the deadline a report is still worth ingesting.
 	// The data is valid either way; the run may simply have been
 	// re-dispatched.
@@ -402,20 +407,21 @@ func Defaults() Config {
 			ReplanSpread:      3 * 24 * time.Hour,
 		},
 		Verification: Verification{
-			Resolve:        24 * time.Hour,
-			Full:           72 * time.Hour,
-			Fingerprint:    21 * 24 * time.Hour,
-			RenderSole:     7 * 24 * time.Hour,
-			RenderRecovery: 30 * 24 * time.Hour,
-			RenderBlind:    7 * 24 * time.Hour,
-			Inactive:       7 * 24 * time.Hour,
-			Jitter:         15 * time.Minute,
-			FullFloor:      6 * time.Hour,
-			BatchSize:      500,
-			Timeout:        30 * time.Minute,
-			Grace:          10 * time.Minute,
-			SweepInterval:  time.Minute,
-			DiscoveryRetry: time.Hour,
+			Resolve:          24 * time.Hour,
+			Full:             72 * time.Hour,
+			Fingerprint:      21 * 24 * time.Hour,
+			RenderSole:       7 * 24 * time.Hour,
+			RenderRecovery:   30 * 24 * time.Hour,
+			RenderBlind:      7 * 24 * time.Hour,
+			Inactive:         7 * 24 * time.Hour,
+			Jitter:           15 * time.Minute,
+			FullFloor:        6 * time.Hour,
+			BatchSize:        500,
+			Timeout:          30 * time.Minute,
+			CandidateTimeout: 5 * time.Minute,
+			Grace:            10 * time.Minute,
+			SweepInterval:    time.Minute,
+			DiscoveryRetry:   time.Hour,
 			// Not nmap's top 100, which orders ports by how often they are
 			// open across the whole internet and therefore leads with mail and
 			// printing. The criterion here is that a port earns its place if
@@ -616,6 +622,12 @@ func (c *Config) Validate(role Role) error {
 		// Validated whether or not a feed is configured. A deployment that
 		// turns the matcher on later would otherwise find its tunables refused
 		// at the moment it least wants a startup failure.
+		if c.Verification.CandidateTimeout > c.Verification.Timeout {
+			fail("verification.candidate_timeout (%s) exceeds verification.timeout (%s): the "+
+				"candidate lane exists so a candidate does not wait behind a sweep, and a slot "+
+				"held longer than one is that wait wearing a different name",
+				c.Verification.CandidateTimeout, c.Verification.Timeout)
+		}
 		if c.CT.Interval <= 0 || c.CT.Window <= 0 || c.CT.CacheTTL <= 0 {
 			fail("ct.interval, ct.window and ct.cache_ttl must all be positive")
 		}
@@ -627,11 +639,12 @@ func (c *Config) Validate(role Role) error {
 			"resolve": c.Verification.Resolve, "full": c.Verification.Full,
 			"fingerprint": c.Verification.Fingerprint, "inactive": c.Verification.Inactive,
 			"timeout": c.Verification.Timeout, "sweep_interval": c.Verification.SweepInterval,
-			"discovery_retry": c.Verification.DiscoveryRetry,
-			"full_floor":      c.Verification.FullFloor,
-			"render_sole":     c.Verification.RenderSole,
-			"render_recovery": c.Verification.RenderRecovery,
-			"render_blind":    c.Verification.RenderBlind,
+			"candidate_timeout": c.Verification.CandidateTimeout,
+			"discovery_retry":   c.Verification.DiscoveryRetry,
+			"full_floor":        c.Verification.FullFloor,
+			"render_sole":       c.Verification.RenderSole,
+			"render_recovery":   c.Verification.RenderRecovery,
+			"render_blind":      c.Verification.RenderBlind,
 		} {
 			if value <= 0 {
 				fail("verification.%s must be positive, got %s", name, value)

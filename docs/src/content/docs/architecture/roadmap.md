@@ -741,7 +741,7 @@ freshness advantage, so it is the differentiator. Deferring it blocks nothing an
 - [x] [Short term deduplication cache](/architecture/discovery/#the-deduplication-cache-is-a-cost-control-never-the-correctness-one), keyed per program, a cost control and never the correctness one
 - [x] [`CANDIDATE` creation with aggressive backoff](/architecture/lifecycle/#backoff-curves), immediate on the first rung and jittered at the promotion to `full`
 - [x] A [per program ceiling](/architecture/discovery/#a-ceiling-per-program-and-it-says-what-it-dropped) on candidate creation, which says what it dropped
-- [ ] A [third run kind](/architecture/deployment/#a-third-kind-so-a-candidate-never-waits-behind-a-sweep), pinned to `resolve`, so a candidate never waits behind a verification sweep
+- [x] A [third run kind](/architecture/deployment/#a-third-kind-so-a-candidate-never-waits-behind-a-sweep), pinned to `resolve`, so a candidate never waits behind a verification sweep
 - [x] [Wildcard certificate detection](/architecture/discovery/#wildcard-certificates-and-the-metric-that-follows) into the [`ct_apex`](/architecture/data-model/#42-main-tables) counters, not a boolean on the program
 - [ ] Per program CT coverage **derived** from those counters at read time, with the connection gap recorded so an outage does not read as silence
 
@@ -753,11 +753,11 @@ freshness advantage, so it is the differentiator. Deferring it blocks nothing an
 - [ ] A candidate that is never reachable ends `ARCHIVED`, not `INACTIVE`
 - [ ] A wildcard certificate moves the apex counters, lowers the derived coverage, and creates **no** asset
 - [ ] A candidate that goes live during its first hour is detected inside that hour ([corrected](#three-assertions-corrected-before-the-phase-starts))
-- [ ] A candidate's first check runs no enumeration and spends no source quota
+- [x] A candidate's first check runs no enumeration and spends no source quota
 - [x] `target.com.evil.com` matches nothing while `staging.api.target.com` matches, on the same set
 - [x] A program whose authorization expired leaves the set at the next reload and creates nothing after it
 - [ ] Past its ceiling a program creates no further candidate for the window, and the count it dropped is readable
-- [ ] A candidate run and a verification run coexist on one program; two candidate runs do not
+- [x] A candidate run and a verification run coexist on one program; two candidate runs do not
 - [x] A name matching an apex and caught by an exclusion is **stored with no due date**, not filtered out
 
 ### Three assertions corrected before the phase starts

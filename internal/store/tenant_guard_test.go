@@ -120,6 +120,7 @@ func TestTheCrossingsAreTheOnesArguedFor(t *testing.T) {
 		"OrgForRun",
 		"PendingEvents",
 		"PrincipalForToken",
+		"ProgramsDueForCandidates",
 		"ProgramsDueForDiscovery",
 		"ProgramsDueForVerification",
 		"PurgeSuppressed",

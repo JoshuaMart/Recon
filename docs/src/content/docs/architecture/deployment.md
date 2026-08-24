@@ -122,10 +122,19 @@ Two bounds keep it from being a hole in the rate limit rather than a lane in it:
   `full` by any caller: the expensive rung is the next section's business.
 - **Its deadline is minutes**, not the run timeout. It does one rung over a short list, and a slot held
   for thirty minutes by a run that had one thing to do turns the bound back into the problem it solves.
+  It is its own setting, and the configuration refuses a value above the sweep's: a lane whose slot is
+  held longer than the one it exists to avoid waiting for is that wait wearing a different name.
 
 **The expensive rung goes back into the ordinary lane.** A candidate that answers earns `next_full_at`
 and is selected by the verification pass with everything else, where one live run per program is exactly
-the bound a hundred connections per host deserves.
+the bound a hundred connections per host deserves. That date is also what takes it out of this lane, so
+the promotion and the hand over are one write rather than two facts that could disagree.
+
+**Nothing else holds a candidate run back.** A live verification does not, which is the point. A live
+discovery does not either, and that is a decision rather than an oversight: discovery blocks verification
+because a full sweep sends a second scanner at hosts the first one is connected to, and a `resolve` sends
+nothing to the target at all. What still holds it is another candidate run, kept by the index, and the
+frozen list, which is one lease across the lanes rather than one per lane.
 
 **A run that dies takes nothing with it.** Due dates are moved only when a report is ingested, so an
 abandoned run leaves the inventory exactly as it found it and the next tick selects the same assets
@@ -297,7 +306,7 @@ inferred from the code:
 
 | Pool | What runs on it |
 |---|---|
-| `asm_sys` | the partition and housekeeping loop, the deadline sweeper, the discovery cadence, the due date pass, the candidate pass, the Certificate Transparency set reload and its apex counters, the Notifier, the render pass, the external host sweep, and the two lookups that turn a credential into an organization, one per kind of credential |
+| `asm_sys` | the partition and housekeeping loop, the deadline sweeper, the discovery cadence, the due date pass, the candidate pass and its own selection, the Certificate Transparency set reload and its apex counters, the Notifier, the render pass, the external host sweep, and the two lookups that turn a credential into an organization, one per kind of credential |
 | `asm_app` | everything a request does after that lookup, including the whole of report ingestion |
 
 The Certificate Transparency reload is on that list for the same reason as the lookups rather than for the
@@ -483,8 +492,15 @@ candidate of it, scope `resolve`.
 
 **A candidate is selected by this pass and by no other**, and the exclusion is mutual. Without it the two
 passes fight over the same names: each freezes what the other was about to take, and which one wins is
-whichever tick fired first. The verification pass therefore skips `candidate` rows, and this one takes
-nothing else.
+whichever tick fired first.
+
+**What the lane holds is the pair `candidate` and no full date, never the lifecycle alone.** `CANDIDATE` is
+not a Certificate Transparency state: a host somebody typed into the
+[assets form](/architecture/scope/#entering-an-asset-by-hand) is one too until its first answer. Selecting
+on the lifecycle alone diverts it into a lane pinned to `resolve`, where a resolution reports that the name
+answers and nothing ever sweeps its ports, which is the opposite of what a typed name is promised and it is
+promised it because a person is waiting. A null `next_full_at` is what separates them, and it is exactly the
+state the aggressive curve describes: a candidate that has not yet earned the expensive rung.
 
 **It is not a single host run, and that phrase was doing work it should not.** What makes a candidate's
 first check cheap is the [targets input](/architecture/discovery/#72-how-a-verification-run-gets-its-targets):

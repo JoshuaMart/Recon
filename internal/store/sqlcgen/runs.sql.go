@@ -321,6 +321,76 @@ func (q *Queries) ProgramForScheduling(ctx context.Context, arg ProgramForSchedu
 	return i, err
 }
 
+const programsDueForCandidates = `-- name: ProgramsDueForCandidates :many
+SELECT p.id, p.org_id, p.name
+  FROM program p
+  JOIN asset_current c ON c.program_id = p.id
+ WHERE p.state = 'active'
+   AND p.authorized_from <= $1::timestamptz
+   AND (p.authorized_to IS NULL OR p.authorized_to > $1::timestamptz)
+   AND c.kind = 'fqdn'
+   AND c.scope_status = 'in_scope'
+   AND c.lifecycle = 'candidate'
+   AND c.next_full_at IS NULL
+   AND c.next_resolve_at <= $1::timestamptz
+   AND NOT EXISTS (
+        SELECT 1 FROM run r
+         WHERE r.program_id = p.id
+           AND r.kind = 'candidate'
+           AND r.state IN ('pending', 'running'))
+ GROUP BY p.id, p.org_id, p.name
+ ORDER BY p.id
+`
+
+type ProgramsDueForCandidatesParams struct {
+	At pgtype.Timestamptz
+}
+
+type ProgramsDueForCandidatesRow struct {
+	ID    pgtype.UUID
+	OrgID pgtype.UUID
+	Name  string
+}
+
+// ProgramsDueForCandidates wakes the lane that must not wait.
+//
+// The difference from ProgramsDueForVerification is the whole reason the lane
+// exists, and it is one line: only a live *candidate* run holds this pass back.
+//
+// A live verification does not, which is the point: a sweep holds its slot for
+// its whole deadline, and a candidate arriving a minute in would wait half an
+// hour for a check the aggressive curve wanted at sixty seconds.
+//
+// Nor does a live discovery, and that is a decision rather than an oversight.
+// Discovery blocks verification because a full sweep would send a second
+// scanner at hosts the first one is connected to. A resolve sends nothing to
+// the target at all, so there is nothing to collide with, and blocking here
+// would spend the freshness advantage on a run that cannot interfere with it.
+//
+// @tenant: cross-org
+// @why: the candidate pass provisions for every programme of every tenant in
+//
+//	one pass, exactly as the due date pass does.
+func (q *Queries) ProgramsDueForCandidates(ctx context.Context, arg ProgramsDueForCandidatesParams) ([]ProgramsDueForCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, programsDueForCandidates, arg.At)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ProgramsDueForCandidatesRow{}
+	for rows.Next() {
+		var i ProgramsDueForCandidatesRow
+		if err := rows.Scan(&i.ID, &i.OrgID, &i.Name); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const programsDueForDiscovery = `-- name: ProgramsDueForDiscovery :many
 SELECT p.id, p.org_id, p.name, p.rate_limit_rps
   FROM program p
@@ -428,6 +498,7 @@ SELECT p.id, p.org_id, p.name,
    AND c.kind = 'fqdn'
    AND c.scope_status = 'in_scope'
    AND c.lifecycle <> 'archived'
+   AND NOT (c.lifecycle = 'candidate' AND c.next_full_at IS NULL)
    AND (c.next_full_at <= $1::timestamptz OR c.next_resolve_at <= $1::timestamptz)
    AND NOT EXISTS (
         SELECT 1 FROM run r
@@ -570,6 +641,87 @@ func (q *Queries) RunForTargets(ctx context.Context, arg RunForTargetsParams) (R
 	return i, err
 }
 
+const selectDueCandidates = `-- name: SelectDueCandidates :many
+SELECT c.asset_id, c.key, c.lifecycle, c.backoff_tier
+  FROM asset_current c
+ WHERE c.org_id = $1::uuid
+   AND c.program_id = $2::uuid
+   AND c.kind = 'fqdn'
+   AND c.scope_status = 'in_scope'
+   AND c.lifecycle = 'candidate'
+   -- The pair, not the lifecycle. A hand entered host is a candidate too until
+   -- it answers, and it carries a full date because somebody typed it in to
+   -- find out what it exposes: taking it here would answer that a name
+   -- resolves and never sweep a port.
+   AND c.next_full_at IS NULL
+   AND c.next_resolve_at <= $3::timestamptz
+   -- The lease is the same one, across lanes as well as within one: a host
+   -- frozen by a verification run is not taken by a candidate run either.
+   AND NOT EXISTS (
+        SELECT 1 FROM run_target t
+          JOIN run r ON r.id = t.run_id
+         WHERE t.asset_id = c.asset_id
+           AND r.state IN ('pending', 'running'))
+ ORDER BY c.next_resolve_at, c.asset_id
+ LIMIT $4::int
+`
+
+type SelectDueCandidatesParams struct {
+	OrgID     pgtype.UUID
+	ProgramID pgtype.UUID
+	At        pgtype.Timestamptz
+	Batch     int32
+}
+
+type SelectDueCandidatesRow struct {
+	AssetID     pgtype.UUID
+	Key         string
+	Lifecycle   string
+	BackoffTier int32
+}
+
+// SelectDueCandidates is the candidate lane's half of the selection.
+//
+// The same columns and the same lease as SelectDueHosts, with the lifecycle
+// reversed: a candidate is selected by this and by no other pass, or the two
+// fight over the same names and each freezes what the other was about to take.
+//
+// The rung is not a parameter. A candidate run is pinned to resolve by a CHECK
+// on the table, because one round trip to a resolver pool and nothing sent to
+// the target is what lets this lane run beside a verification without adding up
+// to anything the rate budget has an opinion about.
+//
+// @tenant: scoped
+func (q *Queries) SelectDueCandidates(ctx context.Context, arg SelectDueCandidatesParams) ([]SelectDueCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, selectDueCandidates,
+		arg.OrgID,
+		arg.ProgramID,
+		arg.At,
+		arg.Batch,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SelectDueCandidatesRow{}
+	for rows.Next() {
+		var i SelectDueCandidatesRow
+		if err := rows.Scan(
+			&i.AssetID,
+			&i.Key,
+			&i.Lifecycle,
+			&i.BackoffTier,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const selectDueHosts = `-- name: SelectDueHosts :many
 
 SELECT c.asset_id, c.key, c.lifecycle, c.backoff_tier
@@ -579,6 +731,24 @@ SELECT c.asset_id, c.key, c.lifecycle, c.backoff_tier
    AND c.kind = 'fqdn'
    AND c.scope_status = 'in_scope'
    AND c.lifecycle <> 'archived'
+   -- What belongs to the candidate lane, excluded here because the exclusion is
+   -- mutual: without it the two passes fight over the same names, each freezing
+   -- what the other was about to take, and which one wins is whichever tick
+   -- fired first.
+   --
+   -- The lane is the pair and never the lifecycle alone, and that correction is
+   -- worth the two lines it costs. CANDIDATE is not a Certificate Transparency
+   -- state: a host somebody typed into the assets form is one too, until its
+   -- first answer. Excluding on the lifecycle alone would divert it into a lane
+   -- pinned to resolve, where a resolution would report that the name answers
+   -- and nothing would ever sweep its ports, which is the opposite of what a
+   -- hand entered host is promised and it is promised it because a person is
+   -- waiting.
+   --
+   -- A null full date is what actually separates them. A candidate that has not
+   -- earned the expensive rung is exactly the state the aggressive curve
+   -- describes, and it is readable here without joining the asset's source.
+   AND NOT (c.lifecycle = 'candidate' AND c.next_full_at IS NULL)
    AND CASE WHEN $3::text = 'full' THEN c.next_full_at ELSE c.next_resolve_at END
        <= $4::timestamptz
    -- The lease, and the whole of it. Two runs never hold the same host, and a

@@ -126,6 +126,12 @@ func run() error {
 	// by every ingestion and nothing ever reads it, so the inventory is verified
 	// exactly when somebody presses a button.
 	go runs.NewDuePass(system, scheduler, cfg.Verification.SweepInterval, log).Run(ctx)
+	// The candidate lane, which exists because of what it does not wait for. A
+	// Certificate Transparency candidate is due a minute after it is created,
+	// and one live verification run holds its slot for a whole deadline: on the
+	// pass above, a candidate arriving mid sweep waits half an hour for a check
+	// the aggressive curve wanted at sixty seconds.
+	go runs.NewCandidatePass(system, scheduler, cfg.Verification.SweepInterval, log).Run(ctx)
 
 	// The one loop that asks a question about somebody else's domain, and the
 	// only outbound work in the control plane. It resolves an apex and nothing
