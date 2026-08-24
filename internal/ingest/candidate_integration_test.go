@@ -337,3 +337,71 @@ func TestACandidateThatIsNeverReachableEndsArchived(t *testing.T) {
 			resolveDue, fullDue)
 	}
 }
+
+// What Certificate Transparency notifies, and when.
+//
+// Nothing on the certificate. A candidate is not a finding: most of them never
+// resolve to anything, and notifying on creation would produce the exact flood
+// the anti-flood exists to stop, on the one source that can deliver several
+// thousand names in a minute.
+//
+// The event is that one went live, and it is new_active, which the table of 12.2
+// already carried before the source that produces it existed.
+func TestACandidateNotifiesNothingUntilItGoesLive(t *testing.T) {
+	h := newHarness(t)
+	set := h.scope(t, include("acme.test"))
+	c := &clock{now: time.Date(2026, 8, 24, 9, 0, 0, 0, time.UTC)}
+	ing := h.dated(c)
+
+	const name = "arriving.acme.test"
+	if _, err := ing.EnterCandidates(context.Background(), h.queries, h.candidateRun(), set,
+		[]string{name}); err != nil {
+		t.Fatalf("enter candidates: %v", err)
+	}
+
+	if events := h.events(t); len(events) != 0 {
+		t.Fatalf("a certificate produced %d notifications, and a candidate is not a finding: %+v",
+			len(events), events)
+	}
+
+	// The first check answers, on the cheap rung, from the candidate lane.
+	resolve := h.run()
+	resolve.Kind = "candidate"
+	resolve.Scope = "resolve"
+	resolve.Targets = map[string]struct{}{name: {}}
+
+	c.now = c.now.Add(time.Minute)
+	if _, err := ing.Report(context.Background(), h.queries, resolve, set, liveHost(name)); err != nil {
+		t.Fatalf("ingest the resolve report: %v", err)
+	}
+
+	events := h.events(t)
+	if len(events) != 1 {
+		t.Fatalf("%d notifications when the candidate went live: %+v", len(events), events)
+	}
+	arrival := events[0]
+	if arrival.Kind != "new_active" {
+		t.Errorf("the event is %q, and phase 8 adds no kind of its own", arrival.Kind)
+	}
+	if arrival.Key != name {
+		t.Errorf("the event names %q", arrival.Key)
+	}
+	// The programme has never had a discovery run, so the grace does not hold
+	// this back: an asset a log found under an apex was typed in by nobody.
+	if arrival.Suppressed {
+		t.Error("the arrival was suppressed, and it is the freshness advantage arriving")
+	}
+	if from, _ := arrival.Payload["from"].(string); from != "candidate" {
+		t.Errorf("the event says it came from %q", from)
+	}
+
+	// And it is told once. A host writes a dns layer and a tcp layer in the
+	// same report, and both see the same arrival.
+	c.now = c.now.Add(time.Hour)
+	if _, err := ing.Report(context.Background(), h.queries, resolve, set, liveHost(name)); err != nil {
+		t.Fatalf("second report: %v", err)
+	}
+	if events := h.events(t); len(events) != 1 {
+		t.Errorf("%d notifications after a second report that changed nothing", len(events))
+	}
+}
