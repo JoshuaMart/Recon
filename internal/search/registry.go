@@ -95,8 +95,17 @@ var registry = map[string]field{
 	"waf_vendor":   {expr: Alias + ".waf_vendor", kind: kindText, ops: ops(OpEq, OpIn)},
 	"server":       {expr: Alias + ".server", kind: kindText, ops: ops(OpEq, OpIn)},
 
-	"is_cdn":       {expr: Alias + ".is_cdn", kind: kindBool, ops: ops(OpEq)},
-	"waf_detected": {expr: Alias + ".waf_detected", kind: kindBool, ops: ops(OpEq)},
+	// Three states, and the third is an answer rather than a gap. Null means no
+	// pass has been able to look: ingestion writes the flag only from a
+	// resolution that produced something, because writing false from a name
+	// that timed out would clear it on an asset that is genuinely fronted, and
+	// the upsert coalesces so the null survives until something looks.
+	//
+	// So exists is on both, and it is the only way to ask. `not(eq is_cdn true)`
+	// does not reach that state and cannot: NOT (NULL = true) is NULL in SQL,
+	// which excludes the row rather than returning it.
+	"is_cdn":       {expr: Alias + ".is_cdn", kind: kindBool, ops: ops(OpEq, OpExists)},
+	"waf_detected": {expr: Alias + ".waf_detected", kind: kindBool, ops: ops(OpEq, OpExists)},
 
 	"ip": {expr: Alias + ".ip", kind: kindInet, ops: ops(OpEq, OpInCIDR)},
 

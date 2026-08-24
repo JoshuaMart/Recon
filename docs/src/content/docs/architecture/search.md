@@ -222,7 +222,7 @@ also the answer to "what can be filtered", and it is short on purpose.
 | `kind`, `lifecycle`, `scope_status`, `scheme` | the column | text | `eq`, `in` |
 | `port`, `status_code`, `asn` | the column | int | `eq`, `in`, `gt`, `gte`, `lt`, `lte` |
 | `country`, `cdn_provider`, `waf_vendor`, `server` | the column | text | `eq`, `in` |
-| `is_cdn`, `waf_detected` | the column | bool | `eq` |
+| `is_cdn`, `waf_detected` | the column | bool | `eq`, `exists` |
 | `ip` | the column | inet | `eq`, `in_cidr` |
 | `technologies` | the column | text[] | `contains`, `in` |
 | `first_seen`, `last_seen`, `last_changed_at` | the column | timestamptz | `before`, `after` |
@@ -231,6 +231,27 @@ also the answer to "what can be filtered", and it is short on purpose.
 | `script_hash`, `cookie_name`, `external_host` | `attributes` | text[] | `contains` |
 | `dead_external_host` | `attributes` | text[] | `contains` |
 | `takeover_candidate` | `attributes` | bool | `exists` |
+
+**`is_cdn` and `waf_detected` take `exists`, because a nullable boolean has three states and the third is an
+answer.** Null means no pass has been able to look: ingestion writes the flag only from a resolution that
+produced an address, a CNAME or a provider, since writing `false` from a name that timed out would clear it
+on an asset that is genuinely behind an edge, and the upsert coalesces so the null survives until something
+looks. A candidate from Certificate Transparency and a hand entered host both sit there until then.
+
+`exists` is the only way to ask. The obvious spelling, the negation used as the example in
+[10.1](#101-three-principles), does not reach it and cannot: `NOT (NULL = true)` is `NULL` in SQL and a null
+predicate excludes the row. So "everything that is not fronted" written as a negation looks complete and
+quietly drops every asset nobody has looked at. What that sentence usually means is the union:
+
+```json
+{"op": "or", "clauses": [
+  {"field": "is_cdn", "op": "eq",     "value": false},
+  {"field": "is_cdn", "op": "exists", "value": false}
+]}
+```
+
+The operator reads the same as it does over `attributes`, "is there a value for this", against a column
+instead of a key. Its `value` is required on both and decides the direction rather than being decoration.
 
 **`program_id` is in the registry and `org_id` is not**, and the pair is worth a paragraph because they look
 like the same kind of field. The organization is emitted by the compiler on every compilation, so a query can

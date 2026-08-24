@@ -137,6 +137,19 @@ func (b *builder) leaf(n Node) (string, error) {
 		if !ok {
 			return "", refuse("%q takes true or false", n.Field)
 		}
+		// A nullable boolean has three states and exists is what asks about the
+		// third. It reads the same as it does over the attributes object, "is
+		// there a value for this", against a column instead of a key.
+		//
+		// It is also the only way to ask. A negation does not reach it, because
+		// NOT (NULL = true) is NULL and a null predicate excludes the row: the
+		// state and its negation are both unexpressible without this.
+		if n.Op == OpExists {
+			if value {
+				return entry.expr + " IS NOT NULL", nil
+			}
+			return entry.expr + " IS NULL", nil
+		}
 		return entry.expr + " = " + b.bind(value), nil
 	case kindInt:
 		return b.number(entry, n)

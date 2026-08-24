@@ -1466,7 +1466,10 @@ components:
           description: |
             Leaves only. A scalar for most operators, an array for `in`, a CIDR
             string for `in_cidr`, an RFC 3339 instant for `before` and `after`,
-            and ignored by `exists`.
+            and a boolean for `exists`, which is required rather than ignored:
+            it is what decides the direction. `true` asks for the assets that
+            have a value, `false` for the ones that do not, and a node without
+            one is refused.
         clauses:
           type: array
           maxItems: 64

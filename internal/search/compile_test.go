@@ -311,3 +311,77 @@ func TestAMalformedIdentifierIsRefusedRatherThanRunTest(t *testing.T) {
 		t.Errorf("a well formed identifier was refused: %v", err)
 	}
 }
+
+// The third state of a nullable boolean, and the fact that it is the only way
+// to ask for it.
+//
+// is_cdn is null when no pass has been able to look, which ingestion writes
+// deliberately: a resolution that timed out carries no address, no CNAME and no
+// provider, and writing false from it would clear the flag on an asset that is
+// genuinely behind an edge. The column therefore answers three things, and
+// equality reaches two of them.
+//
+// The negation does not reach the third and cannot. In SQL NOT (NULL = true) is
+// NULL, and a null predicate excludes the row rather than returning it, so
+// "everything that is not fronted" written as a negation silently drops every
+// asset nobody has looked at.
+func TestANullableBooleanCanBeAskedAboutItsThirdState(t *testing.T) {
+	t.Parallel()
+
+	org := uuid.New()
+	for name, expect := range map[string]struct {
+		tree string
+		sql  string
+	}{
+		"present": {`{"op":"exists","field":"is_cdn","value":true}`, "c.is_cdn IS NOT NULL"},
+		"absent":  {`{"op":"exists","field":"is_cdn","value":false}`, "c.is_cdn IS NULL"},
+		"the other one": {
+			`{"op":"exists","field":"waf_detected","value":false}`, "c.waf_detected IS NULL",
+		},
+	} {
+		compiled, err := Compile(org, parse(t, expect.tree))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !strings.Contains(compiled.SQL, expect.sql) {
+			t.Errorf("%s compiles to %q, want it to carry %q", name, compiled.SQL, expect.sql)
+		}
+		// A null test is not a bound value, and binding one would be a
+		// placeholder compared against NULL, which is never true.
+		if len(compiled.Args) != 1 {
+			t.Errorf("%s binds %v beside the organization", name, compiled.Args[1:])
+		}
+	}
+}
+
+// The value is not decoration on this operator. It decides the direction, so a
+// node without one is a question nobody asked rather than a default.
+func TestExistsRefusesANodeWithNoValue(t *testing.T) {
+	t.Parallel()
+
+	for name, tree := range map[string]string{
+		"on a column":   `{"op":"exists","field":"is_cdn"}`,
+		"on a json key": `{"op":"exists","field":"takeover_candidate"}`,
+	} {
+		if _, err := Compile(uuid.New(), parse(t, tree)); err == nil {
+			t.Errorf("%s compiled with no value, so the direction was chosen for the caller", name)
+		}
+	}
+}
+
+// Equality still compiles to a bound comparison. Without this the branch above
+// could swallow the ordinary case and nothing would say so.
+func TestABooleanEqualityIsStillABoundComparison(t *testing.T) {
+	t.Parallel()
+
+	compiled, err := Compile(uuid.New(), parse(t, `{"op":"eq","field":"is_cdn","value":false}`))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if !strings.Contains(compiled.SQL, "c.is_cdn = $2") {
+		t.Errorf("an equality compiles to %q", compiled.SQL)
+	}
+	if len(compiled.Args) != 2 || compiled.Args[1] != false {
+		t.Errorf("it binds %v", compiled.Args)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -647,4 +648,79 @@ func TestNoQueryTouchesTheJournal(t *testing.T) {
 		search.FormatJSONL, 0, into(&out)); err != nil {
 		t.Errorf("the export reads the journal: %v", err)
 	}
+}
+
+// The third state of a nullable boolean, proved against PostgreSQL rather than
+// argued from the SQL standard.
+//
+// is_cdn is null when no pass has been able to look, and ingestion writes that
+// deliberately: a resolution that timed out carries no address, no CNAME and no
+// provider, and writing false from it would clear the flag on an asset that is
+// genuinely behind an edge. Candidates and hand entered hosts sit there until
+// something reaches them.
+//
+// The assertion that matters is the middle one. "Everything that is not
+// fronted" written as a negation looks complete and is not: NOT (NULL = true)
+// is NULL, a null predicate excludes the row, and the assets nobody has looked
+// at disappear from an answer that claims to be about all of them.
+func TestANegationDoesNotReachTheStateOnlyExistsCanAskFor(t *testing.T) {
+	h := newHarness(t)
+
+	h.asset(t, h.org, "fronted.target.test:443/tcp", map[string]any{
+		"port": 443, "scheme": "https", "is_cdn": true, "cdn_provider": "cloudflare",
+	})
+	h.asset(t, h.org, "direct.target.test:443/tcp", map[string]any{
+		"port": 443, "scheme": "https", "is_cdn": false,
+	})
+	// No is_cdn at all, which is the row this test exists for.
+	h.asset(t, h.org, "unlooked.target.test:443/tcp", map[string]any{
+		"port": 443, "scheme": "https",
+	})
+
+	ask := func(t *testing.T, tx pgx.Tx, tree string) []string {
+		t.Helper()
+
+		page, err := search.List(context.Background(), tx, h.org, search.Request{
+			Filter: filter(t, tree),
+		})
+		if err != nil {
+			t.Fatalf("list %s: %v", tree, err)
+		}
+		keys := keysOf(page)
+		sort.Strings(keys)
+		return keys
+	}
+
+	h.scoped(t, h.org, func(tx pgx.Tx) {
+		if got := ask(t, tx, `{"op":"exists","field":"is_cdn","value":false}`); len(got) != 1 ||
+			got[0] != "unlooked.target.test:443/tcp" {
+			t.Errorf("exists false answered %v, want the one asset nobody has looked at", got)
+		}
+
+		// The same question asked the way somebody would write it without this
+		// operator, and it comes back short.
+		negated := ask(t, tx, `{"op":"not","clauses":[{"op":"eq","field":"is_cdn","value":true}]}`)
+		for _, key := range negated {
+			if key == "unlooked.target.test:443/tcp" {
+				t.Fatal("a negation returned the null row, so exists is answering a question that " +
+					"was already expressible and this whole operator is redundant")
+			}
+		}
+		if len(negated) != 1 {
+			t.Errorf("the negation answered %v, want only the asset known not to be fronted", negated)
+		}
+
+		// And the two together are what "not fronted, as far as anybody knows"
+		// actually needs.
+		both := ask(t, tx, `{"op":"or","clauses":[
+			{"op":"eq","field":"is_cdn","value":false},
+			{"op":"exists","field":"is_cdn","value":false}]}`)
+		if len(both) != 2 {
+			t.Errorf("the union answered %v, want the direct asset and the unlooked one", both)
+		}
+
+		if got := ask(t, tx, `{"op":"exists","field":"is_cdn","value":true}`); len(got) != 2 {
+			t.Errorf("exists true answered %v, want the two assets something has looked at", got)
+		}
+	})
 }
