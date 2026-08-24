@@ -54,6 +54,9 @@ type Run struct {
 	// Source is what an entered asset records as its origin. Empty means the
 	// assets form, which is what it has always been.
 	Source string
+	// Certificate is what revealed the names, when the source is the
+	// Certificate Transparency stream. Nil everywhere else.
+	Certificate *Certificate
 	// Due is when a freshly created asset becomes due. The arithmetic lives in
 	// Go, where it is testable, rather than in the statement that stores it.
 	Due Schedule

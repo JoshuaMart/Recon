@@ -79,6 +79,15 @@ a healthy layer, and reading that column would let a timeout revive it. The othe
 entering the asset [by hand](/architecture/scope/#entering-an-asset-by-hand), which is an act rather
 than an observation.
 
+**A certificate is the third way back, and it is a widening of rediscovery rather than an exception to
+it.** A name this system gave up on, appearing in a freshly issued certificate, is the strongest signal
+available that somebody is provisioning it again, and it is precisely the case
+[the freshness advantage](/architecture/discovery/#75-certificate-transparency) exists for. Refusing it
+would throw the advantage away at the moment it is worth most. What bounds the cost is that nothing else
+changes: a revived candidate is chased on the same curve and given up on by the same budget, so a name
+reissued forever by an automation pointing nowhere is chased for a bounded window each time rather than
+held in the queue.
+
 ### Where the transitions live
 
 Transitions are computed **in the ingestion path**, in the same transaction that writes the

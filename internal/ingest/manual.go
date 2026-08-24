@@ -47,19 +47,37 @@ type Refused struct {
 // rule naming a host or a path, which declares the thing as well as classifying
 // it: an apex says where to enumerate, and those two say what exists.
 const (
-	SourceManual = "manual"
-	SourceRule   = "scope_rule"
+	SourceManual     = "manual"
+	SourceRule       = "scope_rule"
+	SourceCertstream = "certstream"
 )
+
+// Certificate is what a candidate's lineage records about the certificate that
+// revealed it.
+//
+// It is the reason the lite stream is dialled rather than the cheap one that
+// carries names alone: "why is this here" has to be answerable six months later
+// by somebody looking at a name they do not recognise, and "a certificate" is
+// not an answer where "this issuer, this log, this index" is.
+type Certificate struct {
+	Issuer string
+	Log    string
+	Index  int64
+}
 
 // origin is the source this entry records and the step its lineage carries.
 //
 // Defaulted rather than required, so a caller that says nothing keeps the
 // behaviour the assets form has always had.
 func (r Run) origin() (string, string) {
-	if r.Source == SourceRule {
+	switch r.Source {
+	case SourceRule:
 		return SourceRule, "declared_in_scope"
+	case SourceCertstream:
+		return SourceCertstream, "certificate_transparency"
+	default:
+		return SourceManual, "entered_by_hand"
 	}
-	return SourceManual, "entered_by_hand"
 }
 
 // Enter records assets somebody typed in.
@@ -169,10 +187,16 @@ func (i *Ingestor) enterAsset(
 	status := set.Classify(scope.Target{Key: key})
 
 	source, step := run.origin()
-	path, err := json.Marshal([]any{map[string]any{
+	lineage := map[string]any{
 		"step": step,
 		"run":  run.ID.String(),
-	}})
+	}
+	if run.Certificate != nil {
+		lineage["issuer"] = run.Certificate.Issuer
+		lineage["log"] = run.Certificate.Log
+		lineage["cert_index"] = run.Certificate.Index
+	}
+	path, err := json.Marshal([]any{lineage})
 	if err != nil {
 		return Accepted{}, err
 	}
@@ -217,8 +241,56 @@ func (i *Ingestor) enterAsset(
 		Key:       key.Value,
 		Scope:     string(status),
 		Created:   row.Created,
-		Scheduled: status == scope.InScope && due.Full != nil,
+		Scheduled: status == scope.InScope && (due.Full != nil || due.Resolve != nil),
 	}, nil
+}
+
+// EnterCandidates records the names one certificate revealed.
+//
+// The same act as the assets form and the same write, with two differences that
+// both come from who is waiting.
+//
+// A candidate is due for **resolve** and not for full. Nobody typed this name
+// in; a log did, and most candidates never resolve to anything at all. The
+// cheap rung answers the only question worth asking first, which is whether the
+// name exists yet, and the expensive one is earned by an answer.
+//
+// It is immediate and takes no jitter, unlike a discovery run's assets. The
+// certificate is the event: something was published seconds ago, and the whole
+// aggressive curve rests on the first check happening now rather than inside a
+// quarter of an hour. The clump that produces is the normal case rather than a
+// thing to spread, and a candidate that answers leaves the curve, so the convoy
+// jitter exists to prevent never forms here. It forms at the promotion to full,
+// which is where the jitter is.
+//
+// A name that was archived comes back. That is a widening of what 6.2 calls
+// rediscovery and it is deliberate: a fresh certificate for a name this system
+// gave up on is the strongest signal available that somebody is provisioning it
+// again, and it is exactly the case the freshness advantage exists for. The
+// budget bounds what it costs, because a revived candidate is chased on the
+// same curve and archived again by the same rule.
+func (i *Ingestor) EnterCandidates(
+	ctx context.Context, q *sqlcgen.Queries, run Run, set *scope.Set, names []string,
+) (Entered, error) {
+	at := i.now()
+	run.Source = SourceCertstream
+	run.Due = Schedule{Resolve: &at}
+
+	out := Entered{Accepted: []Accepted{}, Refused: []Refused{}}
+	for _, name := range names {
+		key, err := hostKey(name)
+		if err != nil {
+			out.Refused = append(out.Refused, Refused{Entry: name, Reason: err.Error()})
+			continue
+		}
+
+		accepted, err := i.enterAsset(ctx, q, run, set, key, nil, run.Due)
+		if err != nil {
+			return out, err
+		}
+		out.Accepted = append(out.Accepted, accepted)
+	}
+	return out, nil
 }
 
 // refusal is an entry that was never an identity, as opposed to a write that
