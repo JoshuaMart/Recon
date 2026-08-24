@@ -130,11 +130,16 @@ func (m *Matcher) budgetFor(program uuid.UUID, at time.Time) *budget {
 }
 
 // take spends one candidate of the window, or counts a refusal.
-func (b *budget) take() bool {
+//
+// The second return says this is the first refusal of the window. The roll is
+// where the total is known, but an hour is a long time to say nothing: a
+// programme that hits its ceiling at minute two is a perimeter somebody wants to
+// look at now, and the summary alone would report it after the fact.
+func (b *budget) take() (bool, bool) {
 	if b.ceiling > 0 && b.created >= b.ceiling {
 		b.dropped++
-		return false
+		return false, b.dropped == 1
 	}
 	b.created++
-	return true
+	return true, false
 }

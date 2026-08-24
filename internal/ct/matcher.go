@@ -73,6 +73,7 @@ type Matcher struct {
 	counters  map[counterKey]*counts
 	frames    int64
 	malformed int64
+	created   int64
 }
 
 type counterKey struct {
@@ -201,7 +202,13 @@ func (m *Matcher) Handle(ctx context.Context, frame *Frame) {
 		if m.cache.seen(sighting.Claim.ProgramID, sighting.Name, at) {
 			continue
 		}
-		if !m.budgetFor(sighting.Claim.ProgramID, at).take() {
+		allowed, firstRefusal := m.budgetFor(sighting.Claim.ProgramID, at).take()
+		if !allowed {
+			if firstRefusal {
+				m.log.Warn("a programme reached its certificate transparency ceiling",
+					"program", sighting.Claim.ProgramID, "apex", sighting.Claim.Apex,
+					"ceiling", m.opts.Ceiling, "window", m.opts.Window)
+			}
 			continue
 		}
 
@@ -278,8 +285,9 @@ func (m *Matcher) write(ctx context.Context, program uuid.UUID, batch *pending, 
 		}
 	}
 	if created > 0 {
-		m.log.InfoContext(ctx, "certificate transparency candidates",
-			"program", program, "created", created, "seen", len(batch.names))
+		m.mu.Lock()
+		m.created += int64(created)
+		m.mu.Unlock()
 	}
 	return nil
 }
@@ -313,9 +321,19 @@ func (m *Matcher) Flush(ctx context.Context) error {
 	at := m.now()
 
 	m.mu.Lock()
-	counters, frames, malformed := m.counters, m.frames, m.malformed
-	m.counters, m.frames, m.malformed = map[counterKey]*counts{}, 0, 0
+	counters, frames := m.counters, m.frames
+	malformed, created := m.malformed, m.created
+	m.counters, m.frames, m.malformed, m.created = map[counterKey]*counts{}, 0, 0, 0
 	m.mu.Unlock()
+
+	// One line per tick rather than one per certificate. A busy apex creates
+	// hundreds in a minute, and a line each turns the record of the work into
+	// the reason nobody reads the log. This is the same correction the
+	// rendering service made about page slot contention.
+	if created > 0 {
+		m.log.InfoContext(ctx, "certificate transparency candidates",
+			"created", created, "frames", frames)
+	}
 
 	q := sqlcgen.New(m.sys)
 
