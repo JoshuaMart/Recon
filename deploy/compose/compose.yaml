@@ -222,6 +222,11 @@ services:
       # than as a missing setting.
       RECON_VERIFICATION__PUBLIC_URL: ${PUBLIC_URL:-http://controlplane:8080}
       RECON_RENDER__URL: ${RENDER_URL:-http://host.docker.internal:3001}
+      # The Certificate Transparency aggregator, reached the same way and for
+      # the same reason: it sits on the scan network, so the call goes out
+      # through the host gateway rather than by service name. Empty turns the
+      # matcher off, which is a normal deployment.
+      RECON_CT__URL: ${CT_URL:-ws://host.docker.internal:3002/}
       # How a run is started. Empty is the development shape: the definition is
       # rendered and a person runs the image with it.
       RECON_RUNNER__PROVIDER: ${RUNNER_PROVIDER:-none}
@@ -255,6 +260,11 @@ services:
       RECON_VERIFICATION__TIMEOUT:
       RECON_VERIFICATION__DISCOVERY_RETRY:
       RECON_VERIFICATION__PORTS:
+      RECON_CT__INTERVAL:
+      RECON_CT__CEILING:
+      RECON_CT__WINDOW:
+      RECON_CT__CACHE_TTL:
+      RECON_CT__CACHE_SIZE:
       RECON_RENDER__INTERVAL:
       RECON_RENDER__BATCH:
       RECON_RENDER__CONCURRENCY:

@@ -297,8 +297,14 @@ inferred from the code:
 
 | Pool | What runs on it |
 |---|---|
-| `asm_sys` | the partition and housekeeping loop, the deadline sweeper, the discovery cadence, the due date pass, the candidate pass, the Certificate Transparency set reload, the Notifier, the render pass, the external host sweep, and the two lookups that turn a credential into an organization, one per kind of credential |
+| `asm_sys` | the partition and housekeeping loop, the deadline sweeper, the discovery cadence, the due date pass, the candidate pass, the Certificate Transparency set reload and its apex counters, the Notifier, the render pass, the external host sweep, and the two lookups that turn a credential into an organization, one per kind of credential |
 | `asm_app` | everything a request does after that lookup, including the whole of report ingestion |
+
+The Certificate Transparency reload is on that list for the same reason as the lookups rather than for the
+same reason as the loops. One socket serves the whole deployment, and the apex set is the thing that decides
+which organization a name belongs to, so it is a query that *discovers* a tenant and cannot be filtered by
+one. What it hands back is then written scoped, on the application pool, under the organization the matched
+apex named.
 
 The credential lookups are on the system pool for a reason that is not convenience: they are the queries
 that *discover* the tenant, so they cannot be filtered by one. That is argued in

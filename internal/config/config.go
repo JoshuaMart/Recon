@@ -79,6 +79,38 @@ type Config struct {
 	Render       Render       `koanf:"render"`
 	Runner       Runner       `koanf:"runner"`
 	Notify       Notify       `koanf:"notify"`
+	CT           CT           `koanf:"ct"`
+}
+
+// CT is the Certificate Transparency feed and the matcher that walks it.
+//
+// The feed is a component and the matcher is not: certstream-server-go is
+// deployed as an image, and what lives in this process is a loop that dials it.
+// So the only address here is the aggregator's.
+type CT struct {
+	// URL is the aggregator's websocket. Empty turns the matcher off, which is
+	// a normal deployment rather than a degraded one: periodic enumeration
+	// still walks every perimeter, and nothing pretends to be watching the
+	// logs.
+	URL string `koanf:"url"`
+	// Interval reloads the apex set and flushes the counters. It also decides
+	// the granularity of the feed's presence record, so above a minute that
+	// record is coarser than the table it is written to.
+	Interval time.Duration `koanf:"interval"`
+	// Ceiling is how many candidates one programme may create per Window.
+	//
+	// It bounds a mistake rather than a perimeter. An apex rule pointing at
+	// somebody else's shared infrastructure is one typo away, and without a
+	// bound a public feed decides the size of a customer's inventory. What it
+	// held back is logged when the window rolls, because a silent cap reads as
+	// a small answer rather than a truncated one.
+	Ceiling int           `koanf:"ceiling"`
+	Window  time.Duration `koanf:"window"`
+	// CacheTTL and CacheSize bound the short term deduplication. It is a cost
+	// control and never the correctness one, which is the database's unique
+	// constraint, so both of these are free to be wrong in either direction.
+	CacheTTL  time.Duration `koanf:"cache_ttl"`
+	CacheSize int           `koanf:"cache_size"`
 }
 
 // Notify is where alerts go and how often they leave.
@@ -353,6 +385,13 @@ func Defaults() Config {
 			Endpoint: "https://api.scaleway.com",
 			Timeout:  30 * time.Second,
 		},
+		CT: CT{
+			Interval:  time.Minute,
+			Ceiling:   500,
+			Window:    time.Hour,
+			CacheTTL:  10 * time.Minute,
+			CacheSize: 50_000,
+		},
 		Render: Render{
 			Timeout:           2 * time.Minute,
 			Interval:          time.Minute,
@@ -573,6 +612,16 @@ func (c *Config) Validate(role Role) error {
 		}
 		if c.Maintenance.Interval <= 0 {
 			fail("maintenance.interval must be positive, got %s", c.Maintenance.Interval)
+		}
+		// Validated whether or not a feed is configured. A deployment that
+		// turns the matcher on later would otherwise find its tunables refused
+		// at the moment it least wants a startup failure.
+		if c.CT.Interval <= 0 || c.CT.Window <= 0 || c.CT.CacheTTL <= 0 {
+			fail("ct.interval, ct.window and ct.cache_ttl must all be positive")
+		}
+		if c.CT.Ceiling <= 0 || c.CT.CacheSize <= 0 {
+			fail("ct.ceiling and ct.cache_size must be positive: a feed with no ceiling decides " +
+				"how large a customer's inventory is")
 		}
 		for name, value := range map[string]time.Duration{
 			"resolve": c.Verification.Resolve, "full": c.Verification.Full,

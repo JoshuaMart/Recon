@@ -293,6 +293,40 @@ func (i *Ingestor) EnterCandidates(
 	return out, nil
 }
 
+// CompileScope reads the rules in force at an instant.
+//
+// The instant is a parameter rather than now(): valid_to is written by the
+// application and now() is the database's clock, so comparing the two would
+// make the answer depend on two clocks agreeing.
+//
+// It is here rather than in scope because it is the query and not the
+// predicate, and it is exported because three callers need it: the console's
+// write paths, the assets form, and the Certificate Transparency matcher. A
+// second copy would be a second answer to what a programme may look at, and the
+// two would agree until somebody fixed one of them.
+func CompileScope(
+	ctx context.Context, q *sqlcgen.Queries, programID uuid.UUID, at time.Time,
+) (*scope.Set, error) {
+	rows, err := q.ListScopeRules(ctx, sqlcgen.ListScopeRulesParams{
+		ProgramID: uuidTo(programID),
+		At:        stamp(at),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list scope rules: %w", err)
+	}
+
+	rules := make([]scope.Rule, 0, len(rows))
+	for _, row := range rows {
+		rules = append(rules, scope.Rule{
+			ID:      uuid.UUID(row.ID.Bytes).String(),
+			Kind:    row.Kind,
+			Matcher: row.Matcher,
+			Pattern: row.Pattern,
+		})
+	}
+	return scope.Compile(rules)
+}
+
 // refusal is an entry that was never an identity, as opposed to a write that
 // failed. One is the caller's problem and the other is the system's, and
 // answering the same way for both makes a typo look like an outage.

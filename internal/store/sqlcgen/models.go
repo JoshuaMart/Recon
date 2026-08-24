@@ -106,6 +106,23 @@ type AssetLayer struct {
 	LastCheckedAt          pgtype.Timestamptz
 }
 
+type CtApex struct {
+	OrgID          pgtype.UUID
+	ProgramID      pgtype.UUID
+	Apex           string
+	WatchedSince   pgtype.Timestamptz
+	SanCount       int64
+	WildcardCount  int64
+	LastSanAt      pgtype.Timestamptz
+	LastWildcardAt pgtype.Timestamptz
+}
+
+// One row per minute the Certificate Transparency feed delivered a frame. Coverage over a window reads this to tell an outage from an apex the logs are silent on.
+type CtFeedMinute struct {
+	Minute pgtype.Timestamptz
+	Frames int64
+}
+
 type FaviconImage struct {
 	OrgID     pgtype.UUID
 	Hash      string

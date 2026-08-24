@@ -288,26 +288,9 @@ func (h *Programs) unavailable(ctx context.Context, w http.ResponseWriter, messa
 
 // compileScope reads the rules in force at an instant.
 //
-// The instant is a parameter rather than now(): valid_to is written by the
-// application and now() is the database's clock, so comparing the two would
-// make the answer depend on two clocks agreeing.
+// It lives in ingest rather than here, because the Certificate Transparency
+// matcher needs the same thing and a second copy of it is a second answer to
+// "what is this programme allowed to look at".
 func compileScope(ctx context.Context, q *sqlcgen.Queries, programID uuid.UUID, at time.Time) (*scope.Set, error) {
-	rows, err := q.ListScopeRules(ctx, sqlcgen.ListScopeRulesParams{
-		ProgramID: uuidTo(programID),
-		At:        stamp(at),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("list scope rules: %w", err)
-	}
-
-	rules := make([]scope.Rule, 0, len(rows))
-	for _, row := range rows {
-		rules = append(rules, scope.Rule{
-			ID:      uuid.UUID(row.ID.Bytes).String(),
-			Kind:    row.Kind,
-			Matcher: row.Matcher,
-			Pattern: row.Pattern,
-		})
-	}
-	return scope.Compile(rules)
+	return ingest.CompileScope(ctx, q, programID, at)
 }

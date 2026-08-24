@@ -110,8 +110,11 @@ func TestEveryQueryDeclaresItsTenancy(t *testing.T) {
 // notices in a diff of SQL.
 func TestTheCrossingsAreTheOnesArguedFor(t *testing.T) {
 	expected := []string{
+		"ApexSet",
+		"BumpApexCounters",
 		"CountUnobservable",
 		"ExpireRuns",
+		"ForgetApexesOutsideTheSet",
 		"OnboardingDue",
 		"OneOrganization",
 		"OrgForRun",
@@ -123,6 +126,7 @@ func TestTheCrossingsAreTheOnesArguedFor(t *testing.T) {
 		"SelectDueRenders",
 		"StuckEvents",
 		"ThirdPartyHosts",
+		"WatchApexes",
 	}
 
 	var found []string

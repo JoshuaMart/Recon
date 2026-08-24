@@ -24,6 +24,7 @@ import (
 	"github.com/JoshuaMart/recon/internal/api"
 	"github.com/JoshuaMart/recon/internal/auth"
 	"github.com/JoshuaMart/recon/internal/config"
+	"github.com/JoshuaMart/recon/internal/ct"
 	"github.com/JoshuaMart/recon/internal/enrich"
 	"github.com/JoshuaMart/recon/internal/external"
 	"github.com/JoshuaMart/recon/internal/fingerprint"
@@ -168,6 +169,26 @@ func run() error {
 		log.InfoContext(ctx, "rendering", "service", cfg.Render.URL, "cost", budget.Cost())
 	} else {
 		log.WarnContext(ctx, "no rendering service configured, nothing will be rendered")
+	}
+
+	// The Certificate Transparency matcher, optional for the same reason the
+	// browser is. A deployment with no feed configured still walks every
+	// perimeter on the discovery cadence; what it gives up is the freshness
+	// advantage, and saying so is better than a loop dialling nothing.
+	if cfg.CT.URL != "" {
+		matcher := ct.New(system, scoped, ingestor, ct.Options{
+			Interval:  cfg.CT.Interval,
+			Ceiling:   cfg.CT.Ceiling,
+			Window:    cfg.CT.Window,
+			CacheTTL:  cfg.CT.CacheTTL,
+			CacheSize: cfg.CT.CacheSize,
+		}, log)
+		go ct.NewLoop(matcher).Run(ctx)
+		go ct.NewFeed(cfg.CT.URL, matcher, log).Run(ctx)
+		log.InfoContext(ctx, "watching certificate transparency", "feed", cfg.CT.URL)
+	} else {
+		log.WarnContext(ctx, "no certificate transparency feed configured, "+
+			"discovery runs on its cadence alone")
 	}
 
 	srv := &http.Server{
