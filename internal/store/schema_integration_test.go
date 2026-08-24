@@ -20,6 +20,7 @@ var exempt = map[string]string{
 	"org":                 "it is the tenant",
 	"app_user":            "a person can belong to several organizations, which is the whole point of the join table",
 	"generic_pivot_value": "reference data shared by every tenant, seeded from the repository",
+	"ct_feed_minute":      "one Certificate Transparency socket serves the whole deployment, so when it was alive is a fact about the feed",
 	"goose_db_version":    "not a business table",
 }
 
