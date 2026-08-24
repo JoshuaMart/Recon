@@ -487,6 +487,16 @@ func (i *Ingestor) reschedule(ctx context.Context, q *sqlcgen.Queries, run Run, 
 	// not dead: it never existed.
 	archive := st.lifecycle == lifecycle.Candidate && lifecycle.Exhausted(st.firstSeen, at)
 
+	// A candidate that answers earns the expensive rung, and this is the only
+	// place that can give it one.
+	//
+	// "resolve, then full once it answers" has a second half, and without it a
+	// candidate is created with no full date, checked only ever by resolve runs
+	// which leave that date alone, and swept for ports never. The failure is
+	// the one movesFull already describes from the other end: silent, total,
+	// and invisible to anything that does not look for a null.
+	promoted := st.previousLifecycle == lifecycle.Candidate && st.lifecycle != lifecycle.Candidate
+
 	params := sqlcgen.RescheduleAssetParams{
 		AssetID: uuidTo(st.id),
 		Archive: archive,
@@ -498,14 +508,22 @@ func (i *Ingestor) reschedule(ctx context.Context, q *sqlcgen.Queries, run Run, 
 		// as it appears and catching it once somebody has hardened it.
 		BackoffTier: counter(lifecycle.NextTier(st.lifecycle, st.tier)),
 		MoveResolve: true,
-		MoveFull:    run.movesFull(),
+		MoveFull:    run.movesFull() || promoted,
 	}
 	if !archive {
 		resolve := at.Add(i.cadence.Spread(i.cadence.Delay(st.lifecycle, lifecycle.RungResolve, st.tier), i.random()))
 		params.NextResolveAt = stamp(resolve)
 		if params.MoveFull {
-			full := at.Add(i.cadence.Spread(i.cadence.Delay(st.lifecycle, lifecycle.RungFull, st.tier), i.random()))
-			params.NextFullAt = stamp(full)
+			// A promotion is due now rather than a cadence away: the point of
+			// chasing a candidate is to see what it exposes as it appears. It
+			// takes the stagger instead of the curve's own spread, because
+			// what it is joining is a recurring cadence and a convoy formed
+			// there is permanent.
+			delay := i.cadence.Spread(i.cadence.Delay(st.lifecycle, lifecycle.RungFull, st.tier), i.random())
+			if promoted && !run.movesFull() {
+				delay = i.cadence.Stagger(i.random())
+			}
+			params.NextFullAt = stamp(at.Add(delay))
 		}
 	}
 

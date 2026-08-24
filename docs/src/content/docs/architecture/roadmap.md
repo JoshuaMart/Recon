@@ -735,30 +735,30 @@ thing to put after the console.
 What the position costs is worth writing rather than discovered later: CT is what the vision calls the
 freshness advantage, so it is the differentiator. Deferring it blocks nothing and delays precisely that.
 
-- [ ] [`certstream-server-go`](/architecture/discovery/#the-feed-is-a-component-the-matcher-is-not) deployed as the feed, holding no credential, on the [scan network](/architecture/verification/#85-network-isolation)
-- [ ] The matcher as a **loop in the control plane**: the apex set, its full swap on a short timer, the [label walk](/architecture/discovery/#matching-walks-labels-never-a-string) with **no regex**
-- [ ] The set built from `apex` include rules alone, on programs inside their [authorization window](/architecture/discovery/#what-the-set-holds)
-- [ ] [Short term deduplication cache](/architecture/discovery/#the-deduplication-cache-is-a-cost-control-never-the-correctness-one), keyed per program, a cost control and never the correctness one
-- [ ] [`CANDIDATE` creation with aggressive backoff](/architecture/lifecycle/#backoff-curves), immediate on the first rung and jittered at the promotion to `full`
-- [ ] A [per program ceiling](/architecture/discovery/#a-ceiling-per-program-and-it-says-what-it-dropped) on candidate creation, which says what it dropped
+- [x] [`certstream-server-go`](/architecture/discovery/#the-feed-is-a-component-the-matcher-is-not) deployed as the feed, holding no credential, on the [scan network](/architecture/verification/#85-network-isolation)
+- [x] The matcher as a **loop in the control plane**: the apex set, its full swap on a short timer, the [label walk](/architecture/discovery/#matching-walks-labels-never-a-string) with **no regex**
+- [x] The set built from `apex` include rules alone, on programs inside their [authorization window](/architecture/discovery/#what-the-set-holds)
+- [x] [Short term deduplication cache](/architecture/discovery/#the-deduplication-cache-is-a-cost-control-never-the-correctness-one), keyed per program, a cost control and never the correctness one
+- [x] [`CANDIDATE` creation with aggressive backoff](/architecture/lifecycle/#backoff-curves), immediate on the first rung and jittered at the promotion to `full`
+- [x] A [per program ceiling](/architecture/discovery/#a-ceiling-per-program-and-it-says-what-it-dropped) on candidate creation, which says what it dropped
 - [ ] A [third run kind](/architecture/deployment/#a-third-kind-so-a-candidate-never-waits-behind-a-sweep), pinned to `resolve`, so a candidate never waits behind a verification sweep
-- [ ] [Wildcard certificate detection](/architecture/discovery/#wildcard-certificates-and-the-metric-that-follows) into the [`ct_apex`](/architecture/data-model/#42-main-tables) counters, not a boolean on the program
+- [x] [Wildcard certificate detection](/architecture/discovery/#wildcard-certificates-and-the-metric-that-follows) into the [`ct_apex`](/architecture/data-model/#42-main-tables) counters, not a boolean on the program
 - [ ] Per program CT coverage **derived** from those counters at read time, with the connection gap recorded so an outage does not read as silence
 
 ### Milestone 8
 
 - [ ] A matching SAN produces an asset in under 30 s, measured from the frame ([corrected](#three-assertions-corrected-before-the-phase-starts))
 - [ ] The matcher keeps up with the full stream on one core, the queue between the socket and the walk staying bounded ([corrected](#three-assertions-corrected-before-the-phase-starts))
-- [ ] A SAN seen ten times in a minute creates **one** asset, with the cache warm, cold and removed
+- [x] A SAN seen ten times in a minute creates **one** asset, with the cache warm, cold and removed
 - [ ] A candidate that is never reachable ends `ARCHIVED`, not `INACTIVE`
 - [ ] A wildcard certificate moves the apex counters, lowers the derived coverage, and creates **no** asset
 - [ ] A candidate that goes live during its first hour is detected inside that hour ([corrected](#three-assertions-corrected-before-the-phase-starts))
 - [ ] A candidate's first check runs no enumeration and spends no source quota
-- [ ] `target.com.evil.com` matches nothing while `staging.api.target.com` matches, on the same set
-- [ ] A program whose authorization expired leaves the set at the next reload and creates nothing after it
+- [x] `target.com.evil.com` matches nothing while `staging.api.target.com` matches, on the same set
+- [x] A program whose authorization expired leaves the set at the next reload and creates nothing after it
 - [ ] Past its ceiling a program creates no further candidate for the window, and the count it dropped is readable
 - [ ] A candidate run and a verification run coexist on one program; two candidate runs do not
-- [ ] A name matching an apex and caught by an exclusion is **stored with no due date**, not filtered out
+- [x] A name matching an apex and caught by an exclusion is **stored with no due date**, not filtered out
 
 ### Three assertions corrected before the phase starts
 

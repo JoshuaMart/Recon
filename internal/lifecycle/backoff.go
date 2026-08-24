@@ -121,6 +121,28 @@ func DefaultCadence() Cadence {
 	}
 }
 
+// Stagger is a due date of "now", spread.
+//
+// Spread widens an existing delay by a fraction of itself, so it cannot spread a
+// zero one, and that is the case this exists for: a candidate that answers is
+// due for the expensive rung immediately, and a certificate carrying tens of
+// names promotes all of them in the same instant. full is the entry into a
+// recurring cadence rather than a rung of a curve, so a convoy formed there
+// comes back every cycle for good, which is exactly what the jitter on a
+// discovery run's assets exists to prevent.
+func (c Cadence) Stagger(r float64) time.Duration {
+	if c.Jitter <= 0 {
+		return 0
+	}
+	if r < 0 {
+		r = 0
+	}
+	if r >= 1 {
+		r = 0.999
+	}
+	return time.Duration(float64(c.Jitter) * r)
+}
+
 // Spread widens a delay by a fraction of itself, bounded by the configured
 // ceiling. It is proportional rather than additive because the two curves span
 // four orders of magnitude: fifteen minutes of jitter on a one minute rung

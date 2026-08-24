@@ -207,3 +207,82 @@ func TestACertificateForAnArchivedNameBringsItBack(t *testing.T) {
 			"thrown away at the moment it is worth most")
 	}
 }
+
+// The second half of "resolve, then full once it answers", and without it a
+// candidate is checked only ever by resolve runs, which leave the full date
+// alone, and swept for ports never.
+func TestACandidateThatAnswersEarnsTheExpensiveRung(t *testing.T) {
+	h := newHarness(t)
+	set := h.scope(t, include("acme.test"))
+	c := &clock{now: time.Date(2026, 8, 24, 9, 0, 0, 0, time.UTC)}
+	ing := h.dated(c)
+
+	const name = "live.acme.test"
+	if _, err := ing.EnterCandidates(context.Background(), h.queries, h.candidateRun(), set,
+		[]string{name}); err != nil {
+		t.Fatalf("enter candidates: %v", err)
+	}
+
+	// A candidate run is pinned to resolve, which is exactly the scope that
+	// leaves the full date alone everywhere else.
+	resolve := h.run()
+	resolve.Kind = "candidate"
+	resolve.Scope = "resolve"
+	resolve.Targets = map[string]struct{}{name: {}}
+
+	c.now = c.now.Add(time.Minute)
+	if _, err := ing.Report(context.Background(), h.queries, resolve, set,
+		liveHost(name)); err != nil {
+		t.Fatalf("ingest the resolve report: %v", err)
+	}
+
+	if got := h.lifecycleOf(t, name); got != "active" {
+		t.Fatalf("the candidate answered and is %q", got)
+	}
+
+	var full *time.Time
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT next_full_at FROM asset_current WHERE program_id = $1 AND key = $2`,
+		h.program, name).Scan(&full); err != nil {
+		t.Fatalf("read the full due date: %v", err)
+	}
+	if full == nil {
+		t.Fatal("a candidate that answered carries no full due date, so nothing will ever " +
+			"sweep its ports and the port it opened is invisible")
+	}
+	// Due now rather than a cadence away: the point of chasing a candidate is
+	// to see what it exposes as it appears.
+	if full.Before(c.now) || full.After(c.now.Add(time.Hour)) {
+		t.Errorf("the promoted full date is %s, and the candidate answered at %s", full, c.now)
+	}
+}
+
+// The control. A host that was never a candidate must not be promoted by a
+// resolve run, or every resolve pass would drag the whole inventory onto the
+// expensive rung.
+func TestAResolveRunStillLeavesAnActiveHostsFullDateAlone(t *testing.T) {
+	h := newHarness(t)
+	set := h.scope(t, include("acme.test"))
+	c := &clock{now: time.Date(2026, 8, 24, 9, 0, 0, 0, time.UTC)}
+	ing := h.dated(c)
+
+	const name = "known.acme.test"
+	full := h.run()
+	full.Scope = "full"
+	if _, err := ing.Report(context.Background(), h.queries, full, set, liveHost(name)); err != nil {
+		t.Fatalf("ingest the full report: %v", err)
+	}
+	before := h.fullDueOf(t, name)
+
+	c.now = c.now.Add(time.Hour)
+	resolve := h.run()
+	resolve.Scope = "resolve"
+	resolve.Targets = map[string]struct{}{name: {}}
+	if _, err := ing.Report(context.Background(), h.queries, resolve, set, liveHost(name)); err != nil {
+		t.Fatalf("ingest the resolve report: %v", err)
+	}
+
+	if after := h.fullDueOf(t, name); !after.Equal(before) {
+		t.Errorf("a resolve run moved an active host's full date from %s to %s", before, after)
+	}
+}
