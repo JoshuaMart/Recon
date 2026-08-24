@@ -482,3 +482,75 @@ func TestACertificateWithNoDNSNameIsHandledAndCountsAsAFrame(t *testing.T) {
 		t.Errorf("%d frames recorded, and one arrived", n)
 	}
 }
+
+// The corrected milestone assertion, measured from the frame rather than from
+// issuance.
+//
+// The delay between a certificate being signed and reaching a log Recon reads
+// belongs to the CT ecosystem: it is the logs' merge delay plus the aggregator's
+// own lag, and no assertion here can move it or fail on it. What Recon owns is
+// the frame arriving and the row being committed, and that is what this bounds.
+func TestAMatchingSANBecomesAnAssetWellInsideThirtySeconds(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.rule(t, "include", "apex", "acme.test")
+
+	m := h.matcher(options())
+	if err := m.Reload(ctx); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+
+	// The wall clock rather than the harness's, because what is being measured
+	// is elapsed time and not a due date.
+	started := time.Now()
+	m.Handle(ctx, frame(t, "fresh.acme.test"))
+	elapsed := time.Since(started)
+
+	if n := h.count(t, `SELECT count(*) FROM asset WHERE program_id = $1`, h.program); n != 1 {
+		t.Fatalf("%d assets from a matching SAN", n)
+	}
+	if elapsed > 30*time.Second {
+		t.Errorf("the frame took %s to become an asset", elapsed)
+	}
+	// The margin is the point. At thirty seconds this assertion would pass on a
+	// path that had become two orders of magnitude slower.
+	if elapsed > time.Second {
+		t.Errorf("the frame took %s, which is inside the bound and far outside what this "+
+			"path costs: something in it started waiting", elapsed)
+	}
+	t.Logf("frame to committed row in %s", elapsed.Round(time.Millisecond))
+}
+
+// What the ceiling held back is stored beside what the logs delivered, because
+// the assertion says the dropped count is readable and grepping a control plane
+// is not that.
+func TestTheCountTheCeilingDroppedIsReadable(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.rule(t, "include", "apex", "acme.test")
+
+	opts := options()
+	opts.Ceiling = 1
+	m := h.matcher(opts)
+	if err := m.Reload(ctx); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+
+	m.Handle(ctx, frame(t, "one.acme.test", "two.acme.test", "three.acme.test"))
+	if err := m.Flush(ctx); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	var sans, dropped int64
+	if err := h.pool.QueryRow(ctx,
+		`SELECT san_count, dropped FROM ct_apex WHERE program_id = $1`, h.program).
+		Scan(&sans, &dropped); err != nil {
+		t.Fatalf("read the apex counters: %v", err)
+	}
+	if sans != 3 {
+		t.Errorf("the apex counted %d SANs, and the logs delivered three", sans)
+	}
+	if dropped != 2 {
+		t.Errorf("the row says %d were dropped, and the ceiling of one refused two", dropped)
+	}
+}

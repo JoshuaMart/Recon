@@ -48,15 +48,16 @@ SELECT p.org_id, p.id AS program_id, r.pattern AS apex
 --       round trip instead of one per tenant.
 -- name: BumpApexCounters :exec
 INSERT INTO ct_apex (org_id, program_id, apex, watched_since, san_count, wildcard_count,
-                     last_san_at, last_wildcard_at)
+                     dropped, last_san_at, last_wildcard_at)
 SELECT (@org_ids::uuid[])[i], (@program_ids::uuid[])[i], (@apexes::text[])[i], @at::timestamptz,
-       (@sans::bigint[])[i], (@wildcards::bigint[])[i],
+       (@sans::bigint[])[i], (@wildcards::bigint[])[i], (@dropped::bigint[])[i],
        CASE WHEN (@sans::bigint[])[i] > 0 THEN @at::timestamptz END,
        CASE WHEN (@wildcards::bigint[])[i] > 0 THEN @at::timestamptz END
   FROM generate_subscripts(@apexes::text[], 1) AS i
 ON CONFLICT (program_id, apex) DO UPDATE
    SET san_count        = ct_apex.san_count + excluded.san_count,
        wildcard_count   = ct_apex.wildcard_count + excluded.wildcard_count,
+       dropped          = ct_apex.dropped + excluded.dropped,
        last_san_at      = GREATEST(ct_apex.last_san_at, excluded.last_san_at),
        last_wildcard_at = GREATEST(ct_apex.last_wildcard_at, excluded.last_wildcard_at);
 
@@ -104,3 +105,49 @@ INSERT INTO ct_feed_minute (minute, frames)
 VALUES (date_trunc('minute', @at::timestamptz), @frames::bigint)
 ON CONFLICT (minute) DO UPDATE
    SET frames = ct_feed_minute.frames + excluded.frames;
+
+-- PurgeFeedMinutes bounds the feed's own record.
+--
+-- One row a minute is half a million a year, which is small and unbounded, and
+-- unbounded is the half that matters: nothing else in this schema grows forever
+-- and the coverage reading never looks back further than an apex has been
+-- watched. A delete rather than a partition, because the table is one column
+-- wide and the window is a comparison.
+--
+-- @tenant: none
+-- name: PurgeFeedMinutes :execrows
+DELETE FROM ct_feed_minute WHERE minute < @before::timestamptz;
+
+-- ApexCoverage is what a programme's Certificate Transparency panel reads.
+--
+-- Counters since the apex was first watched, never over a rolling window, which
+-- is what watched_since is for: an apex added yesterday and silent is not the
+-- same finding as one watched for a month and silent, and a window would report
+-- them identically.
+--
+-- No score. What comes back are the numbers and the span they cover, because a
+-- coverage confidence collapsed into one figure is the composite score the
+-- console is built without, and the same argument applies: the reader can tell
+-- "no certificate in thirty days" from "watched since this morning" and a single
+-- number cannot.
+--
+-- @tenant: keyed
+-- name: ApexCoverage :many
+SELECT apex, watched_since, san_count, wildcard_count, dropped,
+       last_san_at, last_wildcard_at
+  FROM ct_apex
+ WHERE program_id = @program_id::uuid
+ ORDER BY apex;
+
+-- FeedUptime is how much of a span the feed was actually alive for.
+--
+-- Without it an apex that delivered nothing and a feed that was down read the
+-- same, and the second is this deployment's problem rather than a fact about
+-- the logs. Presence is counted rather than absence inferred, so a minute
+-- missing from this table is a minute nothing arrived in.
+--
+-- @tenant: none
+-- name: FeedUptime :one
+SELECT count(*)::bigint AS minutes, coalesce(sum(frames), 0)::bigint AS frames
+  FROM ct_feed_minute
+ WHERE minute >= date_trunc('minute', @since::timestamptz);

@@ -286,3 +286,54 @@ func TestAResolveRunStillLeavesAnActiveHostsFullDateAlone(t *testing.T) {
 		t.Errorf("a resolve run moved an active host's full date from %s to %s", before, after)
 	}
 }
+
+// A candidate that was never reachable ends ARCHIVED and not INACTIVE. It is
+// not dead: it never existed, and the two readings call for opposite things in
+// a console.
+func TestACandidateThatIsNeverReachableEndsArchived(t *testing.T) {
+	h := newHarness(t)
+	set := h.scope(t, include("acme.test"))
+	c := &clock{now: time.Date(2026, 8, 24, 9, 0, 0, 0, time.UTC)}
+	ing := h.dated(c)
+
+	const name = "never.acme.test"
+	if _, err := ing.EnterCandidates(context.Background(), h.queries, h.candidateRun(), set,
+		[]string{name}); err != nil {
+		t.Fatalf("enter candidates: %v", err)
+	}
+
+	// Chased on the curve, answering nothing, for longer than the budget. The
+	// failures are informative on purpose: nxdomain with resolver consensus is
+	// the strongest death signal there is, and even that must not make a name
+	// that never existed read as one that died.
+	resolve := h.run()
+	resolve.Kind = "candidate"
+	resolve.Scope = "resolve"
+	resolve.Targets = map[string]struct{}{name: {}}
+
+	gone := deadHost(name, ingest.ReasonNXDomain)
+	for range 8 {
+		if _, err := ing.Report(context.Background(), h.queries, resolve, set, gone); err != nil {
+			t.Fatalf("ingest: %v", err)
+		}
+		c.now = c.now.Add(3 * 24 * time.Hour)
+	}
+
+	if got := h.lifecycleOf(t, name); got != "archived" {
+		t.Fatalf("the candidate ended %q, and a name whose infrastructure was never provisioned "+
+			"is not dead: it never existed", got)
+	}
+
+	// Out of the scheduler, so nothing selects it and no lane keeps paying for
+	// it.
+	var resolveDue, fullDue *time.Time
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT next_resolve_at, next_full_at FROM asset_current WHERE program_id = $1 AND key = $2`,
+		h.program, name).Scan(&resolveDue, &fullDue); err != nil {
+		t.Fatalf("read the due dates: %v", err)
+	}
+	if resolveDue != nil || fullDue != nil {
+		t.Errorf("an archived candidate still carries due dates: resolve %v, full %v",
+			resolveDue, fullDue)
+	}
+}

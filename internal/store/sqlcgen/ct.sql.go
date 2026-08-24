@@ -11,6 +11,70 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const apexCoverage = `-- name: ApexCoverage :many
+SELECT apex, watched_since, san_count, wildcard_count, dropped,
+       last_san_at, last_wildcard_at
+  FROM ct_apex
+ WHERE program_id = $1::uuid
+ ORDER BY apex
+`
+
+type ApexCoverageParams struct {
+	ProgramID pgtype.UUID
+}
+
+type ApexCoverageRow struct {
+	Apex           string
+	WatchedSince   pgtype.Timestamptz
+	SanCount       int64
+	WildcardCount  int64
+	Dropped        int64
+	LastSanAt      pgtype.Timestamptz
+	LastWildcardAt pgtype.Timestamptz
+}
+
+// ApexCoverage is what a programme's Certificate Transparency panel reads.
+//
+// Counters since the apex was first watched, never over a rolling window, which
+// is what watched_since is for: an apex added yesterday and silent is not the
+// same finding as one watched for a month and silent, and a window would report
+// them identically.
+//
+// No score. What comes back are the numbers and the span they cover, because a
+// coverage confidence collapsed into one figure is the composite score the
+// console is built without, and the same argument applies: the reader can tell
+// "no certificate in thirty days" from "watched since this morning" and a single
+// number cannot.
+//
+// @tenant: keyed
+func (q *Queries) ApexCoverage(ctx context.Context, arg ApexCoverageParams) ([]ApexCoverageRow, error) {
+	rows, err := q.db.Query(ctx, apexCoverage, arg.ProgramID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ApexCoverageRow{}
+	for rows.Next() {
+		var i ApexCoverageRow
+		if err := rows.Scan(
+			&i.Apex,
+			&i.WatchedSince,
+			&i.SanCount,
+			&i.WildcardCount,
+			&i.Dropped,
+			&i.LastSanAt,
+			&i.LastWildcardAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const apexSet = `-- name: ApexSet :many
 SELECT p.org_id, p.id AS program_id, r.pattern AS apex
   FROM scope_rule r
@@ -79,15 +143,16 @@ func (q *Queries) ApexSet(ctx context.Context, arg ApexSetParams) ([]ApexSetRow,
 
 const bumpApexCounters = `-- name: BumpApexCounters :exec
 INSERT INTO ct_apex (org_id, program_id, apex, watched_since, san_count, wildcard_count,
-                     last_san_at, last_wildcard_at)
+                     dropped, last_san_at, last_wildcard_at)
 SELECT ($1::uuid[])[i], ($2::uuid[])[i], ($3::text[])[i], $4::timestamptz,
-       ($5::bigint[])[i], ($6::bigint[])[i],
+       ($5::bigint[])[i], ($6::bigint[])[i], ($7::bigint[])[i],
        CASE WHEN ($5::bigint[])[i] > 0 THEN $4::timestamptz END,
        CASE WHEN ($6::bigint[])[i] > 0 THEN $4::timestamptz END
   FROM generate_subscripts($3::text[], 1) AS i
 ON CONFLICT (program_id, apex) DO UPDATE
    SET san_count        = ct_apex.san_count + excluded.san_count,
        wildcard_count   = ct_apex.wildcard_count + excluded.wildcard_count,
+       dropped          = ct_apex.dropped + excluded.dropped,
        last_san_at      = GREATEST(ct_apex.last_san_at, excluded.last_san_at),
        last_wildcard_at = GREATEST(ct_apex.last_wildcard_at, excluded.last_wildcard_at)
 `
@@ -99,6 +164,7 @@ type BumpApexCountersParams struct {
 	At         pgtype.Timestamptz
 	Sans       []int64
 	Wildcards  []int64
+	Dropped    []int64
 }
 
 // BumpApexCounters records what the stream delivered under each apex.
@@ -124,8 +190,39 @@ func (q *Queries) BumpApexCounters(ctx context.Context, arg BumpApexCountersPara
 		arg.At,
 		arg.Sans,
 		arg.Wildcards,
+		arg.Dropped,
 	)
 	return err
+}
+
+const feedUptime = `-- name: FeedUptime :one
+SELECT count(*)::bigint AS minutes, coalesce(sum(frames), 0)::bigint AS frames
+  FROM ct_feed_minute
+ WHERE minute >= date_trunc('minute', $1::timestamptz)
+`
+
+type FeedUptimeParams struct {
+	Since pgtype.Timestamptz
+}
+
+type FeedUptimeRow struct {
+	Minutes int64
+	Frames  int64
+}
+
+// FeedUptime is how much of a span the feed was actually alive for.
+//
+// Without it an apex that delivered nothing and a feed that was down read the
+// same, and the second is this deployment's problem rather than a fact about
+// the logs. Presence is counted rather than absence inferred, so a minute
+// missing from this table is a minute nothing arrived in.
+//
+// @tenant: none
+func (q *Queries) FeedUptime(ctx context.Context, arg FeedUptimeParams) (FeedUptimeRow, error) {
+	row := q.db.QueryRow(ctx, feedUptime, arg.Since)
+	var i FeedUptimeRow
+	err := row.Scan(&i.Minutes, &i.Frames)
+	return i, err
 }
 
 const forgetApexesOutsideTheSet = `-- name: ForgetApexesOutsideTheSet :execrows
@@ -153,6 +250,31 @@ type ForgetApexesOutsideTheSetParams struct {
 // @why: it reconciles the whole table against the whole set, in one statement.
 func (q *Queries) ForgetApexesOutsideTheSet(ctx context.Context, arg ForgetApexesOutsideTheSetParams) (int64, error) {
 	result, err := q.db.Exec(ctx, forgetApexesOutsideTheSet, arg.Apexes, arg.ProgramIds)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const purgeFeedMinutes = `-- name: PurgeFeedMinutes :execrows
+DELETE FROM ct_feed_minute WHERE minute < $1::timestamptz
+`
+
+type PurgeFeedMinutesParams struct {
+	Before pgtype.Timestamptz
+}
+
+// PurgeFeedMinutes bounds the feed's own record.
+//
+// One row a minute is half a million a year, which is small and unbounded, and
+// unbounded is the half that matters: nothing else in this schema grows forever
+// and the coverage reading never looks back further than an apex has been
+// watched. A delete rather than a partition, because the table is one column
+// wide and the window is a comparison.
+//
+// @tenant: none
+func (q *Queries) PurgeFeedMinutes(ctx context.Context, arg PurgeFeedMinutesParams) (int64, error) {
+	result, err := q.db.Exec(ctx, purgeFeedMinutes, arg.Before)
 	if err != nil {
 		return 0, err
 	}

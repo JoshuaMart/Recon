@@ -345,6 +345,10 @@ func routes(
 	mux.Handle("PATCH /programs/{program}/rules/{rule}", guard.Require(auth.ActionManageScope, console.UpdateRule))
 	// Read from a console, never from what consumes it.
 	mux.Handle("GET /queue", guard.Require(auth.ActionReadAssets, console.Queue))
+	// What Certificate Transparency has delivered under a programme's apexes.
+	// A read of the inventory rather than of the perimeter: it answers what
+	// arrived, not what is authorised.
+	mux.Handle("GET /programs/{program}/coverage", guard.Require(auth.ActionReadAssets, console.Coverage))
 
 	// Liveness. It touches nothing, because a probe that queries the database
 	// turns a slow database into a restarted process.

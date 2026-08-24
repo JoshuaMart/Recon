@@ -880,12 +880,22 @@ UPDATE asset_current SET
         WHEN @archive::boolean THEN attributes - ARRAY['favicon_hash', 'cert_spki_hash',
                                                        'script_hashes', 'cookie_names']
         ELSE attributes END,
+    -- An asset that is archived carries no due date, whether this report is what
+    -- archived it or it was already out of the scheduler.
+    --
+    -- The second half is not symmetry. An archived asset is only ever reached by
+    -- an enumeration finding it again, and a rediscovery that failed must not
+    -- pull it back into a queue it left: without this it would leave with a
+    -- fresh date on every report that mentions it and never be selected again
+    -- by anything that could clear one. The lifecycle column already holds this
+    -- report's verdict here, because the projection wrote it a statement ago, so
+    -- an asset revived by a success reads 'active' and takes its dates normally.
     next_resolve_at = CASE
-        WHEN @archive::boolean OR scope_status <> 'in_scope' THEN NULL
+        WHEN @archive::boolean OR lifecycle = 'archived' OR scope_status <> 'in_scope' THEN NULL
         WHEN @move_resolve::boolean THEN sqlc.narg(next_resolve_at)::timestamptz
         ELSE next_resolve_at END,
     next_full_at = CASE
-        WHEN @archive::boolean OR scope_status <> 'in_scope' THEN NULL
+        WHEN @archive::boolean OR lifecycle = 'archived' OR scope_status <> 'in_scope' THEN NULL
         WHEN @move_full::boolean THEN sqlc.narg(next_full_at)::timestamptz
         ELSE next_full_at END,
     next_fingerprint_at = CASE WHEN @archive::boolean THEN NULL ELSE next_fingerprint_at END,

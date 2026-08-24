@@ -154,6 +154,7 @@ func newHarness(t *testing.T) *harness {
 	mux.Handle("PATCH /programs/{program}/rules/{rule}",
 		guard.Require(auth.ActionManageScope, console.UpdateRule))
 	mux.Handle("GET /queue", guard.Require(auth.ActionReadAssets, console.Queue))
+	mux.Handle("GET /programs/{program}/coverage", guard.Require(auth.ActionReadAssets, console.Coverage))
 	feed := api.NewFeed(scoped, quiet)
 	mux.Handle("GET /feed", guard.Require(auth.ActionReadAssets, feed.Stream))
 

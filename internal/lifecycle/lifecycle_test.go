@@ -292,3 +292,53 @@ func TestEachRegimeHasItsOwnRenderCadence(t *testing.T) {
 		t.Error("a blocked raw client is still reported as the detector, so its diffs would keep buying browsers")
 	}
 }
+
+// The corrected milestone assertion, read off the curve rather than off a
+// running system.
+//
+// "A candidate that goes live is detected within the hour" is false after the
+// first hour and deliberately so: the curve widens to six hours and then a day,
+// because the density is bought where it pays. What it does promise is the
+// first hour, and this is that promise in arithmetic.
+func TestTheCandidateCurveChecksSeveralTimesInsideTheFirstHour(t *testing.T) {
+	var elapsed time.Duration
+	checks := 0
+	for tier := 0; ; tier++ {
+		elapsed += lifecycle.CandidateCurve.At(tier)
+		if elapsed > time.Hour {
+			break
+		}
+		checks++
+		if tier > 20 {
+			t.Fatal("the curve never leaves the first hour, so it has no tail at all")
+		}
+	}
+
+	// One minute, six, twenty one. A service going live in its first hour is
+	// found within twenty minutes of doing so, and the assertion the roadmap
+	// carried would have been failed by the design it sits next to.
+	if checks < 3 {
+		t.Errorf("the curve schedules %d checks inside the first hour, and probing often "+
+			"during it is where the freshness advantage actually is", checks)
+	}
+
+	// And it does widen, or the tail would cost more than the head is worth.
+	if last := lifecycle.CandidateCurve.At(len(lifecycle.CandidateCurve)); last < 24*time.Hour {
+		t.Errorf("the curve's last rung is %s, so a hopeless candidate is chased at that rate "+
+			"for a fortnight", last)
+	}
+}
+
+// A candidate is given up on rather than declared dead, and the budget is what
+// bounds a name that never existed.
+func TestACandidateIsGivenUpOnAtItsBudgetAndNotBefore(t *testing.T) {
+	born := time.Date(2026, 8, 24, 9, 0, 0, 0, time.UTC)
+
+	if lifecycle.Exhausted(born, born.Add(lifecycle.CandidateBudget-time.Minute)) {
+		t.Error("a candidate was given up on before its budget ran out")
+	}
+	if !lifecycle.Exhausted(born, born.Add(lifecycle.CandidateBudget)) {
+		t.Error("a candidate is still chased past its budget, and a name reissued forever by " +
+			"an automation pointing nowhere would be chased forever with it")
+	}
+}

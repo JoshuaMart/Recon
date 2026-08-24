@@ -61,7 +61,13 @@ An asset that no probe gets a result on belongs to none of these lines. It is no
 ```
 
 - **CANDIDATE** was discovered but never verified alive. Typically from Certificate Transparency, or a
-  port found open and not yet probed.
+  port found open and not yet probed. **It has exactly the two exits the diagram draws**, and the absence
+  of a third is the rule rather than a simplification: a failure leaves it where it is. Failing to find a
+  name that has never been found is the expected outcome and not news, sending it through `FLAPPING` into
+  `INACTIVE` would say a name died where nothing ever existed, and it would close the only exit the budget
+  reads, so the name would sit on the slow curve for good instead of being given up on. `unobservable` is
+  refused for the same reason: it is another way of saying nothing can be said, which is where a candidate
+  already is.
 - **ACTIVE**, the last verification succeeded.
 - **FLAPPING**, consecutive failures below the threshold. A buffer state against false positives.
 - **INACTIVE**, death confirmed. Still watched, at a low rate.

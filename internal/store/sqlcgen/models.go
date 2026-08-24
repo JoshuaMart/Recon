@@ -115,6 +115,8 @@ type CtApex struct {
 	WildcardCount  int64
 	LastSanAt      pgtype.Timestamptz
 	LastWildcardAt pgtype.Timestamptz
+	// Candidates the per programme ceiling refused. A silent cap reads as a small answer rather than a truncated one, so this is stored beside san_count rather than logged.
+	Dropped int64
 }
 
 // One row per minute the Certificate Transparency feed delivered a frame. Coverage over a window reads this to tell an outage from an apex the logs are silent on.

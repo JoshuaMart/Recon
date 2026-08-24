@@ -182,6 +182,28 @@ func Decide(current string, reach Reach, layers ...Counters) string {
 		return Archived
 	}
 
+	// A candidate has exactly two exits, which is what the state machine of 6.2
+	// draws and what 6.6 depends on: a success makes it active, and its budget
+	// archives it. Nothing else moves it.
+	//
+	// Failing to find a name that has never been found is the expected outcome
+	// rather than news. Sending a candidate through flapping and into inactive
+	// would say a name died, when what happened is that it never existed, and
+	// those two readings call for opposite things in a console. It would also
+	// take the asset out of the only state the budget reads, so the name would
+	// never be given up on at all: it would sit inactive on the slow curve for
+	// good, which is the failure this branch actually prevents.
+	//
+	// Unobservable is refused here for the same reason and not by exception. It
+	// is another way of saying nothing can be said, which is where a candidate
+	// already is, and entering it would close the same exit.
+	if current == Candidate {
+		if worst == LayerHealthy {
+			return Active
+		}
+		return Candidate
+	}
+
 	// A death that was observed is not a silence, so it wins. An edge reporting
 	// that its origin is gone is an informative failure even though the probe
 	// learned nothing about the service, and such an asset must end inactive

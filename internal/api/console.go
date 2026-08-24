@@ -696,6 +696,88 @@ func (h *Console) Queue(w http.ResponseWriter, r *http.Request, principal auth.P
 	writeJSON(w, http.StatusOK, map[string]any{"depths": outDepths, "runs": outRuns})
 }
 
+// Coverage answers what Certificate Transparency has actually delivered under a
+// programme's apexes.
+//
+// It returns numbers and the span they cover, and no score. A coverage
+// confidence collapsed into one figure is the composite score this console is
+// built without, and the argument is the same one: a reader can tell "watched a
+// month, no certificate" from "watched since this morning", and a single number
+// cannot. What is stated instead is every input somebody would have used to
+// compute one.
+//
+// The feed's uptime travels beside the counters because without it an apex the
+// logs are silent about and a socket that was down read identically, and the
+// second is this deployment's problem rather than a fact about the logs.
+func (h *Console) Coverage(w http.ResponseWriter, r *http.Request, principal auth.Principal) {
+	ctx := r.Context()
+	at := h.now()
+
+	programID, ok := pathUUID(w, r, "program")
+	if !ok {
+		return
+	}
+
+	tx, err := h.db.Begin(ctx, principal.OrgID)
+	if err != nil {
+		h.unavailable(ctx, w, "begin failed", err)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := sqlcgen.New(tx)
+
+	if !h.owns(ctx, w, q, principal, programID) {
+		return
+	}
+
+	rows, err := q.ApexCoverage(ctx, sqlcgen.ApexCoverageParams{ProgramID: uuidTo(programID)})
+	if err != nil {
+		h.unavailable(ctx, w, "read coverage failed", err)
+		return
+	}
+
+	type apex struct {
+		Apex         string     `json:"apex"`
+		WatchedSince time.Time  `json:"watched_since"`
+		Names        int64      `json:"names"`
+		Wildcards    int64      `json:"wildcards"`
+		Dropped      int64      `json:"dropped"`
+		LastName     *time.Time `json:"last_name_at,omitempty"`
+		LastWildcard *time.Time `json:"last_wildcard_at,omitempty"`
+		// FeedMinutes is how many minutes the feed delivered anything since
+		// this apex was first watched, against WatchedMinutes. Two numbers
+		// rather than a ratio, for the reason the whole endpoint gives.
+		FeedMinutes    int64 `json:"feed_minutes"`
+		WatchedMinutes int64 `json:"watched_minutes"`
+	}
+
+	out := make([]apex, 0, len(rows))
+	for _, row := range rows {
+		uptime, err := q.FeedUptime(ctx, sqlcgen.FeedUptimeParams{Since: row.WatchedSince})
+		if err != nil {
+			h.unavailable(ctx, w, "read feed uptime failed", err)
+			return
+		}
+		watched := int64(at.Sub(row.WatchedSince.Time) / time.Minute)
+		if watched < 0 {
+			watched = 0
+		}
+		out = append(out, apex{
+			Apex:           row.Apex,
+			WatchedSince:   row.WatchedSince.Time,
+			Names:          row.SanCount,
+			Wildcards:      row.WildcardCount,
+			Dropped:        row.Dropped,
+			LastName:       instant(row.LastSanAt),
+			LastWildcard:   instant(row.LastWildcardAt),
+			FeedMinutes:    uptime.Minutes,
+			WatchedMinutes: watched,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"apexes": out})
+}
+
 // reclassify re-evaluates the programme against the perimeter it is given.
 //
 // The set is compiled by the caller and passed in, because the two things that

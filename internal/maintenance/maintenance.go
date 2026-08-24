@@ -38,6 +38,12 @@ const (
 	// partitions rather than a partition drop: those rows are written in waves
 	// and the delete is bounded.
 	SuppressedRetention = 30 * 24 * time.Hour
+	// FeedMinuteRetention bounds the Certificate Transparency feed's own
+	// record. One row a minute is half a million a year: small, and unbounded,
+	// and unbounded is the half that matters, because nothing else in this
+	// schema grows forever. Longer than any coverage reading looks back, since
+	// that reading never goes further than an apex has been watched.
+	FeedMinuteRetention = 180 * 24 * time.Hour
 	// StuckAfter is when a queue that is not draining becomes an alert. A
 	// broken notifier is a silent failure by nature: nothing else announces
 	// it, ingestion keeps writing and the inventory stays correct, and it is
@@ -101,7 +107,26 @@ func (l *Loop) Once(ctx context.Context) {
 	}
 
 	l.purge(ctx)
+	l.trimFeed(ctx)
 	l.stuck(ctx)
+}
+
+// trimFeed bounds the record of when the Certificate Transparency feed was
+// alive. It is here rather than in the matcher's own tick for the reason this
+// package exists: a housekeeping job inside a feature's loop inherits that
+// feature's toggle, and a deployment with no feed configured still has a table
+// that grew while it had one.
+func (l *Loop) trimFeed(ctx context.Context) {
+	deleted, err := l.queries.PurgeFeedMinutes(ctx, sqlcgen.PurgeFeedMinutesParams{
+		Before: stamp(l.now().Add(-FeedMinuteRetention)),
+	})
+	if err != nil {
+		l.log.ErrorContext(ctx, "feed minute purge failed", "error", err)
+		return
+	}
+	if deleted > 0 {
+		l.log.InfoContext(ctx, "feed minutes purged", "count", deleted)
+	}
 }
 
 // purge drops the onboarding and overflow noise.

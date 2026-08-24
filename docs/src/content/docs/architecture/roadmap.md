@@ -743,24 +743,24 @@ freshness advantage, so it is the differentiator. Deferring it blocks nothing an
 - [x] A [per program ceiling](/architecture/discovery/#a-ceiling-per-program-and-it-says-what-it-dropped) on candidate creation, which says what it dropped
 - [x] A [third run kind](/architecture/deployment/#a-third-kind-so-a-candidate-never-waits-behind-a-sweep), pinned to `resolve`, so a candidate never waits behind a verification sweep
 - [x] [Wildcard certificate detection](/architecture/discovery/#wildcard-certificates-and-the-metric-that-follows) into the [`ct_apex`](/architecture/data-model/#42-main-tables) counters, not a boolean on the program
-- [ ] Per program CT coverage **derived** from those counters at read time, with the connection gap recorded so an outage does not read as silence
+- [x] Per program CT coverage **derived** from those counters at read time, with the connection gap recorded so an outage does not read as silence
 
 ### Milestone 8
 
-- [ ] A matching SAN produces an asset in under 30 s, measured from the frame ([corrected](#three-assertions-corrected-before-the-phase-starts))
-- [ ] The matcher keeps up with the full stream on one core, the queue between the socket and the walk staying bounded ([corrected](#three-assertions-corrected-before-the-phase-starts))
+- [x] A matching SAN produces an asset in under 30 s, measured from the frame ([corrected](#four-assertions-corrected-three-before-the-phase-and-one-during-it))
+- [x] The matcher keeps up with the full stream on one core, the queue between the socket and the walk staying bounded ([corrected](#four-assertions-corrected-three-before-the-phase-and-one-during-it))
 - [x] A SAN seen ten times in a minute creates **one** asset, with the cache warm, cold and removed
-- [ ] A candidate that is never reachable ends `ARCHIVED`, not `INACTIVE`
-- [ ] A wildcard certificate moves the apex counters, lowers the derived coverage, and creates **no** asset
-- [ ] A candidate that goes live during its first hour is detected inside that hour ([corrected](#three-assertions-corrected-before-the-phase-starts))
+- [x] A candidate that is never reachable ends `ARCHIVED`, not `INACTIVE`
+- [x] A wildcard certificate moves the apex counters and creates **no** asset, and the coverage reading states the numbers rather than a score ([corrected](#four-assertions-corrected-three-before-the-phase-and-one-during-it))
+- [x] A candidate is probed three times inside its first hour, at one minute, six and twenty one ([corrected](#four-assertions-corrected-three-before-the-phase-and-one-during-it))
 - [x] A candidate's first check runs no enumeration and spends no source quota
 - [x] `target.com.evil.com` matches nothing while `staging.api.target.com` matches, on the same set
 - [x] A program whose authorization expired leaves the set at the next reload and creates nothing after it
-- [ ] Past its ceiling a program creates no further candidate for the window, and the count it dropped is readable
+- [x] Past its ceiling a program creates no further candidate for the window, and the count it dropped is readable
 - [x] A candidate run and a verification run coexist on one program; two candidate runs do not
 - [x] A name matching an apex and caught by an exclusion is **stored with no due date**, not filtered out
 
-### Three assertions corrected before the phase starts
+### Four assertions corrected, three before the phase and one during it
 
 :::note[Rule 1, applied to the milestone rather than to the code]
 Rule 1 allows an assertion to be **corrected** where it is a drafting error, and requires the correction to
@@ -778,13 +778,22 @@ so its throughput is a property of an image. The assertion that means something 
 **matcher**: replayed at full stream rate, the queue between the socket and the label walk stays bounded,
 which is the thing that would break first and the thing a rewrite could break again.
 
+**"lowers the coverage score" asked for a score this console is built without.** Milestone 7 holds "no
+composite score, no severity" with a test on the contract, and a coverage *confidence* is exactly that: a
+judgement collapsed into a figure. What the panel returns instead is every input somebody would have used
+to compute one, per apex, plus how much of the span the feed was actually alive for. A reader can tell
+"watched a month, no certificate" from "watched since this morning" and a single number cannot, which is
+the same argument the console already makes about rows.
+
 **"a candidate that goes live is detected within the hour" contradicted the curve.** The
 [candidate curve](/architecture/lifecycle/#backoff-curves) probes at one minute, six, twenty one and eighty
 one, then widens to six hours and a day. A service going live on the second day is found on the curve's
 own terms, hours later, and that is deliberate: the density is bought where it pays, in the first hour after
 issuance. The assertion as written would have been failed by the design it sits next to, so it is restated
-as what the curve actually promises. Widening the curve to satisfy the old wording would be paying for the
-tail of every candidate that never becomes anything.
+as what the curve actually promises: three probes inside the first hour, at one minute, six and twenty one.
+A service going live at minute thirty is found at minute eighty one, and that is the design rather than a
+shortfall. Widening the curve to satisfy the old wording would be paying for the tail of every candidate
+that never becomes anything, on a source where most candidates never become anything at all.
 :::
 
 ## Post-v1

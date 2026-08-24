@@ -85,6 +85,7 @@ type counts struct {
 	org       uuid.UUID
 	sans      int64
 	wildcards int64
+	dropped   int64
 }
 
 // New builds a matcher. It starts with an empty set, so it matches nothing
@@ -115,6 +116,11 @@ func (m *Matcher) WithClock(now func() time.Time) *Matcher {
 	m.cache.now = now
 	return m
 }
+
+// Swap replaces the set. Reload calls it, and a test calls it to prove the
+// stream reads without a lock: a map written under a walk produces wrong matches
+// rather than an error, which is the one fault here that would be silent.
+func (m *Matcher) Swap(set *Set) { m.set.Store(set) }
 
 // Apexes is how many apexes the current set holds.
 func (m *Matcher) Apexes() int { return m.set.Load().Apexes() }
@@ -147,7 +153,7 @@ func (m *Matcher) Reload(ctx context.Context) error {
 		apexes = append(apexes, row.Apex)
 	}
 
-	m.set.Store(NewSet(claims))
+	m.Swap(NewSet(claims))
 
 	q := sqlcgen.New(m.sys)
 	// The row comes first, so that an apex watched from now on and silent is
@@ -204,6 +210,10 @@ func (m *Matcher) Handle(ctx context.Context, frame *Frame) {
 		}
 		allowed, firstRefusal := m.budgetFor(sighting.Claim.ProgramID, at).take()
 		if !allowed {
+			// Counted against the apex as well as logged, because the
+			// assertion says the dropped count is readable and grepping a
+			// control plane is not that.
+			counter.dropped++
 			if firstRefusal {
 				m.log.Warn("a programme reached its certificate transparency ceiling",
 					"program", sighting.Claim.ProgramID, "apex", sighting.Claim.Apex,
@@ -357,17 +367,19 @@ func (m *Matcher) Flush(ctx context.Context) error {
 	apexes := make([]string, 0, len(counters))
 	sans := make([]int64, 0, len(counters))
 	wildcards := make([]int64, 0, len(counters))
+	dropped := make([]int64, 0, len(counters))
 	for key, count := range counters {
 		orgs = append(orgs, uuidTo(count.org))
 		programs = append(programs, uuidTo(key.program))
 		apexes = append(apexes, key.apex)
 		sans = append(sans, count.sans)
 		wildcards = append(wildcards, count.wildcards)
+		dropped = append(dropped, count.dropped)
 	}
 
 	if err := q.BumpApexCounters(ctx, sqlcgen.BumpApexCountersParams{
 		OrgIds: orgs, ProgramIds: programs, Apexes: apexes, At: stamp(at),
-		Sans: sans, Wildcards: wildcards,
+		Sans: sans, Wildcards: wildcards, Dropped: dropped,
 	}); err != nil {
 		return fmt.Errorf("bump the apex counters: %w", err)
 	}
