@@ -393,7 +393,8 @@ func TestTheQueueSeparatesDueFromHeld(t *testing.T) {
 	h.asset(t, later, "later.target.test", "in_scope", true)
 	h.asset(t, gone, "gone.target.test", "in_scope", false)
 
-	h.exec(t, `UPDATE asset_current SET next_resolve_at = now() + interval '1 day' WHERE asset_id = $1`, later)
+	h.exec(t, `UPDATE asset_current SET next_resolve_at = $2 WHERE asset_id = $1`,
+		later, h.clock.now.Add(24*time.Hour))
 
 	runID := uuid.New()
 	h.exec(t, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline)
@@ -465,16 +466,24 @@ func (h *harness) asset(t *testing.T, id uuid.UUID, key, status string, schedule
 	// lets an exclusion that clears only the first pass the assertion below:
 	// the other two read null either way, and two thirds of the guard proves
 	// nothing. Found by removing one branch and watching the test stay green.
+	//
+	// They are written with the harness clock and not with now(). The readers
+	// compare them against h.now(), which is this process's clock, while now()
+	// is the container's, and the two disagree by however much the runtime's VM
+	// has drifted. When the database is ahead, an asset the fixture meant to be
+	// due reads as scheduled ahead, and the queue test fails saying the
+	// application counted it wrong. This is the fault scope.md describes, in
+	// the fixture rather than in the code it exercises.
 	due := "NULL, NULL, NULL"
 	if scheduled {
-		due = "now(), now(), now()"
+		due = "$6, $6, $6"
 	}
 	h.exec(t, fmt.Sprintf(`
 		INSERT INTO asset_current (asset_id, org_id, program_id, kind, key, host,
 		                           scope_status, lifecycle, first_seen, last_seen,
 		                           next_resolve_at, next_full_at, next_fingerprint_at)
-		VALUES ($1, $2, $3, 'fqdn', $4, $4, $5, 'active', now(), now(), %s)`, due),
-		id, h.org, h.program, key, status)
+		VALUES ($1, $2, $3, 'fqdn', $4, $4, $5, 'active', $6, $6, %s)`, due),
+		id, h.org, h.program, key, status, h.clock.now)
 }
 
 // A service discovered and never probed is found by a filter on the port its key

@@ -255,4 +255,12 @@ gap is tens of milliseconds, which is enough to make the answer random.
 The instant is therefore a parameter, supplied by the clock that wrote the values being compared. A
 date comparison never mixes the application's clock with the database's. The fault raises no error,
 returns a plausible result, and only shows up on recent values, which are the ones being looked at.
+
+**The rule binds fixtures too, and that was learned the hard way.** Two integration fixtures wrote dates
+with `now()` and had them read back against the harness's own clock: a `scope_rule` whose `valid_from`
+defaulted to the database, and an `asset_current` whose due dates did. Both passed for months, because the
+local runtime's virtual machine ran behind the host and the gap happened to fall the right way. When it
+stopped doing so, one suite reported that every asset had classified `unknown` and another that the queue
+had miscounted what was due, and neither failure pointed anywhere near a clock. A fixture that mixes the
+two clocks tests the drift rather than the code.
 :::

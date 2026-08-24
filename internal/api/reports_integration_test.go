@@ -164,9 +164,17 @@ func newHarness(t *testing.T) *harness {
 	h.exec(t, `INSERT INTO org (id, name) VALUES ($1, 'tenant')`, h.org)
 	h.exec(t, `INSERT INTO program (id, org_id, name, authorized_from) VALUES ($1, $2, 'p', now() - interval '1 day')`,
 		h.program, h.org)
-	h.exec(t, `INSERT INTO scope_rule (id, org_id, program_id, kind, matcher, pattern)
-	           VALUES ($1, $2, $3, 'include', 'apex', 'target.test')`,
-		uuid.New(), h.org, h.program)
+	// valid_from is written with the harness clock rather than left to default
+	// to the database's now(). The rules in force are read back at h.now(), so
+	// a default would compare two clocks: the container's and this process's.
+	// They disagree by however much the runtime's VM has drifted, and when the
+	// database is ahead the rule is not yet in force, every asset classifies
+	// unknown, and the failure reads as a scope bug rather than as a clock.
+	// This is the fault scope.md describes, in the fixture that sets up the
+	// tests for it.
+	h.exec(t, `INSERT INTO scope_rule (id, org_id, program_id, kind, matcher, pattern, valid_from)
+	           VALUES ($1, $2, $3, 'include', 'apex', 'target.test', $4)`,
+		uuid.New(), h.org, h.program, c.now.Add(-time.Hour))
 	return h
 }
 
