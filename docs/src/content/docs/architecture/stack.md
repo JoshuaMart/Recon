@@ -34,6 +34,7 @@ dependency of the deployment, not of the build.
 │   ├── store/              sqlc and pgx
 │   ├── normalize/          the single function of 4.5
 │   ├── scope/              in_scope / out_of_scope / unknown evaluation
+│   ├── ct/                 the apex set, the label walk, the candidate writer
 │   ├── run/                run definitions, signed URLs, report ingestion
 │   ├── lifecycle/          transitions, qualification, backoff
 │   ├── diff/               structured comparison, shared by the notifier and the timeline
@@ -193,6 +194,7 @@ Distributed tracing waits for a real need.
 | Control plane | Go 1.26 |
 | Scanning | FastRecon, a container image, no privilege |
 | Rendering | Fingerprinter, a long-running service with a Chrome sidecar |
+| Certificate Transparency | `certstream-server-go` as the feed, an image. The matcher is a loop in the control plane |
 | Console | SvelteKit, pnpm, Node adapter, interface in English |
 | Database | PostgreSQL 18, self-hosted, partitioning without an extension |
 | Migrations | goose |

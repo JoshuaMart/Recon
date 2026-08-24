@@ -183,12 +183,18 @@ knows the `scope_status` in the same transaction, which a sweeper would have to 
 
 | Source | First due date | Scope |
 |---|---|---|
-| Certificate Transparency | immediate | `resolve`, then `full` once it answers |
+| Certificate Transparency | immediate, no jitter | `resolve`, then `full` once it answers |
 | Discovery run | `now() + jitter(0 to 15 min)` | the run already reached it |
 | Manual entry | immediate | **`full`** |
 
 The jitter is necessary: without it, the thousands of assets of one discovery run share a due date and
 come back together forever.
+
+**A Certificate Transparency candidate takes no jitter on its first rung**, and it is the only source
+that does not. The certificate is the event: something was published seconds ago and the whole of the
+aggressive curve below rests on the first check happening now rather than inside a quarter of an hour.
+What it costs is a clump, and a clump of due dates is
+[already the normal case](#63-scheduling-and-backoff) rather than a thing to spread.
 
 **A hand-entered host is due for `full`, not for `resolve`.** Somebody typed it in to find out what it
 exposes, and a resolution would only report that the name answers. The ladder makes this free to say:
@@ -231,6 +237,12 @@ before it is hardened. That is where the freshness advantage actually is.
 
 **Jitter applies to every delay**, including the nominal cadence. Without it, the assets of one
 discovery run come back together on every round for good.
+
+**Promotion to `full` is where a candidate takes its jitter**, and the reason is the one above rather
+than a change of mind. A certificate carrying four hundred SANs promotes them within the same minute,
+and `full` is not a rung, it is the entry into a **recurring** cadence: a convoy formed there comes back
+every 72 hours for good, which is exactly what the jitter on a discovery run exists to prevent. The
+immediate first rung forms no convoy, because a candidate that answers leaves the curve.
 
 **A curve is written for the cheap rung, and the expensive one has a floor.** Fifteen minutes of
 resolution is one round trip to a resolver pool. The same fifteen minutes of `full` is a hundred

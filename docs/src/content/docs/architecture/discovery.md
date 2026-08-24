@@ -154,11 +154,80 @@ families is a finding by the sole fact of being reachable from the internet.
 
 ## 7.5 Certificate Transparency
 
-A separate service based on `certstream-server-go` listens to the CT stream and filters on the apexes
-present in the database.
+Every certificate issued for a name is published to public logs within hours, and anybody may read them.
+That is the freshness advantage the [vision](/architecture/vision/) names: a staging host gets a
+certificate before it gets traffic, and a platform watching the stream sees the name the same minute.
 
-**Matching is O(1), never a regex.** CT carries several million certificates a day. For each SAN, walk
-the labels up through an in-memory set:
+### The feed is a component, the matcher is not
+
+Two things are easy to fold into one. `certstream-server-go` is an **aggregator**: it follows the CT logs,
+normalizes what they carry and exposes it as a websocket. It is somebody else's project, it holds nothing
+of Recon's, and it is deployed as an image the way FastRecon is.
+
+The **matcher** is Recon's, and it is a loop in the control plane rather than a service of its own.
+
+| | Aggregator | Matcher |
+|---|---|---|
+| What it is | `certstream-server-go`, an image | a loop in the control plane |
+| What it knows | the CT logs | the apex set, and the inventory behind it |
+| Credential | none | the database, like every other loop |
+| Direction | dialled by the matcher, dials the CT logs | dials out, never listens |
+
+A second service would need one of two things, and both are worse than the loop. A database credential
+outside the control plane, which [9.4](/architecture/deployment/#94-separating-privilege-not-just-load)
+spends its length removing. Or an ingestion endpoint that creates assets, which
+[5.5](/architecture/scope/#entering-an-asset-by-hand) already placed under the scope action rather than
+the one a scanner holds, precisely so that nothing holding a run's credential can widen a perimeter.
+
+Its network position is the Fingerprinter's, for a weaker reason and with the same shape: it has no
+business reaching the database, the control plane dials it and it never dials back
+([8.5](/architecture/verification/#85-network-isolation)).
+
+**The aggregator can lie, and it changes nothing.** A hostile or compromised feed can inject SANs, and the
+worst it obtains is a candidate under an apex the customer already authorized, which resolves to nothing
+and is archived by its own budget ([6.6](/architecture/lifecycle/#66-an-asset-that-was-never-alive)). So
+Recon validates no signature and no SCT. Validating one would prove that a certificate exists, and that is
+not the question being asked. The question is whether a name sits under an apex, and the answer is local.
+This is [P6](/architecture/principles/) applied to a feed rather than to a scanner.
+
+### What the set holds
+
+The set is built from `scope_rule`: **include rules whose matcher is `apex`**, in force, on programs that
+are `active` and inside their authorization window.
+
+**`fqdn` rules stay out**, and their absence is the rule of
+[5.5](/architecture/scope/#an-include-that-names-a-thing-declares-it) working. An include naming a host
+already declared it, so the asset exists and carries a due date. CT would find the same name and create
+nothing, and putting it in the set would buy a lookup per certificate for a row that is already there.
+`cidr` and `regex` never named a thing at all.
+
+**The authorization window is in the set, not only `state`.** It is the same two lines the
+[discovery cadence](/architecture/deployment/#the-pass-for-discovery) carries, for the same reason one
+level earlier: an expired program left in the set keeps creating assets with due dates on a perimeter
+nobody may scan, so the first thing each one does is have its run refused.
+
+**An apex maps to a list, never to one program.** Two programs may legitimately hold the same apex, and
+[9.8](/architecture/deployment/#the-pass-on-due-dates) already says the same name held by two of them is
+two assets and two runs. One SAN therefore creates one candidate per program that claims it.
+
+### The reload is a swap, on a short timer
+
+The set is rebuilt whole and swapped, never mutated in place: the stream reads it without a lock, and a
+map being edited under a walk is the one bug in this loop that would produce wrong matches rather than an
+error.
+
+The query behind it walks every tenant's rules by construction, so it runs on the system pool and is
+annotated `cross-org` with that as its reason
+([11.1](/architecture/security/#111-irreversible-decisions)). It is the only part of this loop that does.
+Writing a candidate is scoped, on the application pool, with the organization the matched apex named.
+
+The interval is minutes rather than an hour, because the cost is one query over `scope_rule` and the
+thing it buys is that an apex added in the console starts producing candidates while the person who added
+it is still looking at the screen.
+
+### Matching walks labels, never a string
+
+CT carries several million certificates a day. For each SAN, walk the labels up through the set:
 
 ```
 san = "staging.api.target.com"
@@ -167,24 +236,122 @@ san = "staging.api.target.com"
 → test "target.com"          ← match
 ```
 
-Four lookups at most, whatever the number of programs. The set is reloaded periodically when the scope
-changes. One core absorbs the full stream.
+Four lookups at most, whatever the number of programs.
 
-Every matching SAN creates an `fqdn` asset in **CANDIDATE** state and enters the verification loop with
-the [aggressive backoff](/architecture/lifecycle/#backoff-curves). Its first check is a single host run,
-which is the second thing the target list input buys: no enumeration, no API quota, an answer in
-seconds.
+**The walk does not stop at the first match.** An apex may sit under another program's apex, and stopping
+would silently drop the outer one. It collects every apex on the path, which is the same rule as two
+programs holding the same apex, reached from the other end.
 
-**A structural blind spot: wildcard certificates.** A certificate issued for `*.target.com` reveals
-**no** subdomain, and mature organizations use them for exactly that. Add internal names, non TLS
-services and private CAs. CT and periodic enumeration are therefore not redundant. They are
-complementary by construction.
+**Labels are also what makes the walk safe.** `target.com.evil.com` matches nothing, because the walk
+climbs label boundaries rather than testing a string suffix. That is the same distinction
+[10.3](/architecture/search/#the-suffix-is-the-query-that-matters) draws where it refuses to turn a
+suffix search into a notion of domain membership, and here it is load bearing rather than conservative: a
+suffix test would let anybody put a name into somebody else's perimeter by registering a domain.
 
-:::tip[Product idea]
-A wildcard certificate passing for an apex in the database is a signal in itself. It says CT will not
-help on this program and that more effort belongs in DNS brute force. A per program **coverage
-confidence** metric follows from it.
+### What a match creates, and what it does not
+
+An `fqdn` asset, `discovery_source = certstream`, its lineage carrying the issuer and the log entry, and
+`scope_status` from the ordinary [re-evaluation](/architecture/scope/#52-re-evaluated-at-ingestion) rather
+than from a filter here. **CT classifies, it does not filter**: a name matching an apex and caught by an
+exclusion is stored and never probed, like every other out of scope asset. Filtering it in the loop would
+be a second scope engine, disagreeing with the first at some point.
+
+Three kinds of SAN create nothing:
+
+- **A wildcard.** `*.target.com` names no host. It feeds the counters below instead.
+- **An address or an email SAN.** Refused by [canonicalization](/architecture/data-model/#43-canonical-keys),
+  which is where the question of what a key may contain already lives.
+- **A name that is already an asset.** The insert conflicts and does nothing, which is the deduplication
+  the next section is careful not to claim for itself.
+
+The lifecycle is `CANDIDATE` and the due date is immediate, which
+[6.3](/architecture/lifecycle/#who-fills-the-due-dates) already wrote down.
+
+### The deduplication cache is a cost control, never the correctness one
+
+`UNIQUE (program_id, kind, key)` is what makes a SAN one asset. It holds with the cache cold, with the
+cache full and with the cache deleted, and the milestone that says ten sightings in a minute create one
+asset is an assertion about that constraint.
+
+What the cache buys is the round trip. A precertificate and its certificate carry the same SANs and both
+are logged, a name is reissued on rotation, and one certificate reaches several logs: exact duplicates are
+the normal case rather than the edge one, and each of them is otherwise an insert that changes nothing at
+stream rate.
+
+- Keyed on **(program_id, san)**, because the same name under two programs is two assets.
+- Fixed capacity with a TTL in minutes, since an unbounded map on a stream is a leak with a slow fuse.
+- **An eviction is not an event and nothing logs one.** The row is already in the database; the next
+  sighting pays one insert that does nothing.
+
+Saying which of the two carries the guarantee is worth the paragraph, because a cache that is load bearing
+on correctness is a cache nobody may ever resize, and nobody finds that out until they resize it.
+
+### A ceiling per program, and it says what it dropped
+
+A perimeter can be pointed at an apex under which the stream carries thousands of names, and that is one
+wrong `apex` rule away rather than hypothetical. Without a bound, a public feed decides the size of a
+customer's inventory.
+
+Candidate creation is therefore capped per program per window. Past the cap the loop creates nothing more
+for that program until the window rolls, and it **says how many it did not create**. A silent cap reads as
+"CT found forty names under this apex" where the truth is "CT found four thousand and these are the first
+forty", which is the same failure the live feed already refuses when it
+[says what it left out](/architecture/search/#bounded-and-it-says-so).
+
+### A reconnection is a gap, and nothing backfills it
+
+The aggregator keeps no history on Recon's behalf. A dropped websocket loses whatever passed while it was
+down, and reconnecting resumes at the present.
+
+Two consequences, both stated rather than worked around. The loop **records when it was connected**, so a
+hole is visible as a hole rather than as a period during which CT found nothing, which matters because the
+counters below would otherwise read an outage as an apex the logs are silent on. And the hole is covered
+by the thing that was never redundant with CT anyway: periodic enumeration walks the same perimeter on the
+program's own interval.
+
+### Wildcard certificates, and the metric that follows
+
+**A structural blind spot.** A certificate issued for `*.target.com` reveals **no** subdomain, and mature
+organizations use them for exactly that. Add internal names, non TLS services and private CAs. CT and
+periodic enumeration are therefore not redundant. They are complementary by construction.
+
+A wildcard passing for an apex in the database is a signal in itself: it says CT will help little on this
+program and that effort belongs in DNS brute force instead.
+
+**The signal is per apex and dated, not a boolean on the program.** A program holds several apexes and
+they do not behave alike, one served entirely by a wildcard and another issuing a certificate per host. A
+flag on the program loses which apex, and a boolean never expires: an organization that stops using
+wildcards would carry it for good.
+
+So the state is counters per apex, in [`ct_apex`](/architecture/data-model/#42-main-tables), upserted by
+the loop: how many names CT contributed and when the last one arrived, how many wildcards matched and when
+the last one did, and since when the apex has been watched, so that a young apex is not read as a silent
+one.
+
+**Coverage confidence is derived at read time and never stored.** It is the first number in this project
+computed on data nobody has yet, so its formula will change, and a stored score is a number nobody can
+recompute the day it does. The counters are the fact, the reading is a view over them.
+
+:::note[The one counter here that may lose a minute]
+The counters are accumulated in memory and flushed on the reload tick, because a write per certificate is
+exactly the round trip the cache above exists to remove. A crash loses the unflushed window.
+
+That is acceptable here and nowhere else in this system. [P3](/architecture/principles/) protects the
+journal, and this is not the journal: it is a metric about coverage. **An asset created from a certificate
+is written immediately** and is never in that window, which is the half that would not have been
+acceptable to lose.
 :::
+
+### What the console reads, and what stays out of the registry
+
+`discovery_source` does **not** join the [search registry](/architecture/search/#what-the-registry-holds).
+It lives on `asset` and not on the projection, so putting it behind a filter means promoting a column for
+a query nobody has asked for. The per program coverage panel reads the counters above and one grouped
+query over `asset`, which is not a search.
+
+That is the same call [10.3](/architecture/search/#what-the-registry-holds) makes about `title`: the day
+somebody asks to filter an inventory on where a name came from, it is an `ALTER` and a line in that table,
+in that order.
 
 ## 7.6 Future sources
 

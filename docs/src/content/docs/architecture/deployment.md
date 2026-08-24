@@ -70,7 +70,7 @@ CREATE TABLE run (
   id             uuid PRIMARY KEY,
   org_id         uuid NOT NULL REFERENCES org(id),
   program_id     uuid NOT NULL REFERENCES program(id),
-  kind           text NOT NULL,   -- discovery | verification
+  kind           text NOT NULL,   -- discovery | verification | candidate
   scope          text NOT NULL,   -- enum | resolve | ports | full
   state          text NOT NULL,   -- pending | running | completed | failed | expired
   deadline       timestamptz NOT NULL,
@@ -101,6 +101,31 @@ and then writes what it takes, and no transaction sees another's uncommitted row
 ticks both find nothing in flight and both freeze the same hosts. A partial unique index on
 `(program_id)` for each kind makes the second one lose, which turns the reservation into a fact rather
 than the outcome of a check. The refusal a caller sees is the same either way.
+
+### A third kind, so a candidate never waits behind a sweep
+
+A Certificate Transparency candidate is due one minute after it is created, and the whole of the
+[aggressive curve](/architecture/lifecycle/#backoff-curves) rests on that first check happening then. The
+bound above breaks it as written: a verification run over a program's due names can hold the slot for its
+whole deadline, so a candidate arriving a minute in waits half an hour for a check the curve wanted at
+sixty seconds. That is the differentiator being spent on a queue.
+
+So `candidate` is a **third value of `kind`**, with its own partial unique index. The mechanism was
+already per kind, which is what makes this a value rather than a second reservation scheme: one index,
+one selection, and nothing else in this section changes.
+
+Two bounds keep it from being a hole in the rate limit rather than a lane in it:
+
+- **Its scope is pinned to `resolve`.** One round trip to a resolver pool per name, and nothing at all is
+  sent to the target, so a candidate run and a verification run in flight on the same program do not add
+  up to anything [9.5](#95-rate-limiting) has an opinion about. A candidate run may not be widened to
+  `full` by any caller: the expensive rung is the next section's business.
+- **Its deadline is minutes**, not the run timeout. It does one rung over a short list, and a slot held
+  for thirty minutes by a run that had one thing to do turns the bound back into the problem it solves.
+
+**The expensive rung goes back into the ordinary lane.** A candidate that answers earns `next_full_at`
+and is selected by the verification pass with everything else, where one live run per program is exactly
+the bound a hundred connections per host deserves.
 
 **A run that dies takes nothing with it.** Due dates are moved only when a report is ingested, so an
 abandoned run leaves the inventory exactly as it found it and the next tick selects the same assets
@@ -272,7 +297,7 @@ inferred from the code:
 
 | Pool | What runs on it |
 |---|---|
-| `asm_sys` | the partition and housekeeping loop, the deadline sweeper, the discovery cadence, the due date pass, the Notifier, the render pass, the external host sweep, and the two lookups that turn a credential into an organization, one per kind of credential |
+| `asm_sys` | the partition and housekeeping loop, the deadline sweeper, the discovery cadence, the due date pass, the candidate pass, the Certificate Transparency set reload, the Notifier, the render pass, the external host sweep, and the two lookups that turn a credential into an organization, one per kind of credential |
 | `asm_app` | everything a request does after that lookup, including the whole of report ingestion |
 
 The credential lookups are on the system pool for a reason that is not convenience: they are the queries
@@ -443,6 +468,24 @@ logging a refusal, once a minute, forever. A warning a minute is not a signal.
 omission. The bound today is one per program, which on a deployment holding a handful of them is the bill.
 It becomes worth having the day programs multiply, and a bound that has never bound anything has never been
 calibrated either.
+
+### The pass for candidates
+
+The third pass, and it selects on the same column as the first: names due to `resolve` whose lifecycle is
+`candidate`, on programs holding no candidate run in flight. One run per program, holding every due
+candidate of it, scope `resolve`.
+
+**A candidate is selected by this pass and by no other**, and the exclusion is mutual. Without it the two
+passes fight over the same names: each freezes what the other was about to take, and which one wins is
+whichever tick fired first. The verification pass therefore skips `candidate` rows, and this one takes
+nothing else.
+
+**It is not a single host run, and that phrase was doing work it should not.** What makes a candidate's
+first check cheap is the [targets input](/architecture/discovery/#72-how-a-verification-run-gets-its-targets):
+stage 1 is replaced, so there is no enumeration and no source quota spent, whatever the list holds. A
+certificate carrying four hundred SANs therefore produces **one** run rather than four hundred, which is
+the same grouping the other two passes do and the only shape that survives a burst. One host is the
+common case, not the mechanism.
 
 ### The pass for discovery
 

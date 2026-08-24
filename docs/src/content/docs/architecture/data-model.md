@@ -165,7 +165,27 @@ CREATE TABLE asset_current (
   last_ok_at      timestamptz,
   last_changed_at timestamptz
 );
+
+-- What Certificate Transparency has actually delivered under one apex, see 7.5.
+-- Counters rather than a flag on the program: a program holds several apexes and
+-- they do not behave alike, and a boolean would never expire.
+CREATE TABLE ct_apex (
+  org_id           uuid NOT NULL REFERENCES org(id),
+  program_id       uuid NOT NULL REFERENCES program(id),
+  apex             text NOT NULL,
+  watched_since    timestamptz NOT NULL,  -- so a young apex is not read as a silent one
+  san_count        bigint NOT NULL DEFAULT 0,
+  wildcard_count   bigint NOT NULL DEFAULT 0,
+  last_san_at      timestamptz,
+  last_wildcard_at timestamptz,
+  PRIMARY KEY (program_id, apex)
+);
 ```
+
+`ct_apex` carries no coverage score. The reading is
+[derived from these counters](/architecture/discovery/#wildcard-certificates-and-the-metric-that-follows)
+at query time, because a stored score is a number nobody can recompute the day its formula changes, and
+this one is computed on data nobody has yet.
 
 Indexes: GIN on `attributes` and `technologies`, B-tree on the promoted columns, a composite
 `(org_id, program_id, lifecycle)`, and one expression index on `reverse(key)` for the suffix query

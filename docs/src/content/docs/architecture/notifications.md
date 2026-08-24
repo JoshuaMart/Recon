@@ -55,6 +55,17 @@ Every notification carries the **diff**, before and after, and the
 A mass tip into `unobservable` usually signals an IP ban on the scanning side rather than a change in the
 targets, which is why it is high priority and why it is a program event rather than an asset one.
 
+### Certificate Transparency adds no `kind`
+
+A candidate is not a finding. Most of them resolve to nothing and end
+[`ARCHIVED`](/architecture/lifecycle/#66-an-asset-that-was-never-alive), and notifying on creation would
+produce the exact flood [12.4](#124-aggregation-and-anti-flood) exists to stop, on the one source that
+can deliver several thousand names in a minute.
+
+What is worth saying is that one went **live**, and that is `new_active`, which the table above already
+carries and which the lineage already attributes to `certstream`. The event that matters was written
+before the source that produces it, so the source arrives with nothing to add.
+
 ### What `external_host_dead` can actually see
 
 An external host is **out of scope by definition**: it belongs to someone else. It gets no due date, and
