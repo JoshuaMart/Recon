@@ -212,8 +212,8 @@ func TestAGraceNothingEndsExpiresAndReportsTheIncident(t *testing.T) {
 	ctx := context.Background()
 
 	exec(t, f.pool, `UPDATE program SET created_at = now() - interval '8 days' WHERE id = $1`, f.program)
-	exec(t, f.pool, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline)
-		VALUES (gen_random_uuid(), $1, $2, 'discovery', 'full', 'expired', now() - interval '7 days')`,
+	exec(t, f.pool, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline, apex)
+		VALUES (gen_random_uuid(), $1, $2, 'discovery', 'full', 'expired', now() - interval '7 days', 'acme.test')`,
 		f.org, f.program)
 	f.arrivals(t, notify.KindNewActive, notify.High, 12)
 	exec(t, f.pool, `UPDATE notification_event SET suppressed = true WHERE kind = 'new_active'`)
@@ -247,8 +247,8 @@ func TestAFailedFirstRunLeavesTheGraceAndASuccessEndsIt(t *testing.T) {
 	f := perimeter(t)
 	ctx := context.Background()
 
-	exec(t, f.pool, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline)
-		VALUES (gen_random_uuid(), $1, $2, 'discovery', 'full', 'expired', now())`, f.org, f.program)
+	exec(t, f.pool, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline, apex)
+		VALUES (gen_random_uuid(), $1, $2, 'discovery', 'full', 'expired', now(), 'acme.test')`, f.org, f.program)
 	f.arrivals(t, notify.KindNewActive, notify.High, 8)
 	exec(t, f.pool, `UPDATE notification_event SET suppressed = true WHERE kind = 'new_active'`)
 
@@ -259,8 +259,8 @@ func TestAFailedFirstRunLeavesTheGraceAndASuccessEndsIt(t *testing.T) {
 		t.Fatalf("%d summaries after a failed first run, and the grace should still hold", n)
 	}
 
-	exec(t, f.pool, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline, finished_at)
-		VALUES (gen_random_uuid(), $1, $2, 'discovery', 'full', 'completed', now(), now())`, f.org, f.program)
+	exec(t, f.pool, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline, finished_at, apex)
+		VALUES (gen_random_uuid(), $1, $2, 'discovery', 'full', 'completed', now(), now(), 'acme.test')`, f.org, f.program)
 	if err := f.notifier(t).Aggregates(ctx, 0.5); err != nil {
 		t.Fatalf("aggregates: %v", err)
 	}

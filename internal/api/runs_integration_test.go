@@ -99,7 +99,7 @@ func TestATargetListIsServedOnlyToItsOwnRun(t *testing.T) {
 		t.Fatalf("starting a run answered %s: %v", resp.Status, body)
 	}
 
-	args := stringsOf(body["args"])
+	args := stringsOf(firstRun(t, body)["args"])
 	targets := arg(args, "--targets-url")
 	credential := arg(args, "--targets-header")
 	if targets == "" || credential == "" {
@@ -136,7 +136,7 @@ func TestATargetListIsServedOnlyToItsOwnRun(t *testing.T) {
 	// Reaching for the list is what says a scanner opened this run rather than
 	// a provisioner having promised to, and those two call for opposite
 	// actions when somebody finds a run sitting there.
-	runID, _ := body["run_id"].(string)
+	runID, _ := firstRun(t, body)["run_id"].(string)
 	var state string
 	var started *time.Time
 	if err := h.pool.QueryRow(context.Background(),
@@ -203,7 +203,7 @@ func TestASecondRunIsRefusedByNamingTheFirst(t *testing.T) {
 		t.Fatalf("a second run answered %s", again.Status)
 	}
 	detail, _ := body["detail"].(string)
-	if !strings.Contains(detail, first["run_id"].(string)) {
+	if !strings.Contains(detail, firstRun(t, first)["run_id"].(string)) {
 		t.Fatalf("the refusal does not name the run: %q", detail)
 	}
 	if !strings.Contains(detail, "pending") {
@@ -328,6 +328,29 @@ func arg(args []string, flag string) string {
 		}
 	}
 	return ""
+}
+
+// firstRun reads the one entry a verification produces.
+//
+// The route answers with a list because a discovery over a perimeter of several
+// apexes is several runs, the scanner taking one root domain per execution. A
+// verification is a list of one, and this says so rather than indexing in the
+// middle of an assertion about something else.
+func firstRun(t *testing.T, body map[string]any) map[string]any {
+	t.Helper()
+
+	list, ok := body["runs"].([]any)
+	if !ok || len(list) == 0 {
+		t.Fatalf("the answer carries no run: %v", body)
+	}
+	if len(list) != 1 {
+		t.Fatalf("%d runs came back where one was expected: %v", len(list), body)
+	}
+	run, ok := list[0].(map[string]any)
+	if !ok {
+		t.Fatalf("the run entry is %T", list[0])
+	}
+	return run
 }
 
 func stringsOf(raw any) []string {

@@ -150,8 +150,8 @@ func TestAFirstRunIsSummarisedRatherThanSilent(t *testing.T) {
 	exec(t, pool, `INSERT INTO program (id, org_id, name, authorized_from, created_at)
 		VALUES ($1, $2, 'acme', now() - interval '1 day', now() - interval '1 hour')`, program, org)
 	// A discovery run in flight: the grace holds.
-	exec(t, pool, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline)
-		VALUES (gen_random_uuid(), $1, $2, 'discovery', 'full', 'running', now() + interval '1 hour')`,
+	exec(t, pool, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline, apex)
+		VALUES (gen_random_uuid(), $1, $2, 'discovery', 'full', 'running', now() + interval '1 hour', 'acme.test')`,
 		org, program)
 	for n := range 40 {
 		asset := uuid.New()

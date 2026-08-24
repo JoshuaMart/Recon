@@ -93,12 +93,20 @@ func (h *Programs) StartRun(w http.ResponseWriter, r *http.Request, principal au
 		return
 	}
 
-	var definition *runs.Definition
+	// A list, and a verification is a list of one. The scanner takes one root
+	// domain per execution, so a discovery over a perimeter of three apexes is
+	// three runs, and a response shape that could only carry one would have to
+	// pick which of them to tell the caller about.
+	var definitions []*runs.Definition
 	switch body.Kind {
 	case runs.KindDiscovery:
-		definition, err = h.scheduler.Discovery(ctx, q, principal.OrgID, programID)
+		definitions, err = h.scheduler.Discovery(ctx, q, principal.OrgID, programID)
 	case runs.KindVerification:
-		definition, err = h.scheduler.Verification(ctx, q, principal.OrgID, programID, body.Scope)
+		var one *runs.Definition
+		one, err = h.scheduler.Verification(ctx, q, principal.OrgID, programID, body.Scope)
+		if one != nil {
+			definitions = []*runs.Definition{one}
+		}
 	default:
 		fail(w, http.StatusBadRequest, "unknown_kind", fmt.Sprintf("run kind %q is neither discovery nor verification", body.Kind))
 		return
@@ -163,33 +171,53 @@ func (h *Programs) StartRun(w http.ResponseWriter, r *http.Request, principal au
 		}
 		return tx.Commit(ctx)
 	}
-	if err := h.scheduler.Launch(launchCtx, record, definition); err != nil {
-		// The run exists and the sweeper owns it, so this is reported rather
-		// than turned into a failure the caller might retry into a second run.
-		h.log.ErrorContext(ctx, "run not started", "run", definition.RunID, "error", err)
-		writeJSON(w, http.StatusAccepted, map[string]any{
-			"started":      false,
+	// One entry per run, reported whether it started or not. A platform that
+	// refuses the third of three leaves a row the deadline sweeper owns and two
+	// enumerations that are genuinely walking, and a response that collapsed
+	// that into one boolean would describe neither.
+	started := 0
+	reported := make([]map[string]any, 0, len(definitions))
+	for _, definition := range definitions {
+		entry := map[string]any{
 			"run_id":       definition.RunID,
-			"reason":       "the platform did not start it, and the deadline sweeper owns the run",
+			"kind":         definition.Kind,
+			"scope":        definition.Scope,
 			"deadline":     definition.Deadline,
 			"target_count": definition.TargetCount,
-		})
-		return
+			// What the run was actually asked to do. In development nothing
+			// starts it, so the console shows this and a person runs the image:
+			// the same shape as production minus the call.
+			"args": definition.Args,
+			"env":  definition.Env,
+		}
+		// Only a discovery has one, and an empty string in the payload would
+		// read as a domain nobody named.
+		if definition.Apex != "" {
+			entry["apex"] = definition.Apex
+		}
+
+		if err := h.scheduler.Launch(launchCtx, record, definition); err != nil {
+			// The run exists and the sweeper owns it, so this is reported
+			// rather than turned into a failure the caller might retry into a
+			// second run.
+			h.log.ErrorContext(ctx, "run not started",
+				"run", definition.RunID, "apex", definition.Apex, "error", err)
+			entry["started"] = false
+			entry["reason"] = "the platform did not start it, and the deadline sweeper owns the run"
+			reported = append(reported, entry)
+			continue
+		}
+		entry["started"] = true
+		entry["external_id"] = definition.ExternalID
+		reported = append(reported, entry)
+		started++
 	}
 
 	writeJSON(w, http.StatusAccepted, map[string]any{
-		"started":      true,
-		"external_id":  definition.ExternalID,
-		"run_id":       definition.RunID,
-		"kind":         definition.Kind,
-		"scope":        definition.Scope,
-		"deadline":     definition.Deadline,
-		"target_count": definition.TargetCount,
-		// What the run was actually asked to do. In development nothing starts
-		// it, so the console shows this and a person runs the image: the same
-		// shape as production minus the call.
-		"args": definition.Args,
-		"env":  definition.Env,
+		// True when anything went out at all. What went out and what did not is
+		// in the list, one entry per run.
+		"started": started > 0,
+		"runs":    reported,
 	})
 }
 

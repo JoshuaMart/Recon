@@ -352,15 +352,22 @@ func TestDiscoveryIsRecordedWhenItIsProvisioned(t *testing.T) {
 		VALUES ($1,$2,$3,'include','apex','acme.test',$4)`,
 		uuid.New(), h.org, h.program, h.clock.now.Add(-time.Hour))
 
-	def, err := h.sched.Discovery(ctx, h.queries, h.org, h.program)
+	defs, err := h.sched.Discovery(ctx, h.queries, h.org, h.program)
 	if err != nil {
 		t.Fatalf("discovery: %v", err)
 	}
+	if len(defs) != 1 {
+		t.Fatalf("one apex produced %d runs", len(defs))
+	}
+	def := defs[0]
 	if arg(def.Args, "--stages") != runs.ScopeFull {
 		t.Fatalf("a discovery run walks %q of the ladder", arg(def.Args, "--stages"))
 	}
 	if arg(def.Args, "-d") != "acme.test" {
 		t.Fatalf("the perimeter is %q", arg(def.Args, "-d"))
+	}
+	if def.Apex != "acme.test" {
+		t.Fatalf("the run says it enumerates %q", def.Apex)
 	}
 	// A discovery run gets no targets URL and a domain instead. That is the
 	// whole difference between the two mandates.
@@ -675,10 +682,14 @@ func TestAnExclusionThatCannotTravelIsSaidOutLoud(t *testing.T) {
 		VALUES ($1,$2,$3,'include','apex','acme.test',$4)`,
 		uuid.New(), h.org, h.program, h.clock.now.Add(-time.Hour))
 
-	def, err := h.sched.Discovery(ctx, h.queries, h.org, h.program)
+	defs, err := h.sched.Discovery(ctx, h.queries, h.org, h.program)
 	if err != nil {
 		t.Fatalf("discovery: %v", err)
 	}
+	if len(defs) != 1 {
+		t.Fatalf("one apex produced %d runs", len(defs))
+	}
+	def := defs[0]
 
 	if arg(def.Args, "--exclude") != "vpn.acme.test" {
 		t.Fatalf("the name exclusion did not travel: %v", def.Args)
@@ -881,8 +892,8 @@ func TestNoVerificationWhileAnEnumerationIsWalkingThePerimeter(t *testing.T) {
 	// A discovery run in flight, which is what the report has not come back
 	// from yet.
 	discovery := uuid.New()
-	exec(t, h.pool, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline)
-		VALUES ($1,$2,$3,'discovery','full','running',$4)`,
+	exec(t, h.pool, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline, apex)
+		VALUES ($1,$2,$3,'discovery','full','running',$4,'acme.test')`,
 		discovery, h.org, h.program, h.clock.now.Add(time.Hour))
 
 	// The selection does not wake the programme.
@@ -955,5 +966,110 @@ func TestAnEnumerationIsNotBlockedByAVerification(t *testing.T) {
 	}
 	if _, err := h.sched.Discovery(ctx, h.queries, h.org, h.program); err != nil {
 		t.Errorf("the enumeration was refused while a verification was in flight: %v", err)
+	}
+}
+
+// A programme with two apexes gets one run each, and this is the case the whole
+// per apex shape exists for.
+//
+// The scheduler used to join a programme's apexes with a comma into the one
+// flag the scanner reads as a single domain. Every single apex programme
+// survived it, because a list of one has no separator in it, and the first
+// perimeter with two produced a run that died before resolving anything with
+// "domain \"a.test,b.test\" is not a valid domain name". The assertion is
+// therefore not just that two runs come back: it is that neither of them was
+// handed a list.
+func TestAPerimeterOfTwoApexesIsTwoRuns(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	for _, apex := range []string{"acme.test", "other.test"} {
+		exec(t, h.pool, `INSERT INTO scope_rule (id, org_id, program_id, kind, matcher, pattern, valid_from)
+			VALUES ($1,$2,$3,'include','apex',$4,$5)`,
+			uuid.New(), h.org, h.program, apex, h.clock.now.Add(-time.Hour))
+	}
+	exec(t, h.pool, `INSERT INTO scope_rule (id, org_id, program_id, kind, matcher, pattern, valid_from)
+		VALUES ($1,$2,$3,'exclude','fqdn','vpn.acme.test',$4)`,
+		uuid.New(), h.org, h.program, h.clock.now.Add(-time.Hour))
+
+	defs, err := h.sched.Discovery(ctx, h.queries, h.org, h.program)
+	if err != nil {
+		t.Fatalf("discovery: %v", err)
+	}
+	if len(defs) != 2 {
+		t.Fatalf("two apexes produced %d runs", len(defs))
+	}
+
+	seen := map[string]bool{}
+	for _, def := range defs {
+		domain := arg(def.Args, "-d")
+		if strings.ContainsAny(domain, ", ") {
+			t.Errorf("a run was handed %q, which the scanner reads as one domain name "+
+				"and refuses", domain)
+		}
+		if domain != def.Apex {
+			t.Errorf("the run says it enumerates %q and asks the scanner for %q", def.Apex, domain)
+		}
+		// The perimeter's exclusions belong to the programme and not to the
+		// apex being walked, so both runs carry them.
+		if arg(def.Args, "--exclude") != "vpn.acme.test" {
+			t.Errorf("the run over %q was given no exclusion: %v", domain, def.Args)
+		}
+		seen[domain] = true
+	}
+	if !seen["acme.test"] || !seen["other.test"] {
+		t.Errorf("the two runs cover %v", seen)
+	}
+
+	// Both are in flight, and the bound is on the apex rather than on the
+	// programme: the unique index has to allow the pair that the old one made
+	// impossible.
+	var live int
+	if err := h.pool.QueryRow(ctx,
+		`SELECT count(*) FROM run WHERE program_id = $1 AND kind = 'discovery'
+		   AND state IN ('pending','running')`, h.program).Scan(&live); err != nil {
+		t.Fatalf("count live runs: %v", err)
+	}
+	if live != 2 {
+		t.Fatalf("%d discovery runs are live, want the two that were just defined", live)
+	}
+
+	// And nothing is free, so a second call is refused rather than answering
+	// with an empty list a caller would read as success.
+	if _, err := h.sched.Discovery(ctx, h.queries, h.org, h.program); !errors.Is(err, runs.ErrRunInFlight) {
+		t.Fatalf("a third enumeration was provisioned with both apexes in flight: %v", err)
+	}
+}
+
+// One apex failing must not cost the other a cycle. The bound is per apex, so
+// the enumeration that has nothing in flight goes out again on its own while
+// its neighbour is still walking.
+func TestAnApexWhoseRunDiedIsProvisionedAgainOnItsOwn(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	for _, apex := range []string{"acme.test", "other.test"} {
+		exec(t, h.pool, `INSERT INTO scope_rule (id, org_id, program_id, kind, matcher, pattern, valid_from)
+			VALUES ($1,$2,$3,'include','apex',$4,$5)`,
+			uuid.New(), h.org, h.program, apex, h.clock.now.Add(-time.Hour))
+	}
+	if _, err := h.sched.Discovery(ctx, h.queries, h.org, h.program); err != nil {
+		t.Fatalf("discovery: %v", err)
+	}
+
+	// The one over acme.test dies the way the sweeper would end it.
+	exec(t, h.pool, `UPDATE run SET state = 'expired', finished_at = $1
+	                  WHERE program_id = $2 AND kind = 'discovery' AND apex = 'acme.test'`,
+		h.clock.now, h.program)
+
+	defs, err := h.sched.Discovery(ctx, h.queries, h.org, h.program)
+	if err != nil {
+		t.Fatalf("the freed apex was not provisioned again: %v", err)
+	}
+	if len(defs) != 1 {
+		t.Fatalf("%d runs came back, want the one apex that was free", len(defs))
+	}
+	if defs[0].Apex != "acme.test" {
+		t.Fatalf("the run covers %q, and other.test was still in flight", defs[0].Apex)
 	}
 }

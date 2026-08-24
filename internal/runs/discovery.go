@@ -78,7 +78,13 @@ func (c *Cadence) Once(ctx context.Context) (int, error) {
 	return started, nil
 }
 
-// provision defines and starts one run, and reports whether it went out.
+// provision defines a programme's enumerations and starts them, reporting
+// whether any went out.
+//
+// One run per apex, because the scanner takes one root domain per execution.
+// They are defined in one transaction and started one by one after it: a
+// platform refusing the third leaves three rows the deadline sweeper owns, and
+// two enumerations that are genuinely walking.
 func (c *Cadence) provision(ctx context.Context, org, program uuid.UUID, name string) bool {
 	tx, err := c.pool.Begin(ctx)
 	if err != nil {
@@ -87,7 +93,7 @@ func (c *Cadence) provision(ctx context.Context, org, program uuid.UUID, name st
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	definition, err := c.scheduler.Discovery(ctx, sqlcgen.New(tx), org, program)
+	definitions, err := c.scheduler.Discovery(ctx, sqlcgen.New(tx), org, program)
 	switch {
 	case errors.Is(err, ErrNoPerimeter):
 		// The selection above already requires an apex, so reaching this means
@@ -117,10 +123,24 @@ func (c *Cadence) provision(ctx context.Context, org, program uuid.UUID, name st
 			RunID: pgUUID(runID), ExternalID: external,
 		})
 	}
-	if err := c.scheduler.Launch(ctx, record, definition); err != nil {
-		c.log.ErrorContext(ctx, "discovery run not started",
-			"program", program, "name", name, "run", definition.RunID, "error", err)
-		return false
+	// Counted rather than short circuited. One apex the platform refuses must
+	// not hold back the others, and a tick that started two of three is a
+	// different fact from one that started none: the first leaves one row for
+	// the sweeper, the second leaves three and usually means the platform
+	// itself is down.
+	started := 0
+	for _, definition := range definitions {
+		if err := c.scheduler.Launch(ctx, record, definition); err != nil {
+			c.log.ErrorContext(ctx, "discovery run not started",
+				"program", program, "name", name,
+				"run", definition.RunID, "apex", definition.Apex, "error", err)
+			continue
+		}
+		started++
 	}
-	return true
+	if started < len(definitions) {
+		c.log.WarnContext(ctx, "discovery partly started",
+			"program", program, "name", name, "started", started, "defined", len(definitions))
+	}
+	return started > 0
 }

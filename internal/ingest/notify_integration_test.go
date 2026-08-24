@@ -72,8 +72,8 @@ func (h *harness) kinds(t *testing.T, kind string) []event {
 func (h *harness) discovered(t *testing.T) {
 	t.Helper()
 
-	exec(t, h.pool, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline, finished_at)
-		VALUES (gen_random_uuid(), $1, $2, 'discovery', 'full', 'completed', now(), now())`,
+	exec(t, h.pool, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline, finished_at, apex)
+		VALUES (gen_random_uuid(), $1, $2, 'discovery', 'full', 'completed', now(), now(), 'acme.test')`,
 		h.org, h.program)
 }
 
@@ -259,8 +259,8 @@ func TestAFirstRunIsHeldBackAndStaysReadable(t *testing.T) {
 	ing := h.dated(c)
 
 	// A discovery run exists and none has completed: the grace holds.
-	exec(t, h.pool, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline)
-		VALUES (gen_random_uuid(), $1, $2, 'discovery', 'full', 'running', now() + interval '1 hour')`,
+	exec(t, h.pool, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline, apex)
+		VALUES (gen_random_uuid(), $1, $2, 'discovery', 'full', 'running', now() + interval '1 hour', 'acme.test')`,
 		h.org, h.program)
 
 	run := h.run()

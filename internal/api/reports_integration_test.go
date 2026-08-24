@@ -218,9 +218,17 @@ func (h *harness) run(t *testing.T, kind string) (uuid.UUID, string) {
 	if kind == "candidate" {
 		scope = "resolve"
 	}
-	h.exec(t, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline)
-	           VALUES ($1, $2, $3, $4, $5, 'pending', now() + interval '1 hour')`,
-		id, h.org, h.program, kind, scope)
+	// And a discovery carries the apex it enumerates, which a CHECK requires
+	// for the same reason: a discovery that names no domain is a run that
+	// cannot say what it walked.
+	var apex *string
+	if kind == "discovery" {
+		name := "acme.test"
+		apex = &name
+	}
+	h.exec(t, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline, apex)
+	           VALUES ($1, $2, $3, $4, $5, 'pending', now() + interval '1 hour', $6)`,
+		id, h.org, h.program, kind, scope, apex)
 	return id, h.signer.Mint(auth.PurposeReport, id, time.Now().Add(time.Hour))
 }
 

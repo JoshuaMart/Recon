@@ -822,11 +822,19 @@ SELECT r.id, r.org_id, r.program_id, r.kind, r.scope, r.state, r.deadline,
 -- name: ListRunTargets :many
 SELECT key FROM run_target WHERE run_id = @run_id::uuid;
 
+-- CreateRun writes the row a definition is about to be launched against.
+--
+-- apex is null on a verification and required on a discovery, which a table
+-- constraint enforces rather than this statement: a discovery enumerates one
+-- root domain because that is all the scanner takes, so a programme with
+-- several apexes gets one run each.
+--
 -- @tenant: scoped
 -- name: CreateRun :exec
-INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline, target_count)
+INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline, target_count, apex)
 VALUES (@id::uuid, @org_id::uuid, @program_id::uuid, @kind::text, @scope::text,
-        'pending', @deadline::timestamptz, sqlc.narg(target_count)::int);
+        'pending', @deadline::timestamptz, sqlc.narg(target_count)::int,
+        sqlc.narg(apex)::text);
 
 -- CloseRun records what a run did.
 --

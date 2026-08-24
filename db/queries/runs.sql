@@ -97,6 +97,25 @@ SELECT id, kind, scope, state, deadline, created_at, started_at, target_count
  ORDER BY created_at DESC
  LIMIT 1;
 
+-- LiveDiscoveryForApex is the per apex half of the bound above.
+--
+-- A programme with three apexes has three enumerations to provision, and one of
+-- them being in flight says nothing about the other two. The unique index says
+-- the same thing and would refuse the insert; this is asked first so a caller
+-- gets the run named back rather than a constraint violation, and so the two
+-- apexes that are free can still go out.
+--
+-- @tenant: keyed
+-- name: LiveDiscoveryForApex :one
+SELECT id, kind, scope, state, deadline, created_at, started_at, target_count
+  FROM run
+ WHERE program_id = @program_id::uuid
+   AND kind = 'discovery'
+   AND apex = @apex::text
+   AND state IN ('pending', 'running')
+ ORDER BY created_at DESC
+ LIMIT 1;
+
 -- ExpireRuns is the deadline sweeper.
 --
 -- It does not have to repair anything. Due dates are moved only when a report

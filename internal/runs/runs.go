@@ -104,6 +104,15 @@ type Definition struct {
 	Scope       string
 	Deadline    time.Time
 	TargetCount int
+	// Apex is the single root domain a discovery run enumerates, and it is
+	// empty on a verification.
+	//
+	// One domain and not the perimeter, because that is the unit the scanner
+	// takes: -d is one value where --exclude and --targets are repeatable, and
+	// the flags that accept several say so. A programme with several apexes
+	// gets one run each, which is also what makes a failed enumeration
+	// attributable: three identical pending rows name nothing.
+	Apex string
 	// Args is the whole invocation, and it is deliberately not split with Env.
 	//
 	// A start call replaces the definition's arguments wholesale and merges
@@ -257,7 +266,7 @@ func (s *Scheduler) Verification(
 		return nil, ErrNothingDue
 	}
 
-	def, err := s.create(ctx, q, org, program, KindVerification, rung, len(due), s.cfg.Timeout)
+	def, err := s.create(ctx, q, org, program, KindVerification, rung, "", len(due), s.cfg.Timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -338,7 +347,7 @@ func (s *Scheduler) Candidate(
 	// list. A slot held for thirty minutes by a run that had one thing to do
 	// turns the bound this lane exists for back into the problem it solves.
 	def, err := s.create(ctx, q, org, program, KindCandidate,
-		lifecycle.RungResolve, len(due), s.cfg.CandidateTimeout)
+		lifecycle.RungResolve, "", len(due), s.cfg.CandidateTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -372,13 +381,21 @@ func (s *Scheduler) Candidate(
 	return def, nil
 }
 
-// Discovery provisions one enumeration over a programme's apexes.
+// Discovery provisions one enumeration per apex of a programme.
 //
 // A discovery run gets no targets URL and a domain instead. That is the whole
-// difference between the two mandates.
+// difference between the two mandates, and it is also why the answer is a list:
+// the scanner takes one root domain per execution, so a perimeter of three
+// apexes is three runs and never one run naming three.
+//
+// The apexes already in flight are skipped rather than refused with the rest.
+// A programme whose second enumeration failed gets that one provisioned again
+// while the first is still walking, which is the behaviour the per apex bound
+// exists to allow; only a programme with nothing left free answers
+// ErrRunInFlight.
 func (s *Scheduler) Discovery(
 	ctx context.Context, q *sqlcgen.Queries, org, program uuid.UUID,
-) (*Definition, error) {
+) ([]*Definition, error) {
 	at := s.now()
 	apexes, err := q.ApexesForProgram(ctx, sqlcgen.ApexesForProgramParams{
 		ProgramID: pgUUID(program),
@@ -399,33 +416,58 @@ func (s *Scheduler) Discovery(
 		return nil, fmt.Errorf("read exclusions: %w", err)
 	}
 
-	def, err := s.create(ctx, q, org, program, KindDiscovery, ScopeFull, 0, s.cfg.Timeout)
-	if err != nil {
-		return nil, err
-	}
-	def.Args = append(def.Args, "--stages", def.Scope, "-d", strings.Join(apexes, ","))
-	// The exclusion patterns travel with the perimeter. A rule may have changed
-	// between a run being defined and a run starting, and they are the second
-	// safety net in front of the network rather than a duplicate of the scope.
+	// Built once and appended to each definition. The perimeter is the
+	// programme's, not the apex's: an exclusion under one apex is still an
+	// exclusion when another is being walked, and a scanner told less than the
+	// whole list is a scanner sending packets somewhere the perimeter says not
+	// to.
 	//
 	// The scanner's exclusions are name patterns, so a rule matching on an
 	// address range or a path cannot travel. Those still classify at ingestion,
 	// which is after the packet, and that is a real gap in the safety net: it
 	// is logged rather than dropped in silence, because a perimeter whose
 	// exclusions half apply is worse than one whose limits are known.
-	var untravelled []string
+	var exclusions, untravelled []string
 	for _, rule := range excluded {
 		switch rule.Matcher {
 		case "apex", "fqdn":
-			def.Args = append(def.Args, "--exclude", rule.Pattern)
+			exclusions = append(exclusions, "--exclude", rule.Pattern)
 		default:
 			untravelled = append(untravelled, rule.Matcher+":"+rule.Pattern)
 		}
 	}
 	if len(untravelled) > 0 {
 		s.log.WarnContext(ctx, "exclusions the scanner cannot be given",
-			"program", program, "run", def.RunID, "rules", untravelled,
+			"program", program, "rules", untravelled,
 			"effect", "those hosts are probed and classified out of scope afterwards")
+	}
+
+	defs := make([]*Definition, 0, len(apexes))
+	var inFlight error
+	for _, apex := range apexes {
+		def, err := s.create(ctx, q, org, program, KindDiscovery, ScopeFull, apex, 0, s.cfg.Timeout)
+		switch {
+		case errors.Is(err, ErrRunInFlight):
+			// Kept rather than returned, so the apexes that are free still go
+			// out. It is only the answer if none of them was.
+			inFlight = err
+			continue
+		case err != nil:
+			return nil, err
+		}
+		// One domain, and the whole reason this function returns a list. The
+		// flag is a single value on the scanner side, so a comma joined list of
+		// apexes reaches it as one malformed domain name and the run dies
+		// before it resolves anything.
+		def.Args = append(def.Args, "--stages", def.Scope, "-d", apex)
+		def.Args = append(def.Args, exclusions...)
+		defs = append(defs, def)
+	}
+	if len(defs) == 0 {
+		if inFlight != nil {
+			return nil, inFlight
+		}
+		return nil, ErrNoPerimeter
 	}
 
 	// Written at creation rather than at completion. A run that dies on the
@@ -438,17 +480,21 @@ func (s *Scheduler) Discovery(
 		return nil, fmt.Errorf("record discovery: %w", err)
 	}
 
-	s.log.InfoContext(ctx, "discovery run defined",
-		"run", def.RunID, "program", program, "apexes", len(apexes))
-	return def, nil
+	s.log.InfoContext(ctx, "discovery runs defined",
+		"program", program, "runs", len(defs), "apexes", len(apexes))
+	return defs, nil
 }
 
 // create writes the row and builds everything a run receives.
 func (s *Scheduler) create(
 	ctx context.Context, q *sqlcgen.Queries, org, program uuid.UUID,
-	kind, scope string, targets int, timeout time.Duration,
+	kind, scope, apex string, targets int, timeout time.Duration,
 ) (*Definition, error) {
-	live, err := s.InFlight(ctx, q, program, kind)
+	// The bound is on the apex for a discovery and on the programme for a
+	// verification, because that is the unit each one holds. A programme with
+	// three apexes has three enumerations to provision, and one of them being
+	// in flight says nothing about the other two.
+	live, err := s.inFlightFor(ctx, q, program, kind, apex)
 	if err != nil {
 		return nil, err
 	}
@@ -473,6 +519,7 @@ func (s *Scheduler) create(
 		ProgramID:   program,
 		Kind:        kind,
 		Scope:       scope,
+		Apex:        apex,
 		Deadline:    at.Add(timeout),
 		TargetCount: targets,
 	}
@@ -484,6 +531,12 @@ func (s *Scheduler) create(
 		Kind:      kind,
 		Scope:     scope,
 		Deadline:  stamp(def.Deadline),
+	}
+	// Null rather than the empty string on a verification: the column carries a
+	// constraint tying it to the kind, and "" is a value the constraint would
+	// accept while meaning nothing.
+	if apex != "" {
+		params.Apex = &apex
 	}
 	if targets > 0 {
 		count := bounded(targets)
@@ -523,10 +576,46 @@ func (s *Scheduler) mint(purpose auth.Purpose, run uuid.UUID, expires time.Time)
 func (s *Scheduler) InFlight(
 	ctx context.Context, q *sqlcgen.Queries, program uuid.UUID, kind string,
 ) (*InFlight, error) {
-	row, err := q.LiveRunForProgram(ctx, sqlcgen.LiveRunForProgramParams{
-		ProgramID: pgUUID(program),
-		Kind:      kind,
-	})
+	return s.inFlightFor(ctx, q, program, kind, "")
+}
+
+// liveRun is the shape both live run statements return. They select the same
+// columns because they ask the same question on two units, and converting is
+// what keeps that a fact the compiler checks rather than a comment.
+type liveRun sqlcgen.LiveRunForProgramRow
+
+// inFlightFor answers the same question on the unit the kind actually holds.
+//
+// A verification holds a programme, because its frozen target list can name any
+// host in it. A discovery holds one apex, because that is what it enumerates,
+// and asking about the programme there would let one apex in flight hide the
+// two that are free.
+//
+// The empty apex keeps the programme wide question, which is what the caller
+// blocking a verification behind any live enumeration wants: that one is about
+// traffic against a perimeter, so which apex is being walked does not matter.
+func (s *Scheduler) inFlightFor(
+	ctx context.Context, q *sqlcgen.Queries, program uuid.UUID, kind, apex string,
+) (*InFlight, error) {
+	var (
+		row liveRun
+		err error
+	)
+	if kind == KindDiscovery && apex != "" {
+		var got sqlcgen.LiveDiscoveryForApexRow
+		got, err = q.LiveDiscoveryForApex(ctx, sqlcgen.LiveDiscoveryForApexParams{
+			ProgramID: pgUUID(program),
+			Apex:      apex,
+		})
+		row = liveRun(got)
+	} else {
+		var got sqlcgen.LiveRunForProgramRow
+		got, err = q.LiveRunForProgram(ctx, sqlcgen.LiveRunForProgramParams{
+			ProgramID: pgUUID(program),
+			Kind:      kind,
+		})
+		row = liveRun(got)
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

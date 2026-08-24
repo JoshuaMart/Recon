@@ -986,21 +986,27 @@ paths:
     post:
       tags: [programs, runs]
       operationId: startRun
-      summary: Provision one run over a perimeter.
+      summary: Provision the runs a perimeter needs.
       description: |
         Beside the cadence rather than instead of it. The scheduled pass gives
         regular coverage, and this is what re-runs a perimeter after a scope
         change without waiting for the next tick.
+
+        The answer is a list, and a verification is a list of one. A discovery
+        is one run per apex, because the scanner takes one root domain per
+        execution: a perimeter of three apexes is three runs and never one run
+        naming three.
 
         Three answers are worth telling apart, and none of them is a failure.
 
         `200` with `started: false` means nothing was due, which is the normal
         state of a healthy inventory.
 
-        `202` with `started: true` means the platform accepted the execution.
+        `202` with `started: true` means at least one execution was accepted.
+        Which ones is in `runs`, one entry each.
 
-        `202` with `started: false` and a `run_id` means the row exists and the
-        platform did not start it. The deadline sweeper owns that run and
+        A `runs` entry with `started: false` means the row exists and the
+        platform did not start that one. The deadline sweeper owns it and
         nothing has to be repaired by hand. Retrying is what would create a
         second run.
 
@@ -1065,7 +1071,8 @@ paths:
         '409':
           description: |
             `no_perimeter` when the programme declares no apex, so there is
-            nothing to enumerate. `run_in_flight` when one is already open, and
+            nothing to enumerate. `run_in_flight` when every apex already has an
+            enumeration open, and
             the detail names the run, its state and its age: a run something has
             opened is a run to wait for, and a run nobody has claimed is a run
             whose provisioning failed. `refused` covers the rest, an expired
@@ -2011,10 +2018,30 @@ components:
         started:
           type: boolean
           description: |
+            Whether anything went out at all. What went out and what did not is
+            in `runs`, one entry per run.
+        runs:
+          type: array
+          description: |
+            One entry per run. A verification is one; a discovery is one per
+            apex, since the scanner takes one root domain per execution.
+          items: { $ref: '#/components/schemas/RunOutcome' }
+
+    RunOutcome:
+      type: object
+      properties:
+        started:
+          type: boolean
+          description: |
             False here means the row exists and the platform did not start it.
             The deadline sweeper owns that run: do not retry, or there will be
             two.
         run_id: { type: string, format: uuid }
+        apex:
+          type: string
+          description: |
+            The single root domain this run enumerates. Only on a discovery: a
+            verification is driven by a frozen target list and names no domain.
         external_id:
           type: string
           description: What the platform called the execution. Only when started.
@@ -2024,7 +2051,7 @@ components:
         target_count: { type: integer }
         reason:
           type: string
-          description: Present when nothing started.
+          description: Present when this run did not start.
         args:
           type: array
           description: |

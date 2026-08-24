@@ -130,9 +130,10 @@ func (q *Queries) CountObservations(ctx context.Context, arg CountObservationsPa
 }
 
 const createRun = `-- name: CreateRun :exec
-INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline, target_count)
+INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline, target_count, apex)
 VALUES ($1::uuid, $2::uuid, $3::uuid, $4::text, $5::text,
-        'pending', $6::timestamptz, $7::int)
+        'pending', $6::timestamptz, $7::int,
+        $8::text)
 `
 
 type CreateRunParams struct {
@@ -143,8 +144,16 @@ type CreateRunParams struct {
 	Scope       string
 	Deadline    pgtype.Timestamptz
 	TargetCount *int32
+	Apex        *string
 }
 
+// CreateRun writes the row a definition is about to be launched against.
+//
+// apex is null on a verification and required on a discovery, which a table
+// constraint enforces rather than this statement: a discovery enumerates one
+// root domain because that is all the scanner takes, so a programme with
+// several apexes gets one run each.
+//
 // @tenant: scoped
 func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) error {
 	_, err := q.db.Exec(ctx, createRun,
@@ -155,6 +164,7 @@ func (q *Queries) CreateRun(ctx context.Context, arg CreateRunParams) error {
 		arg.Scope,
 		arg.Deadline,
 		arg.TargetCount,
+		arg.Apex,
 	)
 	return err
 }

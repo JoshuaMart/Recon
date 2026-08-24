@@ -207,6 +207,58 @@ func (q *Queries) ExpireRuns(ctx context.Context, arg ExpireRunsParams) ([]Expir
 	return items, nil
 }
 
+const liveDiscoveryForApex = `-- name: LiveDiscoveryForApex :one
+SELECT id, kind, scope, state, deadline, created_at, started_at, target_count
+  FROM run
+ WHERE program_id = $1::uuid
+   AND kind = 'discovery'
+   AND apex = $2::text
+   AND state IN ('pending', 'running')
+ ORDER BY created_at DESC
+ LIMIT 1
+`
+
+type LiveDiscoveryForApexParams struct {
+	ProgramID pgtype.UUID
+	Apex      string
+}
+
+type LiveDiscoveryForApexRow struct {
+	ID          pgtype.UUID
+	Kind        string
+	Scope       string
+	State       string
+	Deadline    pgtype.Timestamptz
+	CreatedAt   pgtype.Timestamptz
+	StartedAt   pgtype.Timestamptz
+	TargetCount *int32
+}
+
+// LiveDiscoveryForApex is the per apex half of the bound above.
+//
+// A programme with three apexes has three enumerations to provision, and one of
+// them being in flight says nothing about the other two. The unique index says
+// the same thing and would refuse the insert; this is asked first so a caller
+// gets the run named back rather than a constraint violation, and so the two
+// apexes that are free can still go out.
+//
+// @tenant: keyed
+func (q *Queries) LiveDiscoveryForApex(ctx context.Context, arg LiveDiscoveryForApexParams) (LiveDiscoveryForApexRow, error) {
+	row := q.db.QueryRow(ctx, liveDiscoveryForApex, arg.ProgramID, arg.Apex)
+	var i LiveDiscoveryForApexRow
+	err := row.Scan(
+		&i.ID,
+		&i.Kind,
+		&i.Scope,
+		&i.State,
+		&i.Deadline,
+		&i.CreatedAt,
+		&i.StartedAt,
+		&i.TargetCount,
+	)
+	return i, err
+}
+
 const liveRunForProgram = `-- name: LiveRunForProgram :one
 SELECT id, kind, scope, state, deadline, created_at, started_at, target_count
   FROM run

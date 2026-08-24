@@ -47,16 +47,16 @@
 	 * and never stored, and a reload leaves the run without its command, which the
 	 * panel says rather than hides.
 	 */
-	const command = $derived(
-		answer && answer.started === false && answer.args
+	const answered = $derived(answer?.runs ?? []);
+	const commandFor = (run: (typeof answered)[number]) =>
+		run.args
 			? 'docker run --rm ' +
-					Object.entries(answer.env ?? {})
-						.map(([key, value]) => `-e ${key}=${value}`)
-						.join(' ') +
-					' fastrecon ' +
-					answer.args.join(' ')
-			: ''
-	);
+				Object.entries(run.env ?? {})
+					.map(([key, value]) => `-e ${key}=${value}`)
+					.join(' ') +
+				' fastrecon ' +
+				run.args.join(' ')
+			: '';
 
 	/**
 	 * What the platform called the execution, which is the only way to find its
@@ -65,9 +65,11 @@
 	 * From the run row first and the form result second, in that order, because
 	 * the row survives a reload and the form result does not.
 	 */
-	const execution = $derived(data.run?.external_id ?? (answer?.started ? answer.external_id : undefined));
+	const execution = $derived(answered.length === 0 ? data.run?.external_id : undefined);
 
-	let copied = $state<'no' | 'yes' | 'failed'>('no');
+	// Per run rather than one flag: a perimeter of three apexes hands over three
+	// commands, and one shared flag would report the copy on all of them.
+	let copied = $state<Record<number, 'yes' | 'failed'>>({});
 	let clearing: ReturnType<typeof setTimeout> | undefined;
 
 	/**
@@ -80,15 +82,15 @@
 	 * a console nobody had open. It says so instead, and the command is still on
 	 * screen to select by hand.
 	 */
-	async function copy() {
+	async function copy(text: string, index: number) {
 		clearTimeout(clearing);
 		try {
-			await navigator.clipboard.writeText(command);
-			copied = 'yes';
+			await navigator.clipboard.writeText(text);
+			copied = { [index]: 'yes' };
 		} catch {
-			copied = 'failed';
+			copied = { [index]: 'failed' };
 		}
-		clearing = setTimeout(() => (copied = 'no'), 2000);
+		clearing = setTimeout(() => (copied = {}), 2000);
 	}
 
 	/**
@@ -373,7 +375,7 @@
 								Start a run
 							</button>
 						</form>
-						<span class="lead">One discovery run at a time, per program.</span>
+						<span class="lead">One discovery run at a time, per apex.</span>
 					</div>
 
 					{#if !data.reachable}
@@ -414,17 +416,33 @@
 										says a scanner really took it.
 									{/if}
 								</p>
-							{:else if command}
-								<!-- The run is open and nothing has started it. Saying "run started"
-								     would be false: with no platform configured the definition is
-								     rendered and a person runs the image. -->
-								<p class="dim">Run this to start it. The credential inside expires with the run.</p>
-								<div class="cmd">
-									<code>{command}</code>
-									<button type="button" class:done={copied === 'yes'} onclick={copy}>
-										{copied === 'yes' ? 'copied' : copied === 'failed' ? 'select it by hand' : 'copy'}
-									</button>
-								</div>
+							{:else if answered.length}
+								<!-- One entry per run, because a perimeter of several apexes is
+								     several runs: the scanner takes one root domain per execution.
+								     Each says what happened to its own, since a platform that
+								     refused the third started the first two. -->
+								{#each answered as run, i (run.run_id)}
+									{#if run.started && run.external_id}
+										<p class="dim">
+											{#if run.apex}<code class="ext">{run.apex}</code> started{:else}Started{/if} on the platform as
+											<code class="ext">{run.external_id}</code>.
+										</p>
+									{:else if run.args}
+										<!-- The run is open and nothing has started it. Saying "run
+										     started" would be false: with no platform configured the
+										     definition is rendered and a person runs the image. -->
+										<p class="dim">
+											Run this to start {#if run.apex}<code class="ext">{run.apex}</code>{:else}it{/if}. The credential
+											inside expires with the run.
+										</p>
+										<div class="cmd">
+											<code>{commandFor(run)}</code>
+											<button type="button" class:done={copied[i] === 'yes'} onclick={() => copy(commandFor(run), i)}>
+												{copied[i] === 'yes' ? 'copied' : copied[i] === 'failed' ? 'select it by hand' : 'copy'}
+											</button>
+										</div>
+									{/if}
+								{/each}
 							{:else if status.stalled}
 								<!-- The token was minted once and never stored, so this page
 								     cannot hand it back. Say where it went rather than pretend. -->

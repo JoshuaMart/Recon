@@ -119,19 +119,27 @@ export const actions: Actions = {
 	 */
 	startRun: async ({ locals, params, fetch }) => {
 		try {
+			// A list, because the scanner takes one root domain per execution: a
+			// perimeter of three apexes is three runs. `started` at the top is
+			// whether anything went out at all, and each entry says what
+			// happened to its own.
 			const run = await call<{
 				started: boolean;
-				run_id?: string;
-				external_id?: string;
-				reason?: string;
-				args?: string[];
-				env?: Record<string, string>;
+				runs: {
+					started: boolean;
+					run_id: string;
+					apex?: string;
+					external_id?: string;
+					reason?: string;
+					args?: string[];
+					env?: Record<string, string>;
+				}[];
 			}>(locals.token!, '/programs/' + encodeURIComponent(params.id) + '/runs', { kind: 'discovery' }, fetch);
 			return { run };
 		} catch (err) {
 			// Not `refused`. A 409 on a scope write is the optimistic lock, and the
 			// page answers it with "reload before writing again". A 409 here is the
-			// one-run-per-program bound, which no reload resolves and whose message
+			// one-run-per-apex bound, which no reload resolves and whose message
 			// already names the run, its state and its age.
 			return {
 				message: err instanceof APIError ? err.message : 'the run could not be started',

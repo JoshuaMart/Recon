@@ -7,8 +7,17 @@ sidebar:
 
 ## 9.1 The run contract
 
-A run is one execution of FastRecon over one perimeter, producing one report. Everything it needs
+A run is one execution of FastRecon over **one root domain**, producing one report. Everything it needs
 arrives in its definition, and nothing it holds opens the inventory ([P6](/architecture/principles/)).
+
+One domain and not one perimeter, and the distinction is the scanner's rather than a preference here.
+`-d/--domain` is a single value where `--exclude` and `--targets` are repeatable: the flags that accept
+several say so. A programme whose perimeter declares three apexes therefore gets **three discovery runs**,
+one each, and the run row carries the apex it walked so a failure among them is attributable. This was
+learned the way these things usually are: the scheduler joined a programme's apexes with a comma into that
+one flag, every single apex programme survived it because a list of one has no separator in it, and the
+first perimeter with two produced `domain "a.test,b.test" is not a valid domain name` and a run that died
+before it resolved anything.
 
 | What it receives | Where from |
 |---|---|
@@ -72,6 +81,7 @@ CREATE TABLE run (
   program_id     uuid NOT NULL REFERENCES program(id),
   kind           text NOT NULL,   -- discovery | verification | candidate
   scope          text NOT NULL,   -- enum | resolve | ports | full
+  apex           text,            -- the one root domain a discovery walks; null on the others
   state          text NOT NULL,   -- pending | running | completed | failed | expired
   deadline       timestamptz NOT NULL,
   created_at     timestamptz NOT NULL DEFAULT now(),
@@ -101,6 +111,14 @@ and then writes what it takes, and no transaction sees another's uncommitted row
 ticks both find nothing in flight and both freeze the same hosts. A partial unique index on
 `(program_id)` for each kind makes the second one lose, which turns the reservation into a fact rather
 than the outcome of a check. The refusal a caller sees is the same either way.
+
+**Discovery is bounded on `(program_id, apex)` instead**, because that is the unit it holds: a run
+enumerates one root domain ([9.1](#91-the-run-contract)), so a perimeter of three apexes has three
+enumerations to provision and one of them being in flight says nothing about the other two. The `apex`
+column is what makes that expressible, and it is also what makes a failed enumeration attributable:
+without it three identical pending rows name nothing. A `CHECK` ties it to the kind in both directions,
+since a discovery with no domain cannot say what it walked and a verification with one is claiming a
+mandate it does not have.
 
 ### A third kind, so a candidate never waits behind a sweep
 
@@ -525,13 +543,20 @@ WHERE p.state = 'active'
            AND r.state IN ('pending', 'running'))
 ```
 
+**One programme selected here is one run per apex**, provisioned in one transaction. The apexes that
+already have an enumeration open are skipped rather than refusing the rest, so a perimeter whose second
+domain failed gets that one going again while the first is still walking. Only a programme with nothing
+free answers `run_in_flight`.
+
 **The authorization window is checked here**, not just `state`. Without those two lines an expired program
 would be provisioned on every tick and refused when the run opens: an execution billed to do nothing,
 every thirty seconds.
 
 **The absence of a run in flight is the condition that does the work.** It prevents a provisioning storm,
 since `last_discovery_at` is written when the run is created rather than when it completes, and it bounds
-concurrency to one discovery run per program.
+concurrency. The bound itself is a unique partial index on `(program_id, apex)`: one live enumeration per
+apex, which is the unit that has one, rather than per programme, which would let a perimeter of three
+domains enumerate one of them.
 
 `last_discovery_at` is written **at creation**, not at completion. A run that dies on the way must not be
 restarted by the cadence while it is still in flight, and confusing the two would start two.

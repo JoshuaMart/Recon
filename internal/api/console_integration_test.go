@@ -577,8 +577,8 @@ func TestTheQueueCarriesTheExecutionIdentifier(t *testing.T) {
 	token := h.console(t)
 
 	started, unstarted := uuid.New(), uuid.New()
-	h.exec(t, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline, external_id)
-	           VALUES ($1, $2, $3, 'discovery', 'full', 'pending', now() + interval '1 hour', 'job-exec-1')`,
+	h.exec(t, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline, external_id, apex)
+	           VALUES ($1, $2, $3, 'discovery', 'full', 'pending', now() + interval '1 hour', 'job-exec-1', 'acme.test')`,
 		started, h.org, h.program)
 	h.exec(t, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline)
 	           VALUES ($1, $2, $3, 'verification', 'full', 'pending', now() + interval '1 hour')`,

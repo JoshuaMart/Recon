@@ -234,6 +234,8 @@ type Run struct {
 	Summary     []byte
 	Error       *string
 	ExternalID  *string
+	// The single root domain a discovery run enumerates. Null on a verification, which is driven by a frozen target list. The scanner takes one domain per execution, so a programme with several apexes gets one run each rather than one run naming several.
+	Apex *string
 }
 
 type RunTarget struct {
