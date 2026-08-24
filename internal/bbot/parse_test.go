@@ -1,6 +1,7 @@
 package bbot_test
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -343,5 +344,92 @@ func TestTheTopLevelPortWinsOverTheSchemesDefault(t *testing.T) {
 	}
 	if len(scan.Services) != 1 || scan.Services[0].Port != 8080 {
 		t.Errorf("services = %+v, want the port the producer computed", scan.Services)
+	}
+}
+
+// A payload shape this decoder did not expect costs the payload and not the
+// event. Typed as a string, one object under data fails the whole line with an
+// UnmarshalTypeError and every other field goes with it, under a reason that
+// blames the shape of the line. A producer moving one payload from data_json to
+// data would then shrink every import in silence.
+func TestAnUnexpectedPayloadShapeCostsThePayloadAndNotTheEvent(t *testing.T) {
+	scan, err := bbot.Parse(strings.NewReader(
+		`{"type":"OPEN_TCP_PORT","id":"1","host":"a.example.com","port":443,` +
+			`"data":{"moved":"here"},"timestamp":1785346100.0}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(scan.Refused) != 0 {
+		t.Errorf("refused = %+v, want the event read despite its payload", scan.Refused)
+	}
+	if len(scan.Hosts) != 1 || len(scan.Services) != 1 {
+		t.Fatalf("hosts = %+v services = %+v, want the host and port the event carried",
+			scan.Hosts, scan.Services)
+	}
+	if scan.Services[0].Port != 443 {
+		t.Errorf("port = %d, want 443", scan.Services[0].Port)
+	}
+}
+
+// A TECHNOLOGY event names its own host in the payload, and that is the only
+// place it appears when the producer omits the top level one: these events
+// carry no data field to fall back on.
+func TestATechnologyFindsItsHostInItsOwnPayload(t *testing.T) {
+	scan, err := bbot.Parse(strings.NewReader(
+		`{"type":"TECHNOLOGY","id":"1","data_json":{"host":"a.example.com",` +
+			`"technology":"cpe:/a:example:webserver"},"timestamp":1785346100.0}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(scan.Hosts) != 1 {
+		t.Fatalf("hosts = %+v, want the one the payload names", scan.Hosts)
+	}
+	if len(scan.Hosts[0].Technologies) != 1 {
+		t.Errorf("technologies = %v, want the one reported", scan.Hosts[0].Technologies)
+	}
+}
+
+// TypesBeyond counts types, which is what it is called and what a reader does
+// with it. Counting events reports a number an order of magnitude out on
+// exactly the malformed body the bound exists for.
+func TestTypesBeyondCountsTypesAndNotTheirEvents(t *testing.T) {
+	var lines []string
+	for i := range 250 {
+		for range 4 {
+			lines = append(lines, fmt.Sprintf(`{"type":"T%d","id":"x"}`, i))
+		}
+	}
+
+	scan, err := bbot.Parse(strings.NewReader(strings.Join(lines, "\n")))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if want := 250 - len(scan.Counts); scan.TypesBeyond != want {
+		t.Errorf("types beyond = %d, want the %d types the list did not carry, not their %d events",
+			scan.TypesBeyond, want, want*4)
+	}
+}
+
+// One lineage object describes one sighting, so the module, the sentence and
+// the tool's verdict all come from the same event. The file is not sorted by
+// time, which is what makes the mismatch reachable rather than theoretical.
+func TestTheKeptSightingIsOneEventAndNotAMixture(t *testing.T) {
+	stream := strings.Join([]string{
+		`{"type":"DNS_NAME","id":"1","data":"x.example.com","timestamp":1785346500.0,` +
+			`"module":"late","scope_description":"affiliate","discovery_context":"late found it"}`,
+		`{"type":"DNS_NAME","id":"2","data":"x.example.com","timestamp":1785346100.0,` +
+			`"module":"early","scope_description":"in-scope","discovery_context":"early found it"}`,
+	}, "\n")
+
+	scan, err := bbot.Parse(strings.NewReader(stream))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	host := scan.Hosts[0]
+	if host.Module != "early" || host.Context != "early found it" {
+		t.Errorf("module = %q context = %q, want the earliest sighting", host.Module, host.Context)
+	}
+	if host.Scope != "in-scope" {
+		t.Errorf("scope = %q, want the verdict of the same event the module came from", host.Scope)
 	}
 }

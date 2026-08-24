@@ -529,6 +529,11 @@ the flag that moves the lifecycle is the flag that guards the due dates. A calle
 the other, which is what the first version relied on. The answer follows the same rule and reports what was
 written rather than what was asked for: an archived asset an import names counts nowhere in `scheduled`.
 
+The same guard is on the [reclassification](/architecture/scope/#a-rule-that-changes-reclassifies-in-the-same-transaction),
+which is the other statement that hands out due dates, and a second review found it there. A rule that
+brings an abandoned asset back into the perimeter does not by itself decide to chase it again, and the
+phantom it used to leave was the same one: a date every selection filters out and the queue counts forever.
+
 ### What each event becomes
 
 | Event | What it creates |
@@ -563,11 +568,19 @@ written, `SCAN` is its own parent, and the stream is not sorted by time. None of
 built from the event's own `host`, `port` and payload, and the parent chain is never walked.
 
 **The answer is bounded even when the file is not.** The refusal list stops at a hundred entries and the
-type list at two hundred, both with the remainder counted rather than hidden. Neither bound is reachable by
+type list at two hundred, both with the remainder counted rather than hidden. The bound covers the names
+the perimeter could not turn into identities as well as the lines that were not events, because a file can
+be wrong in bulk in either way. Neither bound is reachable by
 a real scan: they exist because the asset bound in front of the endpoint cannot help here, since the
 decoder has to finish before anything can count assets, and sixty four megabytes of one byte lines is
 thirty million refusals collected and then serialized back to somebody who already knows their file is
 broken.
+
+**A payload shape this decoder does not expect costs the payload and not the event.** The string carried
+under `data` is decoded leniently, because typing it as a string means one object there fails the whole
+line and throws away the host, the port and the module with it, under a reason that blames the shape of
+the line. A producer moving one payload from `data_json` to `data` would otherwise shrink every import in
+silence, which is the same drift the rule below exists for.
 
 **An event type this platform does not know is counted, never refused.** The stream carries no schema
 version at all, unlike [a report](/architecture/deployment/#93-ingesting-a-report), so the decoder is

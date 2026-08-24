@@ -929,7 +929,9 @@ paths:
 
         An import over the asset bound is refused rather than truncated, and the
         refusal list and the type list are bounded with the remainder counted,
-        so a body of rubbish cannot produce an answer bigger than the file.
+        so a body of rubbish cannot produce an answer bigger than the file. That
+        covers names the perimeter could not turn into identities as well as
+        lines that were not events.
       security:
         - consoleToken: [manage_scope]
       parameters:
@@ -1987,8 +1989,9 @@ components:
         types_beyond:
           type: integer
           description: |
-            Event types the decoder stopped naming individually. Absent on any
-            real scan; a malformed body reaches the bound at once.
+            How many distinct event types the decoder stopped naming
+            individually, not how many events they carried. Absent on any real
+            scan; a malformed body reaches the bound at once.
         refused:
           type: array
           description: |

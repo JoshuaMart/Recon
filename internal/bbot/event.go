@@ -49,7 +49,13 @@ type event struct {
 	Type string `json:"type"`
 	ID   string `json:"id"`
 
-	Data     string          `json:"data"`
+	// Data is raw rather than a string, and that is not laziness. Typed as a
+	// string, one event carrying an object here fails the whole line with an
+	// UnmarshalTypeError, and every other field it held is thrown away with it
+	// under a reason that blames the shape of the line. A producer moving one
+	// payload from data_json to data would then shrink every import silently,
+	// which is the drift this package exists to survive.
+	Data     json.RawMessage `json:"data"`
 	DataJSON json.RawMessage `json:"data_json"`
 
 	Host string `json:"host"`
@@ -65,6 +71,19 @@ type event struct {
 	Scope   string   `json:"scope_description"`
 	Tags    []string `json:"tags"`
 	Context string   `json:"discovery_context"`
+}
+
+// text reads Data when it is a string, and answers empty for anything else.
+// A payload this decoder did not expect is not a reason to lose the event.
+func (e *event) text() string {
+	if len(e.Data) == 0 {
+		return ""
+	}
+	var value string
+	if err := json.Unmarshal(e.Data, &value); err != nil {
+		return ""
+	}
+	return value
 }
 
 // at converts the float epoch, and reports whether the file carried one at all.
@@ -99,8 +118,12 @@ type protocolPayload struct {
 	Banner   string `json:"banner"`
 }
 
-// technologyPayload is one CPE string or product name.
+// technologyPayload is one CPE string or product name, beside the host it was
+// found on. The host is read here as well as at the top level, because these
+// events are the ones with no data field to fall back on: without it a producer
+// that omits the top level host drops the technology and counts nothing.
 type technologyPayload struct {
+	Host       string `json:"host"`
 	Technology string `json:"technology"`
 }
 

@@ -701,3 +701,76 @@ func TestAServiceWhoseHostIsNotAnIdentityIsRefusedWithIt(t *testing.T) {
 		t.Errorf("%d assets, want the good host and its service", n)
 	}
 }
+
+// The answer names entries one by one and the list is bounded, so a file that
+// is wrong in bulk does not produce a body bigger than the file. What the bound
+// held back is counted rather than dropped.
+func TestTheRefusalListInTheAnswerIsBounded(t *testing.T) {
+	h := newHarness(t)
+	set := h.scope(t, include("acme.test"))
+
+	// Single label names, which normalize refuses as identities.
+	lines := make([]string, 0, 300)
+	for i := range 300 {
+		lines = append(lines, fmt.Sprintf(
+			`{"type":"DNS_NAME","id":"%d","data":"host%d","timestamp":1785346100.0}`, i, i))
+	}
+
+	imported, err := h.ing.Import(context.Background(), h.queries, h.importRun(), set, stream(t, lines...))
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	if len(imported.Refused) > 101 {
+		t.Errorf("refused carries %d entries for a file of 300 bad names", len(imported.Refused))
+	}
+	last := imported.Refused[len(imported.Refused)-1]
+	if !strings.Contains(last.Entry, "further entries") {
+		t.Errorf("the list stops without saying so: %+v", last)
+	}
+	if imported.Assets.Created != 0 {
+		t.Errorf("created = %d, want none of them written", imported.Assets.Created)
+	}
+}
+
+// A rule that brings an abandoned asset back into scope does not by itself
+// decide to chase it again, and must not leave a date nothing can claim. The
+// same fault as the import's, in the statement the reclassification uses.
+func TestReclassifyingAnArchivedAssetIntoScopeSchedulesNothing(t *testing.T) {
+	h := newHarness(t)
+
+	// In scope first, so the row exists, then archived, then out of scope.
+	inScope := h.scope(t, include("acme.test"))
+	scan := stream(t, `{"type":"DNS_NAME","id":"1","data":"gone.acme.test","timestamp":1785346100.0}`)
+	if _, err := h.ing.Import(context.Background(), h.queries, h.importRun(), inScope, scan); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	exec(t, h.pool, `UPDATE asset_current SET lifecycle='archived', next_resolve_at=NULL, next_full_at=NULL
+	                  WHERE program_id=$1 AND key=$2`, h.program, "gone.acme.test")
+	exec(t, h.pool, `UPDATE asset SET scope_status='unknown' WHERE program_id=$1 AND key=$2`,
+		h.program, "gone.acme.test")
+	exec(t, h.pool, `UPDATE asset_current SET scope_status='unknown' WHERE program_id=$1 AND key=$2`,
+		h.program, "gone.acme.test")
+
+	// And now a rule brings it back, with due dates, which is what the write
+	// path passes for every asset moving into scope.
+	at := time.Now()
+	if _, err := h.ing.Reclassify(context.Background(), h.queries, h.program, inScope,
+		ingest.Schedule{Resolve: &at, Full: &at}); err != nil {
+		t.Fatalf("reclassify: %v", err)
+	}
+
+	var status, life string
+	var due *time.Time
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT scope_status, lifecycle, next_resolve_at FROM asset_current
+		  WHERE program_id=$1 AND key=$2`, h.program, "gone.acme.test").Scan(&status, &life, &due); err != nil {
+		t.Fatalf("read the row: %v", err)
+	}
+	if status != "in_scope" {
+		t.Fatalf("scope_status = %q, so the reclassification did not run and this proves nothing", status)
+	}
+	if due != nil {
+		t.Errorf("an archived asset is due at %s, and every selection filters it out", due)
+	}
+}

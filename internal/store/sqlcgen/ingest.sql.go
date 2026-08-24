@@ -20,9 +20,14 @@ WITH updated AS (
 )
 UPDATE asset_current SET
     scope_status = $1::text,
-    next_resolve_at = CASE WHEN $1::text = 'in_scope'
+    -- Archived rows are not scheduled here either, for the reason the upsert
+    -- gives: they have no due dates, so COALESCE would hand them these, every
+    -- selection filters archived out again, and the queue counts a slot nothing
+    -- will ever drain. A rule that brings an abandoned asset back into scope
+    -- does not by itself decide to chase it again.
+    next_resolve_at = CASE WHEN $1::text = 'in_scope' AND lifecycle <> 'archived'
                            THEN COALESCE(next_resolve_at, $2::timestamptz) END,
-    next_full_at    = CASE WHEN $1::text = 'in_scope'
+    next_full_at    = CASE WHEN $1::text = 'in_scope' AND lifecycle <> 'archived'
                            THEN COALESCE(next_full_at, $3::timestamptz) END,
     next_fingerprint_at = CASE WHEN $1::text = 'in_scope'
                                THEN next_fingerprint_at END

@@ -840,7 +840,9 @@ is the one already in use.
 - [x] An imported candidate keeps its whole budget, including one read from a file older than the budget itself
 - [x] An archived asset an import names carries no due date, and counts nowhere in `scheduled`
 - [x] A service whose host is not an identity is refused with it, rather than written with no parent
-- [x] A body of rubbish produces a bounded answer, and says how much it did not list
+- [x] A body of rubbish produces a bounded answer, and says how much it did not list, for bad lines and for bad names alike
+- [x] An event whose payload is not the shape this decoder expects still yields its host, its port and its module
+- [x] A rule that brings an archived asset back into scope schedules nothing
 - [x] An archived asset named by an import stays archived
 - [x] A JSON array, a malformed line, and an event type the decoder does not know are each answered by name, and the malformed line does not cost the rest of the file
 - [x] An import over the asset bound is refused by name rather than truncated
@@ -924,6 +926,19 @@ bounded the work was the sixty four megabyte body, three orders of magnitude fur
 **The lesson the two of them share is the one the milestone did not have.** Every assertion in this phase
 was written from inside the feature and each one held. None of them asked what else reads what the feature
 writes, or what happens at the seam between two components that each behave correctly.
+
+**A second review over the commits found six more, and the two worth naming say the same thing again.**
+The archived scheduling guard had been added to the upsert and not to the reclassification, which is the
+other statement that hands out due dates: the fix was written where the bug was found rather than where the
+rule applies. And `data` was typed as a string, so one event carrying an object there failed the whole line
+and lost its host, its port and its module to an `UnmarshalTypeError`, under a refusal that blamed the
+shape of the line. That is precisely the producer drift the decoder's own doc comment promises to survive,
+in the one field the comment was not thinking about.
+
+**Three of the other four were counters and bounds that described themselves wrongly**: `types_beyond`
+counted events rather than types, the answer's refusal list was unbounded while the contract said it was
+bounded, and the earliest-sighting merge took the module from one event and the tool's scope verdict from
+another, describing a sighting that never happened.
 :::
 
 ## Post-v1

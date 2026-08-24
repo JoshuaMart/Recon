@@ -46,6 +46,8 @@ type Scan struct {
 	// TypesBeyond counts the event types past maxTypes, which a real file never
 	// reaches and a malformed one reaches immediately.
 	TypesBeyond int
+	// beyond is how TypesBeyond stays a count of types. It is not reported.
+	beyond map[string]struct{}
 }
 
 // Provenance is what the SCAN event said about the run that produced the file.
@@ -135,7 +137,7 @@ func (e *Error) Error() string { return e.reason }
 // of events, in which case the bad lines are in Refused, or it was not a stream
 // of events at all, in which case nothing is imported.
 func Parse(r io.Reader) (Scan, error) {
-	s := Scan{Counts: map[string]*TypeCount{}}
+	s := Scan{Counts: map[string]*TypeCount{}, beyond: map[string]struct{}{}}
 	hosts := map[string]*Host{}
 	services := map[string]*Service{}
 
@@ -206,7 +208,15 @@ func (s *Scan) line(raw []byte, number int, hosts map[string]*Host, services map
 			// Past the bound the type is still read, so its events still
 			// produce their assets. Only the per type line is dropped, and the
 			// count of what was dropped goes in the answer.
-			s.TypesBeyond++
+			//
+			// Counted once per type rather than once per event, which is what
+			// the field is called and what a reader would do with it. Counting
+			// events reports a number an order of magnitude out on exactly the
+			// malformed body the bound exists for.
+			if _, already := s.beyond[e.Type]; !already {
+				s.beyond[e.Type] = struct{}{}
+				s.TypesBeyond++
+			}
 			count = &TypeCount{}
 		} else {
 			count = &TypeCount{}
@@ -223,7 +233,7 @@ func (s *Scan) line(raw []byte, number int, hosts map[string]*Host, services map
 		// The payload is the name, and the top level host repeats it. The
 		// payload is authoritative: host is absent on some producers' events
 		// and the file would silently contribute nothing.
-		s.host(hosts, count, &e, firstNonEmpty(e.Data, e.Host))
+		s.host(hosts, count, &e, firstNonEmpty(e.text(), e.Host))
 	case TypeOpenTCPPort:
 		s.service(hosts, services, count, &e, e.Host, e.Port, "", "")
 	case TypeURL:
@@ -243,7 +253,7 @@ func (s *Scan) line(raw []byte, number int, hosts map[string]*Host, services map
 		var payload technologyPayload
 		_ = json.Unmarshal(e.DataJSON, &payload)
 		count.Note = noteLineage
-		s.technology(hosts, count, &e, payload.Technology)
+		s.technology(hosts, count, &e, payload.Host, payload.Technology)
 	case TypeASN, TypeOrgStub:
 		count.Note = noteOwnEnrichment
 	default:
@@ -288,10 +298,14 @@ func (s *Scan) host(hosts map[string]*Host, count *TypeCount, e *event, name str
 		}
 		return hosts[name]
 	}
-	// The earliest sighting is the one kept, because it is the one that
-	// back-dates first_seen, and the file is not sorted by time.
+	// The earliest sighting is the one kept, and the whole of it: the module,
+	// the sentence and the scope verdict go into one lineage object, so taking
+	// two of the three from one event and the third from another describes a
+	// sighting that never happened. The file is not sorted by time, which is
+	// what makes that reachable rather than theoretical.
 	if !at.IsZero() && (existing.At.IsZero() || at.Before(existing.At)) {
 		existing.At, existing.Module, existing.Context = at, e.Module, e.Context
+		existing.Scope = e.Scope
 	}
 	return existing
 }
@@ -339,6 +353,7 @@ func (s *Scan) service(
 	}
 	if !at.IsZero() && (existing.At.IsZero() || at.Before(existing.At)) {
 		existing.At, existing.Module, existing.Context = at, e.Module, e.Context
+		existing.Scope = e.Scope
 	}
 	// A PROTOCOL event arrives after the OPEN_TCP_PORT that created the row, so
 	// what it concluded is filled in rather than dropped for being late.
@@ -354,11 +369,13 @@ func (s *Scan) service(
 //
 // It creates the host when nothing else has, for the same reason service does,
 // and it counts under the type that named it first.
-func (s *Scan) technology(hosts map[string]*Host, count *TypeCount, e *event, technology string) {
+func (s *Scan) technology(
+	hosts map[string]*Host, count *TypeCount, e *event, named, technology string,
+) {
 	if technology == "" {
 		return
 	}
-	host := s.host(hosts, count, e, firstNonEmpty(e.Host, e.Data))
+	host := s.host(hosts, count, e, firstNonEmpty(e.Host, named, e.text()))
 	if host == nil {
 		return
 	}

@@ -13,6 +13,15 @@ import (
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
+// maxRefusedEntries bounds the identities an answer names one by one.
+//
+// The decoder bounds its own refusals and the contract says the list is
+// bounded, so this half has to hold up its end: a file of ten thousand single
+// label hostnames is ten thousand refusals with the same reason, and a
+// multi-megabyte body telling somebody ten thousand times what the first entry
+// told them.
+const maxRefusedEntries = 100
+
 // Imported is what one file became.
 //
 // Counts and per scope totals rather than a row per asset, because an import is
@@ -28,8 +37,11 @@ type Imported struct {
 	// file never reaches that bound and a malformed one reaches it at once.
 	TypesBeyond int `json:"types_beyond,omitempty"`
 	// Refused is the entries the file named and this platform could not turn
-	// into an identity, plus the lines that were not events at all.
+	// into an identity, plus the lines that were not events at all. Bounded,
+	// with a final entry counting what it did not name.
 	Refused []Refused `json:"refused"`
+	// beyond is what the bound held back, reported through that final entry.
+	beyond int
 }
 
 // Tally is what the write did.
@@ -76,19 +88,9 @@ func (i *Ingestor) Import(
 		Refused: []Refused{},
 	}
 	for _, refused := range scan.Refused {
-		out.Refused = append(out.Refused, Refused{
-			Entry:  "line " + strconv.Itoa(refused.Line),
-			Reason: refused.Reason,
-		})
+		out.refuse("line "+strconv.Itoa(refused.Line), refused.Reason)
 	}
-	// What the decoder's own bounds held back. A list that stops at a hundred
-	// and says nothing reads as a file with a hundred bad lines.
-	if scan.RefusedBeyond > 0 {
-		out.Refused = append(out.Refused, Refused{
-			Entry:  strconv.Itoa(scan.RefusedBeyond) + " further lines",
-			Reason: "not listed individually, the refusal list stops at " + strconv.Itoa(len(scan.Refused)),
-		})
-	}
+	out.beyond += scan.RefusedBeyond
 	out.TypesBeyond = scan.TypesBeyond
 
 	now := i.now()
@@ -99,7 +101,7 @@ func (i *Ingestor) Import(
 	for _, host := range scan.Hosts {
 		key, err := hostKey(host.Name)
 		if err != nil {
-			out.Refused = append(out.Refused, Refused{Entry: host.Name, Reason: err.Error()})
+			out.refuse(host.Name, err.Error())
 			continue
 		}
 
@@ -129,19 +131,13 @@ func (i *Ingestor) Import(
 		// scheduling nothing carries.
 		parent, ok := hosts[service.Host]
 		if !ok {
-			out.Refused = append(out.Refused, Refused{
-				Entry:  service.Host + ":" + strconv.Itoa(service.Port),
-				Reason: "its host was not an identity",
-			})
+			out.refuse(service.Host+":"+strconv.Itoa(service.Port), "its host was not an identity")
 			continue
 		}
 
 		key, err := normalize.Service(service.Host, service.Port, "tcp")
 		if err != nil {
-			out.Refused = append(out.Refused, Refused{
-				Entry:  service.Host + ":" + strconv.Itoa(service.Port),
-				Reason: err.Error(),
-			})
+			out.refuse(service.Host+":"+strconv.Itoa(service.Port), err.Error())
 			continue
 		}
 
@@ -156,7 +152,29 @@ func (i *Ingestor) Import(
 		out.tally(accepted, false)
 	}
 
+	out.close()
 	return out, nil
+}
+
+// refuse names one entry, up to the bound, and counts the rest.
+func (out *Imported) refuse(entry, reason string) {
+	if len(out.Refused) >= maxRefusedEntries {
+		out.beyond++
+		return
+	}
+	out.Refused = append(out.Refused, Refused{Entry: entry, Reason: reason})
+}
+
+// close says what the bound held back, because a list that stops at a hundred
+// and says nothing reads as a file with a hundred bad entries.
+func (out *Imported) close() {
+	if out.beyond == 0 {
+		return
+	}
+	out.Refused = append(out.Refused, Refused{
+		Entry:  strconv.Itoa(out.beyond) + " further entries",
+		Reason: "not listed individually, the list stops at " + strconv.Itoa(maxRefusedEntries),
+	})
 }
 
 // tally accumulates one written asset.
