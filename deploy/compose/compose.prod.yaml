@@ -90,6 +90,44 @@ x-logging: &logging
 # refusal on a snap. cap_drop below was checked the same way and works, so the
 # services that need no capability at all still declare it.
 
+# The browser, three times over. The three differ by name and by nothing else:
+# what makes them a pool is control_urls in fingerprinter.yml, and what makes
+# them safe is the scan network they are alone on.
+#
+# Their logs are noisy and capped rather than discarded. The local file throws
+# them away and that is fine there, because a browser that fails to start is a
+# browser somebody is watching. Here it came up as a container restarting every
+# two seconds with `docker logs` answering that the driver does not support
+# reading, which is the one thing an operator must never be told about a service
+# that is down.
+x-chrome: &chrome
+  networks: [scan]
+  image: ${CHROME_IMAGE:-chromedp/headless-shell:latest}
+  init: true
+  shm_size: '1g'
+  command:
+    - --remote-allow-origins=*
+    - --disable-dev-shm-usage
+    - --disable-gpu
+    - --disable-background-networking
+    - --disable-default-apps
+    - --disable-extensions
+    - --disable-sync
+    - --no-first-run
+    - --metrics-recording-only
+  logging:
+    driver: json-file
+    options:
+      max-size: "5m"
+      max-file: "2"
+  healthcheck:
+    test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/9222' 2>/dev/null"]
+    interval: 5s
+    timeout: 3s
+    retries: 10
+    start_period: 10s
+  restart: unless-stopped
+
 services:
   postgres:
     networks: [control]
@@ -417,47 +455,22 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # The browser the rendering service drives over CDP, and the one process in
-  # this file that runs code somebody else wrote. On the scan network and on
-  # nothing else, so what it can reach is the internet and the service that
-  # drives it.
+  # The browsers the rendering service drives over CDP, three of them, and the
+  # one kind of process here that runs code somebody else wrote. On the scan
+  # network and on nothing else, so what they can reach is the internet and the
+  # service that drives them.
   #
-  # One instance. Throughput is a capacity decision that belongs to the host
-  # this runs on: adding chrome-2 and chrome-3 here means adding them to
-  # control_urls in fingerprinter.yml, and that file is mounted by both stacks.
+  # Three rather than one, and the number is the pool in fingerprinter.yml
+  # rather than a preference: control_urls lists them by name, so a container
+  # added here and not there is a container the pool never uses, and the reverse
+  # is a pool dialling a name that does not resolve. That file is mounted by
+  # both stacks, which is what keeps the two from drifting.
   chrome-1:
-    networks: [scan]
-    image: ${CHROME_IMAGE:-chromedp/headless-shell:latest}
-    init: true
-    shm_size: '1g'
-    command:
-      - --remote-allow-origins=*
-      - --disable-dev-shm-usage
-      - --disable-gpu
-      - --disable-background-networking
-      - --disable-default-apps
-      - --disable-extensions
-      - --disable-sync
-      - --no-first-run
-      - --metrics-recording-only
-    # Noisy, and capped rather than discarded. The local file throws these away
-    # and that is fine there, because a browser that fails to start is a
-    # browser somebody is watching. Here it came up as a container restarting
-    # every two seconds with `docker logs` answering that the driver does not
-    # support reading, which is the one thing an operator must never be told
-    # about a service that is down.
-    logging:
-      driver: json-file
-      options:
-        max-size: "5m"
-        max-file: "2"
-    healthcheck:
-      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/9222' 2>/dev/null"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 10s
-    restart: unless-stopped
+    <<: *chrome
+  chrome-2:
+    <<: *chrome
+  chrome-3:
+    <<: *chrome
 
   # The Certificate Transparency feed (7.5). An aggregator that follows the
   # public logs and serves them as a websocket, deployed as an image the way

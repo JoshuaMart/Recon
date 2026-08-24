@@ -14,10 +14,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// browsers are the pool the rendering service drives. Listed rather than
+// inferred, because a browser added to a compose file and not here is a browser
+// no test says anything about, which is the quiet way an isolated set stops
+// covering what it names.
+var browsers = []string{"chrome-1", "chrome-2", "chrome-3"}
+
 // isolated are the services whose input is controlled by somebody else and
-// which therefore hold nothing: the browser and the service driving it, and the
-// Certificate Transparency feed, which parses X.509 anybody can get logged.
-var isolated = []string{"fingerprinter", "chrome-1", "certstream"}
+// which therefore hold nothing: the browsers and the service driving them, and
+// the Certificate Transparency feed, which parses X.509 anybody can get logged.
+var isolated = append([]string{"fingerprinter", "certstream"}, browsers...)
 
 // The two files, and what the rendering side must stay away from in each.
 //
@@ -120,11 +126,13 @@ func TestTheBrowserReachesNothingThatHoldsAnything(t *testing.T) {
 		t.Run(topology.file, func(t *testing.T) {
 			parsed := load(t, topology.file)
 
-			for _, target := range []string{"postgres", "controlplane", "console"} {
-				for _, network := range shares(t, parsed, "chrome-1", target) {
-					t.Errorf("the browser and %s share network %q: it runs code the target "+
-						"wrote, so it reaches the service driving it and the internet, and "+
-						"nothing else", target, network)
+			for _, browser := range browsers {
+				for _, target := range []string{"postgres", "controlplane", "console"} {
+					for _, network := range shares(t, parsed, browser, target) {
+						t.Errorf("%s and %s share network %q: a browser runs code the target "+
+							"wrote, so it reaches the service driving it and the internet, and "+
+							"nothing else", browser, target, network)
+					}
 				}
 			}
 		})

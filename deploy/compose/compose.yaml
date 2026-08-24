@@ -23,6 +23,34 @@ networks:
 volumes:
   pgdata:
 
+# The browser, three times over. The three differ by name and by nothing else:
+# what makes them a pool is control_urls in fingerprinter.yml, and what makes
+# them safe is the scan network they are alone on.
+x-chrome: &chrome
+  networks: [scan]
+  image: chromedp/headless-shell:latest
+  init: true
+  shm_size: '1g'
+  command:
+    - --remote-allow-origins=*
+    - --disable-dev-shm-usage
+    - --disable-gpu
+    - --disable-background-networking
+    - --disable-default-apps
+    - --disable-extensions
+    - --disable-sync
+    - --no-first-run
+    - --metrics-recording-only
+  logging:
+    driver: "none"
+  healthcheck:
+    test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/9222' 2>/dev/null"]
+    interval: 3s
+    timeout: 3s
+    retries: 10
+    start_period: 5s
+  restart: unless-stopped
+
 services:
   postgres:
     networks: [control]
@@ -328,32 +356,24 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # The browser the rendering service drives over CDP. One instance locally:
-  # the stack needs the topology to be right, not the throughput.
+  # The browsers the rendering service drives over CDP, three of them.
+  #
+  # Three rather than one, and the number is the pool in fingerprinter.yml
+  # rather than a preference: control_urls lists them by name, so adding a
+  # container here without adding it there gives a pool that never uses it, and
+  # the reverse gives a pool dialling a name that does not resolve.
+  #
+  # This is the one place the local stack pays for production's shape. Milestone
+  # 0 asks that `make up` comes up in under sixty seconds on a clean machine,
+  # and three Chrome containers is most of that budget on a cold image. The
+  # alternative was a local pool that does not look like the deployed one, and a
+  # concurrency setting nobody exercises until it is in production.
   chrome-1:
-    networks: [scan]
-    image: chromedp/headless-shell:latest
-    init: true
-    shm_size: '1g'
-    command:
-      - --remote-allow-origins=*
-      - --disable-dev-shm-usage
-      - --disable-gpu
-      - --disable-background-networking
-      - --disable-default-apps
-      - --disable-extensions
-      - --disable-sync
-      - --no-first-run
-      - --metrics-recording-only
-    logging:
-      driver: "none"
-    healthcheck:
-      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/9222' 2>/dev/null"]
-      interval: 3s
-      timeout: 3s
-      retries: 10
-      start_period: 5s
-    restart: unless-stopped
+    <<: *chrome
+  chrome-2:
+    <<: *chrome
+  chrome-3:
+    <<: *chrome
 
   # The Certificate Transparency feed (7.5). An aggregator that follows the
   # public logs and serves them as a websocket, deployed as an image the way

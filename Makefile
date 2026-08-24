@@ -123,7 +123,7 @@ prod-logs: ## Follow the deployed stack's logs, minus the certificate feed
 # keeps whatever was pulled the first time, for as long as the tag says latest.
 .PHONY: prod-pull
 prod-pull: ## Refresh the images the deployed stack does not build
-	$(COMPOSE_PROD) pull postgres chrome-1 certstream fingerprinter
+	$(COMPOSE_PROD) pull postgres chrome-1 chrome-2 chrome-3 certstream fingerprinter
 
 # Normally redundant: the control plane waits on the migration, the roles and
 # the seed, so `prod-up` has already run all three. It exists for the deployment
