@@ -73,18 +73,27 @@ x-logging: &logging
     max-size: "10m"
     max-file: "5"
 
-# Applied to every long running service. It costs nothing and it removes the
-# setuid path out of a container, which is the one a process that already got
-# execution wants next.
-x-hardening: &hardening
-  security_opt:
-    - no-new-privileges:true
+# What is deliberately not here: security_opt: no-new-privileges.
+#
+# It is the obvious hardening to reach for and it is unusable on the host this
+# file was written for. Docker there is the Canonical snap, so the daemon is
+# itself AppArmor confined, and a container starting with no_new_privs cannot
+# make the profile transition that exec needs: the kernel refuses it, because a
+# profile change is a privilege change as far as no_new_privs is concerned.
+# Every container comes up as a restart loop saying "operation not permitted",
+# whatever the image, and the reason is nowhere near the message.
+#
+#   docker run --rm --security-opt no-new-privileges:true alpine true
+#
+# One line, and it says which side the fault is on before anything is deployed.
+# It exits 0 on a Docker installed from its own apt repository and prints that
+# refusal on a snap. cap_drop below was checked the same way and works, so the
+# services that need no capability at all still declare it.
 
 services:
   postgres:
     networks: [control]
     image: postgres:18-alpine
-    <<: *hardening
     logging: *logging
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-asm_owner}
@@ -154,7 +163,6 @@ services:
   # deployment rather than by an ordering somebody has to remember.
   migrate:
     networks: [control]
-    <<: *hardening
     logging: *logging
     build:
       context: ../..
@@ -177,7 +185,6 @@ services:
   db-app-role:
     networks: [control]
     image: postgres:18-alpine
-    <<: *hardening
     entrypoint: ["sh", "-c"]
     # Through stdin rather than -c: psql does not interpolate variables in -c.
     # The passwords go in as psql variables so they never reach a command line
@@ -209,7 +216,6 @@ services:
   # the owner, because the application role has no write on that table.
   seed:
     networks: [control]
-    <<: *hardening
     logging: *logging
     build:
       context: ../..
@@ -234,7 +240,6 @@ services:
   recon:
     profiles: [tools]
     networks: [control]
-    <<: *hardening
     build:
       context: ../..
       dockerfile: deploy/compose/Dockerfile
@@ -251,7 +256,6 @@ services:
 
   controlplane:
     networks: [control, render, traefik]
-    <<: *hardening
     logging: *logging
     # A static binary in a distroless image needs none of them, and dropping
     # them here means the deployment says so rather than the base image being
@@ -384,7 +388,6 @@ services:
   # a write to the inventory.
   console:
     networks: [control, traefik]
-    <<: *hardening
     logging: *logging
     cap_drop: [ALL]
     build:
@@ -425,7 +428,6 @@ services:
   chrome-1:
     networks: [scan]
     image: ${CHROME_IMAGE:-chromedp/headless-shell:latest}
-    <<: *hardening
     init: true
     shm_size: '1g'
     command:
@@ -438,8 +440,17 @@ services:
       - --disable-sync
       - --no-first-run
       - --metrics-recording-only
+    # Noisy, and capped rather than discarded. The local file throws these away
+    # and that is fine there, because a browser that fails to start is a
+    # browser somebody is watching. Here it came up as a container restarting
+    # every two seconds with `docker logs` answering that the driver does not
+    # support reading, which is the one thing an operator must never be told
+    # about a service that is down.
     logging:
-      driver: "none"
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
     healthcheck:
       test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/9222' 2>/dev/null"]
       interval: 5s
@@ -459,7 +470,6 @@ services:
   certstream:
     networks: [scan, render]
     image: ghcr.io/d-rickyy-b/certstream-server-go:v1.9.0
-    <<: *hardening
     logging: *logging
     volumes:
       - ./certstream.yml:/app/config/config.yaml:ro
@@ -476,7 +486,6 @@ services:
   fingerprinter:
     networks: [scan, render]
     image: ${FINGERPRINTER_IMAGE:-ghcr.io/joshuamart/fingerprinter:latest}
-    <<: *hardening
     logging: *logging
     volumes:
       - ./fingerprinter.yml:/app/config.yml:ro
