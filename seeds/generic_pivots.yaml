@@ -78,6 +78,10 @@ cookie_name:
     note: Akamai
   - pattern: bm_sv
     note: Akamai
+  - pattern: _abck
+    note: Akamai
+  - pattern: bm_sz
+    note: Akamai
   - pattern: TS*
     note: F5 BIG-IP
   - pattern: BIGipServer*
