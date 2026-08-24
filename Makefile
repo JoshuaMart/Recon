@@ -100,9 +100,23 @@ prod-up: .env no-stray-env ## Build and start the deployed stack behind Traefik
 prod-down: ## Stop the deployed stack, keeping the data
 	$(COMPOSE_PROD) down
 
+# Everything except the Certificate Transparency feed, which narrates every
+# certificate the public logs publish. That is thousands of lines a minute and
+# none of them are about this deployment, so it buries the one service that was
+# about to say something.
+#
+# Written as an exclusion rather than as a list of what to follow, so a service
+# added to the compose file shows up here without anybody remembering to add it.
+# The feed is still there when it is the thing in question:
+#
+#   make prod-logs SERVICE=certstream
 .PHONY: prod-logs
-prod-logs: ## Follow the deployed stack's logs
-	$(COMPOSE_PROD) logs -f
+prod-logs: ## Follow the deployed stack's logs, minus the certificate feed
+	@if [ -n "$(SERVICE)" ]; then \
+		$(COMPOSE_PROD) logs -f $(SERVICE); \
+	else \
+		$(COMPOSE_PROD) logs -f $$($(COMPOSE_PROD) config --services | grep -vx certstream); \
+	fi
 
 # Only the images this stack does not build. `up --build` rebuilds ours from
 # the checkout and leaves these where they are, so without this a deployment
