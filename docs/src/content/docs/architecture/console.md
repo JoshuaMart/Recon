@@ -112,6 +112,14 @@ list therefore has exactly one representation of its question, and the field sti
 Submission rather than search as you type: each term is a query over the inventory, and the answer arrives with
 the facets recomputed beside it.
 
+**A cut facet opens.** The sidebar shows twenty values per field and marks the rest with a `+`
+([10.4](/architecture/search/#104-facets-are-the-real-cost)), which left everything under the cut
+unreachable: visible as a number, absent as a control. The `N more` under a facet now says `every value` when
+the server cut it, and that click asks for the one field, bounded higher, over the same filters. The answer
+replaces the terms in place, so what was below the cut behaves like every other value, and it is dropped as
+soon as the filters change: a facet counts the filtered result, so the answer opened under one search says
+nothing about the next one.
+
 **"Load more" adds rows, it does not turn a page.** It used to be a plain link to the next cursor, which
 replaced the fifty rows on screen with the next fifty and sent the reader back to the top: a list could be read
 downwards only by never looking back. The button now fetches `/more`, the same query as the page minus the

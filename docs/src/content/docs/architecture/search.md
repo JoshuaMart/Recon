@@ -369,6 +369,17 @@ believe the inventory holds nine ports. The response carries the values, the cou
 anything was left out, which is the same rule the export applies to rows and the timeline applies to
 observations.
 
+**The cut has to be openable, or it is a wall.** Saying "20+" is honest and it is not enough: a technology
+carried by twelve assets is in the inventory, is filterable, and had nothing to click, so the only way to
+reach it was to know it existed and to write the filter by hand. A `field` on the same request answers that
+one facet on its own, bounded at two hundred instead of twenty. Same aggregation over the same filtered set,
+so the counts beside the values are the counts the sidebar would have shown, and the field is matched against
+the facet table rather than reaching the statement as a string.
+
+Two hundred and not everything, because the cut stays expressible either way: a list that ends without saying
+it ended is the failure the cap exists to avoid. It costs no more of the expensive half than the sidebar
+does, since the filter is what is expensive and both aggregate over the same CTE.
+
 
 ## 10.5 Pivots
 

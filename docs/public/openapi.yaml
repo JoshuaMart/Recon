@@ -159,6 +159,11 @@ paths:
         Aggregates over what the filter selected, not over the inventory. That
         is what the side counters of an ASM interface are.
 
+        Every facet is capped at 20 values and says so with `truncated`. With
+        `field` set, one facet comes back instead, capped at 200: same
+        aggregation, same filtered set, a deeper bound, which is what makes a
+        value below the sidebar's cut reachable.
+
         `limit` and `cursor` are ignored here. Requires `read_assets`.
       security:
         - consoleToken: [read_assets]
@@ -1400,6 +1405,14 @@ components:
           type: string
           enum: [jsonl, csv]
           description: Export only.
+        field:
+          type: string
+          description: |
+            Facets only. Names one facet, answered on its own and bounded at 200
+            values instead of the sidebar's 20. It is the same aggregation over
+            the same filtered set, and it is how a value below the cut becomes
+            reachable at all. A name that is not a facet is refused rather than
+            answered empty.
 
     Node:
       type: object

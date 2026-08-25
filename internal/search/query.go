@@ -347,6 +347,20 @@ type FacetTerm struct {
 // FacetLimit is how many values one facet returns.
 const FacetLimit = 20
 
+// FacetValuesLimit is how many one facet returns when it is asked for on its
+// own, which is what the sidebar does when somebody opens a cut facet.
+//
+// Ten times the sidebar's cap and not the whole set, because the cut has to
+// stay expressible: a list that ends without saying it ended is the failure
+// this cap exists to avoid, and a technologies facet over a large perimeter
+// runs into the hundreds. It costs no more of the expensive half than the
+// sidebar does, since both aggregate over the same filtered set.
+const FacetValuesLimit = 200
+
+// technologies is the one facet over an array, and it is named because two
+// places build its branch.
+const technologiesFacet = "technologies"
+
 // facets are the ones offered, in the order a sidebar is read.
 //
 // Almost all of them are promoted columns, and the exception is the one worth
@@ -408,20 +422,75 @@ func Facets(ctx context.Context, q Querier, org uuid.UUID, filter Node) (FacetPa
 
 	parts := make([]string, 0, len(facets)+1)
 	for _, facet := range facets {
-		// Parenthesised, because a LIMIT cannot sit between a branch and the
-		// UNION that follows it: without them the statement is a syntax error
-		// naming the UNION rather than the limit.
-		parts = append(parts, fmt.Sprintf(
-			`(SELECT '%s' AS field, %s AS value, count(*) AS total FROM filtered c
-			   WHERE %s IS NOT NULL GROUP BY 2 ORDER BY 3 DESC, 2 LIMIT %s)`,
-			facet.field, facet.expr, facet.expr, cap))
+		part, _ := facetBranch(facet.field, cap)
+		parts = append(parts, part)
 	}
+	technologies, _ := facetBranch(technologiesFacet, cap)
+	parts = append(parts, technologies)
+
+	return aggregate(ctx, q, org, compiled, parts, args, FacetLimit)
+}
+
+// FacetValues answers one facet, deeper than the sidebar asks for.
+//
+// The sidebar is capped at twenty values per field and says so, which leaves
+// everything below the cut unreachable: a technology carried by twelve assets
+// is in the inventory, is filterable, and cannot be clicked. This is what the
+// cut facet's own control asks for, and it is one field rather than all of
+// them because that is the one somebody opened.
+//
+// Same filtered set as the sidebar, so the counts beside the values are the
+// same counts, and the field is looked up in the same table: a name that is not
+// a facet is a refusal rather than an expression reaching the statement.
+func FacetValues(ctx context.Context, q Querier, org uuid.UUID, filter Node, field string) (FacetPage, error) {
+	compiled, err := Compile(org, filter)
+	if err != nil {
+		return FacetPage{}, err
+	}
+
+	args := append([]any{}, compiled.Args...)
+	args = append(args, FacetValuesLimit+1)
+	branch, ok := facetBranch(field, fmt.Sprintf("$%d", len(args)))
+	if !ok {
+		return FacetPage{}, refuse("%q is not a facet", field)
+	}
+
+	return aggregate(ctx, q, org, compiled, []string{branch}, args, FacetValuesLimit)
+}
+
+// facetBranch is one field's aggregation over the filtered set.
+//
+// Parenthesised, because a LIMIT cannot sit between a branch and the UNION that
+// follows it: without them the statement is a syntax error naming the UNION
+// rather than the limit.
+//
+// The field is never the caller's string. It is matched against the table
+// above, and what reaches the statement is the expression written there.
+func facetBranch(field, cap string) (string, bool) {
 	// The one facet over an array. It counts assets rather than elements, which
 	// is what the question asks: "how many of my assets run nginx".
-	parts = append(parts, fmt.Sprintf(
-		`(SELECT 'technologies' AS field, t AS value, count(*) AS total
-		    FROM filtered c, unnest(c.technologies) AS t GROUP BY 2 ORDER BY 3 DESC, 2 LIMIT %s)`, cap))
+	if field == technologiesFacet {
+		return fmt.Sprintf(
+			`(SELECT '%s' AS field, t AS value, count(*) AS total
+			    FROM filtered c, unnest(c.technologies) AS t GROUP BY 2 ORDER BY 3 DESC, 2 LIMIT %s)`,
+			technologiesFacet, cap), true
+	}
+	for _, facet := range facets {
+		if facet.field == field {
+			return fmt.Sprintf(
+				`(SELECT '%s' AS field, %s AS value, count(*) AS total FROM filtered c
+				   WHERE %s IS NOT NULL GROUP BY 2 ORDER BY 3 DESC, 2 LIMIT %s)`,
+				facet.field, facet.expr, facet.expr, cap), true
+		}
+	}
+	return "", false
+}
 
+// aggregate runs the branches and reads them back into facets.
+func aggregate(
+	ctx context.Context, q Querier, org uuid.UUID, compiled Compiled,
+	parts []string, args []any, limit int,
+) (FacetPage, error) {
 	sql := "WITH filtered AS (SELECT * FROM asset_current c WHERE " + compiled.SQL + ") " +
 		strings.Join(parts, " UNION ALL ")
 
@@ -452,13 +521,13 @@ func Facets(ctx context.Context, q Querier, org uuid.UUID, filter Node) (FacetPa
 	}
 
 	page := FacetPage{Facets: make([]Facet, 0, len(order))}
-	hashes := make([]string, 0, FacetLimit)
+	hashes := make([]string, 0, limit)
 	for _, field := range order {
 		facet := byField[field]
 		// The extra value is how the cut is known, and it is said rather than
 		// swallowed.
-		if len(facet.Terms) > FacetLimit {
-			facet.Terms = facet.Terms[:FacetLimit]
+		if len(facet.Terms) > limit {
+			facet.Terms = facet.Terms[:limit]
 			facet.Cut = true
 		}
 		if field == "favicon_hash" {

@@ -338,6 +338,80 @@ func TestTheFacetsReflectTheFilteredResult(t *testing.T) {
 	})
 }
 
+// A value below the sidebar's cut is in the inventory, is filterable, and was
+// unreachable: the cap said "20+" and there was nothing to click.
+//
+// Twenty-two technologies, so the sidebar cuts and the rarest one is the one
+// nobody could reach. Opening the facet asks for the same aggregation over the
+// same filtered set, bounded higher.
+func TestACutFacetOpensOnEveryValue(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	// The rarest carried by one asset and the common one by all of them, so the
+	// order is the count and the tail is where the rare value lands.
+	for i := range 22 {
+		tech := []string{"common", fmt.Sprintf("tech%02d", i)}
+		for n := range i + 1 {
+			h.asset(t, h.org, fmt.Sprintf("a%02d-%02d.target.test:443/tcp", i, n),
+				map[string]any{"port": 443, "technologies": tech})
+		}
+	}
+	h.asset(t, h.org, "rare.target.test:443/tcp", map[string]any{
+		"port": 443, "technologies": []string{"common", "swagger"},
+	})
+
+	h.scoped(t, h.org, func(tx pgx.Tx) {
+		sidebar, err := search.Facets(ctx, tx, h.org, filter(t, `{"op":"and"}`))
+		if err != nil {
+			t.Fatalf("facets: %v", err)
+		}
+		if !cut(sidebar, "technologies") {
+			t.Fatal("the technologies facet was not cut, so this test measures nothing")
+		}
+		if term(sidebar, "technologies", "swagger") != 0 {
+			t.Fatal("the rare technology is inside the cap, so this test measures nothing")
+		}
+
+		opened, err := search.FacetValues(ctx, tx, h.org, filter(t, `{"op":"and"}`), "technologies")
+		if err != nil {
+			t.Fatalf("facet values: %v", err)
+		}
+		if got := term(opened, "technologies", "swagger"); got != 1 {
+			t.Errorf("swagger opened = %d, want the one asset carrying it", got)
+		}
+		if len(opened.Facets) != 1 || opened.Facets[0].Field != "technologies" {
+			t.Errorf("opening one facet answered %d of them", len(opened.Facets))
+		}
+		// The counts are the sidebar's counts, because it is the same
+		// aggregation over the same filtered set.
+		if term(opened, "technologies", "common") != term(sidebar, "technologies", "common") {
+			t.Error("the opened facet counts something else than the sidebar does")
+		}
+	})
+
+	// The filter still applies, since a facet is an aggregation over the
+	// filtered result and not over the inventory.
+	h.scoped(t, h.org, func(tx pgx.Tx) {
+		opened, err := search.FacetValues(ctx, tx, h.org,
+			filter(t, `{"op":"contains","field":"key","value":"rare."}`), "technologies")
+		if err != nil {
+			t.Fatalf("facet values: %v", err)
+		}
+		if term(opened, "technologies", "swagger") != 1 || term(opened, "technologies", "tech21") != 0 {
+			t.Error("the opened facet ignored the filter")
+		}
+	})
+
+	// A field that is not a facet is a refusal rather than an expression
+	// reaching the statement.
+	h.scoped(t, h.org, func(tx pgx.Tx) {
+		if _, err := search.FacetValues(ctx, tx, h.org, filter(t, `{"op":"and"}`), "c.key; DROP TABLE asset"); err == nil {
+			t.Error("a field outside the facet table was accepted")
+		}
+	})
+}
+
 // TestOneTenantNeverSeesAnother, without any query naming an organization.
 func TestOneTenantNeverSeesAnother(t *testing.T) {
 	h := newHarness(t)
@@ -591,6 +665,16 @@ func keysOf(page search.Page) []string {
 		out = append(out, row.Key)
 	}
 	return out
+}
+
+// cut says whether one facet came back truncated.
+func cut(page search.FacetPage, field string) bool {
+	for _, facet := range page.Facets {
+		if facet.Field == field {
+			return facet.Cut
+		}
+	}
+	return false
 }
 
 func term(page search.FacetPage, field, value string) int {

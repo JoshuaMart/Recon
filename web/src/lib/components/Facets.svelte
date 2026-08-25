@@ -1,6 +1,15 @@
 <script lang="ts">
 	import { shownFacets } from '$lib/format';
-	import { encodeFilter, facetFilter, fieldLabel, href, withFilter, withoutFilter, type Filter } from '$lib/query';
+	import {
+		encodeFilter,
+		facetFilter,
+		facetHref,
+		fieldLabel,
+		href,
+		withFilter,
+		withoutFilter,
+		type Filter
+	} from '$lib/query';
 	import type { Facet, Term } from '$lib/types';
 
 	interface Props {
@@ -56,8 +65,89 @@
 	const cap = 6;
 	let expanded = $state<Record<string, boolean>>({});
 
+	/**
+	 * The facets asked for on their own, keyed by field.
+	 *
+	 * The sidebar is capped at twenty values per field and says so with a `+`,
+	 * which used to be the end of it: a technology carried by twelve assets is in
+	 * the inventory, is filterable, and had nothing to click. Opening a cut facet
+	 * asks the server for the same aggregation over the same filtered set,
+	 * bounded higher, so the values below the cut become what every other value
+	 * already is.
+	 *
+	 * Reset with the filters, since a facet counts the filtered result: the
+	 * answer opened under one search says nothing about the next one.
+	 */
+	let opened = $derived({ answer: filters, fields: {} as Record<string, Facet> });
+	/** The page's images, plus the ones that came with an opened facet. */
+	let images = $derived({ answer: filters, map: { ...favicons } });
+	let loading = $state('');
+	let failed = $state('');
+
+	function termsOf(facet: { field: string; terms: Term[] }): Term[] {
+		return opened.fields[facet.field]?.terms ?? facet.terms;
+	}
+
+	function isCut(facet: { field: string; truncated: boolean }): boolean {
+		const full = opened.fields[facet.field];
+		return full ? (full.truncated ?? false) : facet.truncated;
+	}
+
 	function visible(field: string, terms: Term[]): Term[] {
 		return expanded[field] ? terms : terms.slice(0, cap);
+	}
+
+	/**
+	 * What the control under a facet does, which is one of three things.
+	 *
+	 * A cut facet opens on every value first, since the folded terms are not the
+	 * question: what is missing is below them. After that, and on a facet that was
+	 * never cut, it is the fold over what is already here.
+	 */
+	async function open(facet: { field: string; truncated: boolean }) {
+		if (!isCut(facet) || opened.fields[facet.field]) {
+			expanded[facet.field] = !expanded[facet.field];
+			return;
+		}
+		if (loading) return;
+		loading = facet.field;
+		failed = '';
+		try {
+			const response = await fetch(facetHref(filters, facet.field), { headers: { accept: 'application/json' } });
+			if (!response.ok) throw new Error('the console answered ' + response.status);
+			const page: { facets: Facet[]; favicons?: Record<string, string> } = await response.json();
+			const full = page.facets?.find((one) => one.field === facet.field);
+			// A facet that comes back empty is not an answer worth replacing the
+			// twenty already on screen with.
+			if (!full?.terms?.length) throw new Error('the facet came back empty');
+			opened = { ...opened, fields: { ...opened.fields, [facet.field]: full } };
+			// The images of the values that were below the cut. Without them the
+			// favicon grid draws blank squares, which reads as a broken interface
+			// rather than as the answer.
+			images = { ...images, map: { ...images.map, ...(page.favicons ?? {}) } };
+			expanded[facet.field] = true;
+		} catch {
+			// Said rather than swallowed, and the click is worth making again.
+			failed = facet.field;
+		} finally {
+			loading = '';
+		}
+	}
+
+	/** The label says which of the three the next click is. */
+	function control(facet: { field: string; terms: Term[]; truncated: boolean }): string {
+		if (loading === facet.field) return 'loading…';
+		if (failed === facet.field) return 'that did not come back, try again';
+		if (isCut(facet) && !opened.fields[facet.field]) return 'every value';
+		if (expanded[facet.field]) return 'show fewer';
+		return termsOf(facet).length - cap + ' more';
+	}
+
+	/** Whether a facet has anything left to offer under it. */
+	function hasControl(facet: { field: string; terms: Term[]; truncated: boolean }, folds: boolean): boolean {
+		if (isCut(facet) && !opened.fields[facet.field]) return true;
+		if (failed === facet.field || loading === facet.field) return true;
+		return folds && termsOf(facet).length > cap;
 	}
 
 	function width(terms: Term[], count: number): string {
@@ -95,8 +185,8 @@
 				{fieldLabel(facet.field)}
 				<!-- The count says the facet was cut, because a truncated list that looks
 				     complete is a statement about the inventory and it is false. -->
-				<span class="n" class:cut={facet.truncated} title={facet.truncated ? 'more values than this list shows' : ''}
-					>{facet.terms.length}{facet.truncated ? '+' : ''}</span
+				<span class="n" class:cut={isCut(facet)} title={isCut(facet) ? 'more values than this list shows' : ''}
+					>{termsOf(facet).length}{isCut(facet) ? '+' : ''}</span
 				>
 			</h3>
 
@@ -105,15 +195,15 @@
 				     has. Thirteen hashes were thirteen unreadable rows; the hash
 				     goes to the hover, where it is still the value the filter carries. -->
 				<div class="icons">
-					{#each facet.terms as bucket (bucket.value)}
+					{#each termsOf(facet) as bucket (bucket.value)}
 						<a
 							class="ico"
 							class:on={active(facet.field, bucket.value)}
 							href={termHref(facet.field, bucket.value)}
 							title="{bucket.value} · {bucket.count} assets"
 						>
-							{#if favicons[bucket.value]}
-								<img src={favicons[bucket.value]} alt="" />
+							{#if images.map[bucket.value]}
+								<img src={images.map[bucket.value]} alt="" />
 							{:else}
 								<span class="unknown" aria-hidden="true"></span>
 							{/if}
@@ -121,36 +211,51 @@
 						</a>
 					{/each}
 				</div>
+				{@render more(facet, false)}
 			{:else if asChips.has(facet.field)}
 				<div class="chips">
-					{#each facet.terms as bucket (bucket.value)}
+					{#each termsOf(facet) as bucket (bucket.value)}
 						<a class="chip" class:on={active(facet.field, bucket.value)} href={termHref(facet.field, bucket.value)}>
 							<span class="k">{label(bucket.value)}</span>
 							<span class="c">{bucket.count}</span>
 						</a>
 					{/each}
 				</div>
+				<!-- A chip list is short by nature and folds at nothing, so its control
+				     only ever appears to open a facet the cap cut. -->
+				{@render more(facet, false)}
 			{:else}
 				<ul class="bars">
-					{#each visible(facet.field, facet.terms) as bucket (bucket.value)}
+					{#each visible(facet.field, termsOf(facet)) as bucket (bucket.value)}
 						<li>
 							<a class="bucket" class:on={active(facet.field, bucket.value)} href={termHref(facet.field, bucket.value)}>
 								<span class="text">{label(bucket.value)}</span>
-								<span class="bar"><i style:width={width(facet.terms, bucket.count)}></i></span>
+								<span class="bar"><i style:width={width(termsOf(facet), bucket.count)}></i></span>
 								<span class="c">{bucket.count}</span>
 							</a>
 						</li>
 					{/each}
 				</ul>
-				{#if facet.terms.length > cap}
-					<button class="more" type="button" onclick={() => (expanded[facet.field] = !expanded[facet.field])}>
-						{expanded[facet.field] ? 'show fewer' : facet.terms.length - cap + ' more'}
-					</button>
-				{/if}
+				{@render more(facet, true)}
 			{/if}
 		</section>
 	{/each}
 </aside>
+
+<!--
+	One control for the three shapes.
+
+	`folds` says whether the list under it is capped on this side, which only the
+	bars are. Everything else it does is the same everywhere: a facet the server
+	cut opens on every value, and what is already here folds.
+-->
+{#snippet more(facet: { field: string; terms: Term[]; truncated: boolean }, folds: boolean)}
+	{#if hasControl(facet, folds)}
+		<button class="more" class:failed={failed === facet.field} type="button" onclick={() => open(facet)}>
+			{control(facet)}
+		</button>
+	{/if}
+{/snippet}
 
 <style>
 	.n.cut {
@@ -310,6 +415,10 @@
 
 	.more:hover {
 		color: var(--ink);
+	}
+
+	.more.failed {
+		color: var(--code-5xx);
 	}
 
 	.icons {

@@ -50,6 +50,9 @@ type query struct {
 	Limit  int             `json:"limit,omitempty"`
 	Cursor string          `json:"cursor,omitempty"`
 	Format string          `json:"format,omitempty"`
+	// Field asks the facets for one field, deeper. Empty is the sidebar, which
+	// is every facet capped short.
+	Field string `json:"field,omitempty"`
 }
 
 // Search answers one page.
@@ -159,10 +162,15 @@ func (h *Assets) Get(w http.ResponseWriter, r *http.Request, principal auth.Prin
 }
 
 // Facets aggregates over the filtered result rather than over the inventory.
+//
+// With a field named, one facet and deeper: the sidebar's cap is what makes a
+// value below it unreachable, and this is the same aggregation over the same
+// filtered set asked for one field at a time. One route rather than two,
+// because it is the same question with a different bound.
 func (h *Assets) Facets(w http.ResponseWriter, r *http.Request, principal auth.Principal) {
 	ctx := r.Context()
 
-	_, filter, ok := h.read(w, r)
+	body, filter, ok := h.read(w, r)
 	if !ok {
 		return
 	}
@@ -175,7 +183,12 @@ func (h *Assets) Facets(w http.ResponseWriter, r *http.Request, principal auth.P
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	page, err := search.Facets(ctx, tx, principal.OrgID, filter)
+	page := search.FacetPage{}
+	if body.Field == "" {
+		page, err = search.Facets(ctx, tx, principal.OrgID, filter)
+	} else {
+		page, err = search.FacetValues(ctx, tx, principal.OrgID, filter, body.Field)
+	}
 	if err != nil {
 		h.answerError(ctx, w, "facets failed", err)
 		return

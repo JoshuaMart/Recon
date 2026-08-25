@@ -175,6 +175,15 @@ export function searchHref(filters: Filter[], term: string, grouped = true): str
 	return href(withSearch(filters, term), grouped);
 }
 
+/** facetHref opens one facet on every value it has, as JSON. The filters travel
+ *  because a facet counts the filtered result: opened without them, the counts
+ *  beside the values would disagree with the list. */
+export function facetHref(filters: Filter[], field: string): string {
+	const search = params(filters);
+	search.set('field', field);
+	return '/facet?' + search.toString();
+}
+
 /** exportHref is the same query as the list, by construction. */
 export function exportHref(filters: Filter[], format: 'jsonl' | 'csv' = 'jsonl'): string {
 	const search = params(filters);
