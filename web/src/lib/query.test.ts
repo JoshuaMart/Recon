@@ -6,11 +6,15 @@ import {
 	href,
 	isGrouped,
 	label,
+	moreHref,
 	nextHref,
 	parseFilters,
+	searchHref,
+	searchTerm,
 	toAST,
 	withFilter,
-	withoutFilter
+	withoutFilter,
+	withSearch
 } from './query';
 import type { Filter } from './query';
 
@@ -218,5 +222,57 @@ describe('the list shape survives a link', () => {
 	it('drops the cursor on both sides of the toggle', () => {
 		expect(groupHref(filters, false)).not.toContain('cursor');
 		expect(groupHref(filters, true)).not.toContain('cursor');
+	});
+});
+
+describe('the search box', () => {
+	// The box writes a filter and nothing else, so a search is undone by the same
+	// chip as a facet click and travels in the same shareable URL.
+	it('narrows the name and keeps every other filter', () => {
+		const filters: Filter[] = [{ field: 'port', op: 'eq', value: '443' }];
+		expect(withSearch(filters, 'admin')).toEqual([
+			{ field: 'port', op: 'eq', value: '443' },
+			{ field: 'key', op: 'contains', value: 'admin' }
+		]);
+	});
+
+	// Typing again is a new search rather than a second one. Two substrings of one
+	// name is not a question anybody asks by typing twice in the same box, and a
+	// box that accumulated would need its own way to undo.
+	it('replaces the term rather than adding one', () => {
+		const searched = withSearch([], 'admin');
+		expect(withSearch(searched, 'staging')).toEqual([{ field: 'key', op: 'contains', value: 'staging' }]);
+	});
+
+	// Emptying the box is how a search is cleared, so it has to remove the filter
+	// rather than search for nothing.
+	it('clears the filter on an empty term', () => {
+		expect(withSearch(withSearch([], 'admin'), '  ')).toEqual([]);
+		expect(searchHref([], '')).toBe('/');
+	});
+
+	// The field shows the search in force, read from the URL rather than kept as
+	// state: the back button and the chip in the toolbar both have to move it.
+	it('reads the term back out of the filters', () => {
+		expect(searchTerm(withSearch([], 'admin'))).toBe('admin');
+		expect(searchTerm([{ field: 'key', op: 'eq', value: 'a.target.test' }])).toBe('');
+	});
+
+	// A search is a change of the question, so it starts the list again rather
+	// than continuing a walk that was ordered by something else.
+	it('drops the cursor and keeps the shape', () => {
+		expect(searchHref([], 'admin', false)).toBe('/?f=key%3Acontains%3Aadmin&group=none');
+		expect(searchHref([], 'admin')).not.toContain('cursor');
+	});
+});
+
+describe('the continuation', () => {
+	// The button appends rather than navigates, and the JSON it asks for is the
+	// same page as the link it falls back to without JavaScript.
+	it('asks for the same page as the link, as JSON', () => {
+		const filters: Filter[] = [{ field: 'port', op: 'eq', value: '443' }];
+		expect(moreHref(filters, 'abc')).toBe('/more?f=port%3Aeq%3A443&cursor=abc');
+		expect(moreHref(filters, 'abc', false)).toBe('/more?f=port%3Aeq%3A443&group=none&cursor=abc');
+		expect(moreHref(filters, 'abc').slice('/more'.length)).toBe(nextHref(filters, 'abc').slice('/'.length));
 	});
 });

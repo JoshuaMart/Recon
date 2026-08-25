@@ -217,7 +217,7 @@ also the answer to "what can be filtered", and it is short on purpose.
 
 | Field | Reads | Type | Operators |
 |---|---|---|---|
-| `key`, `host` | the column | text | `eq`, `prefix`, `suffix` |
+| `key`, `host` | the column | text | `eq`, `prefix`, `suffix`, `contains` |
 | `program_id` | the column | uuid | `eq`, `in` |
 | `kind`, `lifecycle`, `scope_status`, `scheme` | the column | text | `eq`, `in` |
 | `port`, `status_code`, `asn` | the column | int | `eq`, `in`, `gt`, `gte`, `lt`, `lte` |
@@ -277,6 +277,8 @@ alert, at nine in the evening.
 **`title` is not in the registry**, and its absence is the rule working rather than an oversight. It is a
 promoted column so the list can render a row, it carries no index by the same decision that left `final_url`
 without one, and the only operator anybody would want on it is `contains`, which is a scan of the tenant.
+The name gets that operator and the title does not ([10.3](#contains-is-granted-on-the-name-and-it-is-the-one-operator-no-index-answers)):
+one is what people search by and the other is what a page happens to call itself.
 The day the query is asked for, it is an `ALTER` and a line here, in that order.
 
 **`volatility` is the one field with no index and it is in anyway.** It reads a `STABLE` function of the
@@ -300,6 +302,20 @@ domain" returns the fqdn rows and silently drops every service, which is most of
 interesting part. `host` is the column that answers it, so `host` is the column that needs the reversed
 index too. The example in [10.1](#101-three-principles) filters on `key`, and it is the narrower query:
 `key` answers "this exact service", `host` answers "this perimeter".
+
+### `contains` is granted on the name, and it is the one operator no index answers
+
+The console has a search field, and what somebody types in it is a substring: "admin" means "anywhere in the
+name", not "the name starts with it". That compiles to `ILIKE '%admin%'`, a leading wildcard no index can
+serve, so it costs a scan of the rows the rest of the filter left.
+
+It is granted on `key` and `host` and on nothing else, for two reasons. The name is what a person searches by,
+so the field that gets the expensive operator is the one that earns it. And the set it scans is one
+organization's inventory, already narrowed by the tenant clause and by whatever facets are in force, which on
+the perimeters this is built for is thousands of rows rather than a table. The day that stops being true, the
+honest fix is a trigram index on those two columns, not a quieter operator.
+
+`ILIKE` rather than `LIKE`, because the column holds a normalized name and the person typing does not.
 
 Deliberately kept: the suffix stays a **string** suffix, not domain membership. `.target.com` does not return
 `target.com` itself, and `evil-target.com` does not come back under `target.com` since the dot is in the

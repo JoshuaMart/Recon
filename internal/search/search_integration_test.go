@@ -253,6 +253,48 @@ func TestASuffixReadsTheInventoryUnderOneDomain(t *testing.T) {
 	})
 }
 
+// The console's search field, against the database: a substring of the name,
+// anywhere in it, and still inside one tenant.
+//
+// It is the operator no index answers, so what is measured here is the answer
+// rather than the plan: the term sits in the middle of the key, which is
+// exactly the question a prefix and a suffix cannot ask.
+func TestASubstringOfTheNameSearchesInsideIt(t *testing.T) {
+	h := newHarness(t)
+	h.inventory(t)
+
+	h.scoped(t, h.org, func(tx pgx.Tx) {
+		page, err := search.List(context.Background(), tx, h.org, search.Request{
+			// Upper case, because a person typing into a search field is not
+			// spelling a normalized key.
+			Filter: filter(t, `{"op":"contains","field":"key","value":"PI.TARGET"}`),
+		})
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+
+		keys := keysOf(page)
+		if len(keys) != 1 || keys[0] != "api.target.test:443/tcp" {
+			t.Errorf("keys = %v, want the one asset whose name carries the substring", keys)
+		}
+	})
+
+	// The other tenant holds "app.target.test:443/tcp" too, and a search that
+	// scans rather than seeks is the place where a missing tenant clause would
+	// not show up as an error.
+	h.scoped(t, h.org, func(tx pgx.Tx) {
+		page, err := search.List(context.Background(), tx, h.org, search.Request{
+			Filter: filter(t, `{"op":"contains","field":"key","value":"app.target"}`),
+		})
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		if len(keysOf(page)) != 1 {
+			t.Errorf("%d rows for one tenant's app.target.test, want 1", len(keysOf(page)))
+		}
+	})
+}
+
 // TestTheFacetsReflectTheFilteredResult is what separates a facet from a
 // statistic.
 //

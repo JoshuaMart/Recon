@@ -69,8 +69,14 @@ func ops(names ...string) map[string]bool {
 var registry = map[string]field{
 	// The suffix is the query an ASM inventory actually asks, and it is served
 	// by the expression index on reverse(key).
-	"key":  {expr: Alias + ".key", kind: kindText, ops: ops(OpEq, OpPrefix, OpSuffix)},
-	"host": {expr: Alias + ".host", kind: kindText, ops: ops(OpEq, OpPrefix, OpSuffix)},
+	//
+	// Contains is beside it for the console's search field, where somebody types
+	// "admin" and means "anywhere in the name". It is the one text operator no
+	// index answers, and it is offered on these two fields only: the name is
+	// what a person searches by, and the filtered set it scans is one
+	// organization's inventory rather than the table.
+	"key":  {expr: Alias + ".key", kind: kindText, ops: ops(OpEq, OpPrefix, OpSuffix, OpContains)},
+	"host": {expr: Alias + ".host", kind: kindText, ops: ops(OpEq, OpPrefix, OpSuffix, OpContains)},
 
 	// The one identifier in the vocabulary, and it is not the tenant wearing
 	// another name. org_id is absent because the compiler emits it and a query

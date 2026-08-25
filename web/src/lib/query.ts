@@ -114,12 +114,65 @@ export function groupHref(filters: Filter[], grouped: boolean): string {
 
 /** nextHref continues the list. A cursor and never a page number: the server
  *  chose the ordering, and an offset over a million rows scans everything before
- *  it on every page. */
+ *  it on every page.
+ *
+ *  It is the fallback of the load button rather than what it normally does: the
+ *  button appends, and this link is what the same click means with no
+ *  JavaScript, where a second page replacing the first is still better than a
+ *  dead control. */
 export function nextHref(filters: Filter[], cursor: string, grouped = true): string {
 	const search = params(filters);
 	if (!grouped) search.set('group', 'none');
 	search.set('cursor', cursor);
 	return '/?' + search.toString();
+}
+
+/** moreHref is the same page as `nextHref`, asked for as JSON so the rows can be
+ *  appended to the ones already on screen instead of replacing them. */
+export function moreHref(filters: Filter[], cursor: string, grouped = true): string {
+	const search = params(filters);
+	if (!grouped) search.set('group', 'none');
+	search.set('cursor', cursor);
+	return '/more?' + search.toString();
+}
+
+/**
+ * The field the search box writes into, and the operator it uses.
+ *
+ * `key` rather than `host`, because the key is the name of the asset as the list
+ * shows it: a hostname for a name, host:port for a service, the URL for a page.
+ * A search on the host would answer nothing about a port somebody typed.
+ *
+ * `contains` because that is what a search field means to the person typing in
+ * it. It is the one text operator no index answers, which the server grants on
+ * the name alone and says so where it grants it.
+ */
+export const searchField = 'key';
+const searchOp: Op = 'contains';
+
+/** The term currently in the box, so a reload shows the search that is in force. */
+export function searchTerm(filters: Filter[]): string {
+	return filters.find((filter) => filter.field === searchField && filter.op === searchOp)?.value ?? '';
+}
+
+/**
+ * withSearch replaces the term rather than adding one.
+ *
+ * Two substrings of one name is a question nobody asks by typing twice in the
+ * same box, and a box that accumulated would need its own way to undo. Every
+ * other filter is untouched: a search narrows what the facets already chose.
+ */
+export function withSearch(filters: Filter[], term: string): Filter[] {
+	const rest = filters.filter((filter) => !(filter.field === searchField && filter.op === searchOp));
+	const value = term.trim();
+	if (!value) return rest;
+	return [...rest, { field: searchField, op: searchOp, value }];
+}
+
+/** searchHref is the list narrowed to a name, dropping the cursor like every
+ *  other change of the question. */
+export function searchHref(filters: Filter[], term: string, grouped = true): string {
+	return href(withSearch(filters, term), grouped);
 }
 
 /** exportHref is the same query as the list, by construction. */

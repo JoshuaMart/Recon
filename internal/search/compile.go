@@ -366,6 +366,17 @@ func (b *builder) text(entry field, n Node) (string, error) {
 		// an equality, and no test sees it unless a value contains a wildcard.
 		return "reverse(" + entry.expr + ") LIKE " + b.bind(escapeLike(reverse(value))+"%"), nil
 
+	case OpContains:
+		value, ok := n.Value.(string)
+		if !ok || value == "" {
+			return "", refuse("%q takes a non-empty string", n.Field)
+		}
+		// A leading wildcard, so no index answers this one and the registry says
+		// so where it grants the operator. ILIKE rather than LIKE: the column
+		// holds a normalized name, and somebody who types "API" in a search
+		// field is asking the same question as somebody who types "api".
+		return entry.expr + " ILIKE " + b.bind("%"+escapeLike(value)+"%"), nil
+
 	default:
 		return "", refuse("%q does not accept %q", n.Field, n.Op)
 	}

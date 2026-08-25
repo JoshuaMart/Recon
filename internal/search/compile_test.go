@@ -196,6 +196,29 @@ func TestASuffixWithAWildcardStaysASuffix(t *testing.T) {
 	}
 }
 
+// The search field of the console types into a substring, and a value carrying
+// a wildcard must not widen it.
+//
+// It is the operator no index answers, so it is granted on the name alone. What
+// it must not do on top of that is let "50%" match everything: the escape is
+// what keeps a typed character a character.
+func TestANameSearchIsASubstringAndNotAPattern(t *testing.T) {
+	t.Parallel()
+
+	compiled, err := Compile(uuid.New(), parse(t, `{"op":"contains","field":"key","value":"ad_min%"}`))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if compiled.Args[1] != `%ad\_min\%%` {
+		t.Errorf("pattern = %v, want the value escaped between two wildcards", compiled.Args[1])
+	}
+	// Case folded, because a person typing into a search field is not spelling
+	// a normalized key.
+	if !strings.Contains(compiled.SQL, Alias+".key ILIKE") {
+		t.Errorf("the substring is case sensitive: %s", compiled.SQL)
+	}
+}
+
 // A suffix stays a string suffix rather than a notion of domain membership, and
 // the dot in the pattern is what makes "evil-target.test" not come back under
 // "target.test". Inventing a domain notion now would freeze scope semantics in

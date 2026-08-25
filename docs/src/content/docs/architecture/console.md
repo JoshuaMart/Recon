@@ -98,7 +98,33 @@ match" both give zero ASNs.
 **The state of the queue.** Nothing in an asset says whether it is waiting for a render, held by a run, or no
 longer scheduled at all ([9.9](/architecture/deployment/#99-reading-the-queue)).
 
-## 14.4 Art direction
+## 14.4 The list: one typed filter, and what continues it
+
+**The sidebar has a search field, and it is a filter like the others.** It writes
+`key contains <term>` into the URL, which is the same `f` parameter a facet click produces: the chip in the
+toolbar removes it, the back button undoes it, and the link is shareable. `key` rather than `host`, because the
+key is the name as the list shows it, a hostname, a `host:port`, or a URL, and a search on the host would answer
+nothing about a port somebody typed. Typing again replaces the term rather than adding a second one.
+
+A search cannot be a link, since the value is typed rather than chosen, so the box is a **GET form** and the load
+function accepts a `q` parameter it never keeps: it answers with a redirect to the filter that `q` means. The
+list therefore has exactly one representation of its question, and the field still works with no JavaScript.
+Submission rather than search as you type: each term is a query over the inventory, and the answer arrives with
+the facets recomputed beside it.
+
+**"Load more" adds rows, it does not turn a page.** It used to be a plain link to the next cursor, which
+replaced the fifty rows on screen with the next fifty and sent the reader back to the top: a list could be read
+downwards only by never looking back. The button now fetches `/more`, the same query as the page minus the
+facets and the capabilities, and appends what comes back.
+
+The line this splits on is worth keeping: **the filters stay in the URL and only the depth is local.** A shared
+link is the search, not how far somebody had read, and any change of the question drops the appended pages by
+construction. The anchor keeps its `href` to the next page, so the same click with no JavaScript is still the
+next page rather than a dead control. Rows already on screen are dropped from what is appended: the walk is a
+keyset over an inventory that keeps moving, and a repeat would be a duplicate key in a keyed list, which is a
+crash of the page rather than one wrong row.
+
+## 14.5 Art direction
 
 ![The search view: query bar, facet column on the left, dense result list with pivot badges, technologies and a temporal band.](../../../assets/console.jpg)
 
@@ -145,7 +171,7 @@ Shared chip classes live in one layer rather than being reinvented per screen: t
 status code chip keyed on its class, and the clickable pivot chip. The tables share one class, so a screen added
 later inherits the density instead of approximating it.
 
-## 14.5 Copy
+## 14.6 Copy
 
 **The interface is in English**, and that is worth a line precisely because nothing around it gives it away.
 

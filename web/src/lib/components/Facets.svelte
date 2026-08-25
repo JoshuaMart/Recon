@@ -157,9 +157,10 @@
 		color: var(--code-4xx);
 	}
 
+	/* The column, its padding and its border belong to the sidebar this sits in:
+	   the search field above shares them. */
 	.facets {
-		padding: 16px 14px 40px 18px;
-		border-right: 1px solid var(--border);
+		min-width: 0;
 	}
 
 	h2 {

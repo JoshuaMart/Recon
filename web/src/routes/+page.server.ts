@@ -1,6 +1,7 @@
 import { call, fail, get } from '$lib/server/api';
-import { isGrouped, parseFilters, toAST, type Filter } from '$lib/query';
+import { href, isGrouped, parseFilters, toAST, withSearch, type Filter } from '$lib/query';
 import type { Capabilities, Facet, FlatPage, GroupedPage, Program } from '$lib/types';
+import { redirect } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 
 /**
@@ -14,6 +15,21 @@ import type { PageServerLoad } from './$types';
 export const load: PageServerLoad = async ({ locals, url, fetch }) => {
 	const token = locals.token!;
 	const filters = parseFilters(url.searchParams);
+
+	/**
+	 * The search box submits a typed word, and this turns it into the filter it
+	 * means before anything renders.
+	 *
+	 * A redirect rather than a second way of filtering: `q` never survives this
+	 * function, so the list has exactly one representation of its question, the
+	 * chip in the toolbar knows how to remove it, and the URL somebody copies is
+	 * the same one a facet click produces. It is also what makes the box work
+	 * with no JavaScript, where a form submission is all there is.
+	 */
+	if (url.searchParams.has('q')) {
+		redirect(303, href(withSearch(filters, url.searchParams.get('q') ?? ''), isGrouped(url.searchParams)));
+	}
+
 	const filter = toAST(filters);
 	const cursor = url.searchParams.get('cursor') ?? undefined;
 	// Grouped is the list and flat is the exception, so the parameter names the
