@@ -60,13 +60,11 @@
 	<button class="go" type="submit" aria-label="Search"><Icon name="search" /></button>
 </form>
 
-<p class="hint">Matches anywhere in the name: a domain, a host:port, or a URL.</p>
-
 <style>
 	.search {
 		display: flex;
 		gap: 4px;
-		margin-bottom: 6px;
+		margin-bottom: 16px;
 	}
 
 	.field {
@@ -112,13 +110,6 @@
 	.go :global(svg) {
 		width: 14px;
 		height: 14px;
-	}
-
-	.hint {
-		margin: 0 0 16px;
-		font-size: 10.5px;
-		line-height: 1.4;
-		color: var(--ink-3);
 	}
 
 	.sr {
