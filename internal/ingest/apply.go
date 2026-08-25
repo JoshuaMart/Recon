@@ -196,6 +196,12 @@ type observation struct {
 	promote  bool
 	promoted promoted
 
+	// scheme is the one this observation spoke, and it is set by the observer
+	// that completed a request rather than derived from a port. Empty on every
+	// layer that establishes none, which is what keeps a null from erasing a
+	// scheme somebody measured.
+	scheme string
+
 	// usable answers "did my probe get anything out of this?", which is
 	// orthogonal to what the outcome answers about the target. Nil on a layer
 	// that says nothing about an observer's reach.
@@ -303,6 +309,10 @@ func (i *Ingestor) apply(
 	}
 	params.IsCdn = obs.promoted.IsCDN
 	params.CdnProvider = obs.promoted.CDNProvider
+	// Outside the promote flag on purpose: the scheme is kept once established,
+	// so it is offered by whichever layer measured one and never cleared by a
+	// layer that measured none.
+	params.Scheme = text(obs.scheme)
 
 	// The signed counter, and the flag it flips. Three concordant results are
 	// needed in both directions, so a single bad pass never moves the regime.

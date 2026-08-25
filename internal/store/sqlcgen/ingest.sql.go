@@ -1229,31 +1229,37 @@ WITH input AS (
         -- COALESCE would look equivalent and is not: a page that loses its
         -- title would keep the previous one forever.
         $16::boolean          AS promote,
-        $17::int   AS status_code,
-        $18::text    AS final_url,
-        $19::text        AS title,
-        $20::text       AS server,
-        $21::text[] AS technologies,
-        $22::boolean    AS is_cdn,
-        $23::text AS cdn_provider,
-        $24::boolean AS waf_detected,
-        $25::text   AS waf_vendor,
+        -- The scheme a render actually spoke, and only a render sends one. It is
+        -- the address half of the same fact the status code is: an imported
+        -- service carries a port and no scheme, so the console had nothing to
+        -- write but ` + "`" + `host:port` + "`" + ` and no address to open, while a browser had
+        -- already completed a request against it.
+        $17::text       AS scheme,
+        $18::int   AS status_code,
+        $19::text    AS final_url,
+        $20::text        AS title,
+        $21::text       AS server,
+        $22::text[] AS technologies,
+        $23::boolean    AS is_cdn,
+        $24::text AS cdn_provider,
+        $25::boolean AS waf_detected,
+        $26::text   AS waf_vendor,
         -- Signed: consecutive successes above zero, failures below. Null on a
         -- layer that says nothing about an observer's reach.
-        $26::int   AS http_streak,
-        $27::boolean AS http_reachable,
-        $28::int AS fingerprint_streak,
-        $29::boolean AS fingerprint_reachable,
+        $27::int   AS http_streak,
+        $28::boolean AS http_reachable,
+        $29::int AS fingerprint_streak,
+        $30::boolean AS fingerprint_reachable,
         -- Follows the render and never the observation. A failure moving it
         -- would make a list say "rendered five minutes ago, no cookies" about
         -- an asset no browser ever obtained a page from.
-        $30::timestamptz AS last_fingerprint_at,
-        $31::timestamptz AS next_fingerprint_at,
-        $32::smallint   AS fingerprint_priority,
+        $31::timestamptz AS last_fingerprint_at,
+        $32::timestamptz AS next_fingerprint_at,
+        $33::smallint   AS fingerprint_priority,
         -- The finding without its date, so that a pass which re-confirms it
         -- compares equal and keeps the original.
-        $33::jsonb    AS takeover,
-        $34::text          AS takeover_kind,
+        $34::jsonb    AS takeover,
+        $35::text          AS takeover_kind,
         -- The pivots, lifted out of the payload by the caller. A facet
         -- aggregates over what the table holds and a counter maintained on
         -- write cannot be maintained if the write never sees the value, so
@@ -1263,20 +1269,20 @@ WITH input AS (
         -- One producer per value: the render owns the four below and the probe
         -- owns the certificate, and each layer's keys are removed and rewritten
         -- together so that a value a layer stops reporting stops being counted.
-        $35::text     AS favicon_hash,
-        $36::text[]  AS script_hashes,
-        $37::text[]   AS cookie_names,
-        $38::text[] AS external_hosts,
+        $36::text     AS favicon_hash,
+        $37::text[]  AS script_hashes,
+        $38::text[]   AS cookie_names,
+        $39::text[] AS external_hosts,
         -- Objects rather than names, because the render is the only producer
         -- that knows a version. The column keeps the names.
-        $39::jsonb     AS tech_render,
-        $40::text   AS cert_spki_hash,
+        $40::jsonb     AS tech_render,
+        $41::text   AS cert_spki_hash,
         -- One code per hop, and the render's rather than the probe's: the
         -- scanner reports the redirect URLs and the final code, never the code
         -- of each hop, so the probe does not hold what this column is for.
         -- Writing it from the probe would mean inventing the intermediate
         -- codes, which is worse than an empty column.
-        $41::int[]    AS status_chain
+        $42::int[]    AS status_chain
 ),
 head AS (
     SELECT o.id, o.observed_at, o.outcome, o.data, o.last_producer_version
@@ -1443,6 +1449,12 @@ projected AS (
         tcp_state  = CASE WHEN i.layer = 'tcp'  THEN i.layer_state ELSE c.tcp_state  END,
         http_state = CASE WHEN i.layer = 'http' THEN i.layer_state ELSE c.http_state END,
 
+        -- Kept once established, like the ingest path's. A scheme is a property
+        -- of the service rather than of one request, the first observer to
+        -- establish one is right, and a null from any other layer must not
+        -- erase it.
+        scheme       = COALESCE(c.scheme, i.scheme),
+
         status_code  = CASE WHEN i.promote THEN i.status_code  ELSE c.status_code  END,
         final_url    = CASE WHEN i.promote THEN i.final_url    ELSE c.final_url    END,
         -- Written by the render alone, and rewritten whole on every render so
@@ -1559,6 +1571,7 @@ type WriteObservationParams struct {
 	LastOkAt             pgtype.Timestamptz
 	Lifecycle            string
 	Promote              bool
+	Scheme               *string
 	StatusCode           *int32
 	FinalUrl             *string
 	Title                *string
@@ -1632,6 +1645,7 @@ func (q *Queries) WriteObservation(ctx context.Context, arg WriteObservationPara
 		arg.LastOkAt,
 		arg.Lifecycle,
 		arg.Promote,
+		arg.Scheme,
 		arg.StatusCode,
 		arg.FinalUrl,
 		arg.Title,

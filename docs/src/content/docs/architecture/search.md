@@ -127,12 +127,28 @@ the *system* knows: the probe requested a specific URL and got an answer, so the
 only needs keeping. FastRecon reports it, and omits the port from the URL when it is the scheme's default,
 which is what makes an unusual finding stand out instead of drowning in redundant `:443` suffixes.
 
-`scheme` is therefore a promoted column, written by the `http` layer from the URL the probe actually
-requested, the first hop and not the final URL: a redirect to `https` describes where the service sends you,
-not how it is addressed. Filterable and facetable in the same move.
+`scheme` is therefore a promoted column, written from the URL an observer actually requested, the first hop
+and not the final URL: a redirect to `https` describes where the service sends you, not how it is addressed.
+The `http` layer writes it from the probe's URL, and a render writes it too, because a browser that came back
+with a page completed a request against that address and that is the same measurement. It is kept once
+established: a scheme is a property of the service rather than of one request, so a later observation that
+carries none never erases it. Filterable and facetable in the same move.
 
-**A service with no scheme is a service no HTTP probe made answer**, and it keeps its `host:port` form. The
-absence is then exact rather than cautious.
+**A service with no scheme is a service nothing ever made answer**, and it keeps its `host:port` form. The
+absence is then exact rather than cautious. It is the ordinary state of an imported port scan until the first
+render: the file says a port is open and nothing else, and the console says so.
+
+### The promoted response columns belong to whichever observer measured a response
+
+`status_code`, `final_url`, `title` and `server` are the `http` layer's, and they fall to the render for as
+long as that layer has never run. An imported service has no probe behind it: the browser is then the only
+observer that has measured anything, and without this the console read `no answer, the probe obtained
+nothing` beside the 302 a render had brought back an hour earlier, because the chain travels as a pivot and
+the status code did not.
+
+The probe takes the columns back on its first pass, by the same rule and with no special case for having
+been second. The values move together, including on a render that obtained nothing: what a page no longer
+answers is cleared rather than coalesced, exactly like the chain beside it.
 
 Deriving a display category the search cannot express is worse than not having the category: a visible
 distinction that is not queryable is worse than an absent one.

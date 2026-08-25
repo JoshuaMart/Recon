@@ -3,6 +3,7 @@ package ingest
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/google/uuid"
@@ -90,6 +91,49 @@ func (i *Ingestor) Render(
 	}
 	if page {
 		obs.rendered = &at
+
+		// The scheme the browser actually spoke, and it is a measurement rather
+		// than a reading of the port: the request completed, so the service
+		// answers there. It is what an imported service has no other way of
+		// getting. A port scan reports an open port and no scheme, so the
+		// console had nothing to name the asset with but `host:port` and
+		// nothing to open, on assets a browser had already rendered.
+		//
+		// The target's scheme and never the final hop's: a redirect to another
+		// host says what that host speaks, not this one.
+		if parsed, err := url.Parse(asset.URL); err == nil {
+			obs.scheme = parsed.Scheme
+		}
+	}
+
+	// The render owns the response columns while the probe has never spoken.
+	//
+	// One producer per value still holds, and this is which one: the promoted
+	// columns belong to whichever observer has measured a response, and an
+	// asset whose http layer has never run has exactly one. Without it a
+	// console showed `no answer · the probe obtained nothing` beside the 302 a
+	// browser had brought back an hour earlier, because the chain travels as a
+	// pivot and the status code did not. The probe takes the columns back on
+	// its first pass, by the same rule and with no special case.
+	//
+	// Set whether or not a page came back, like the chain beside it: a render
+	// that got nothing clears what a previous render wrote, where a COALESCE
+	// would keep a status code its page no longer answers.
+	if _, probed := st.layers[normalize.LayerHTTP]; !probed {
+		obs.promote = true
+		if page {
+			obs.promoted = promoted{
+				StatusCode: portPtr(final.StatusCode),
+				Title:      text(final.Title),
+				Server:     text(final.Headers["Server"]),
+			}
+			// Where it landed, and only when that is somewhere else. A final
+			// url equal to the target is the ordinary case and repeating it
+			// would make every console read "lands on" its own address.
+			if final.URL != asset.URL {
+				obs.promoted.FinalURL = text(final.URL)
+			}
+		}
 	}
 
 	summary := Summary{Unknown: map[string]int{}, grace: asset.Grace}

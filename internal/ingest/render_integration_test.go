@@ -471,3 +471,67 @@ func TestAChangeOnAPortABrowserRefusesBuysNothing(t *testing.T) {
 		t.Fatalf("a change on a port no browser opens queued a render at %s", due)
 	}
 }
+
+// What a port scan cannot say, and what a browser then says for it.
+//
+// An imported service carries a host and a port and nothing else: the scan
+// reports an open port, so the projection has no scheme and no status code, and
+// the console can name the asset only as `host:port`, offer no address to open
+// and read `no answer` beside it. A render then completes a request against
+// that same asset, which is the measurement both columns were missing, and it
+// wrote neither: the chain travelled as a pivot and the rest was dropped on the
+// floor. The probe takes the promoted columns back on its first pass, by the
+// one-producer rule and with no special case for having been second.
+func TestARenderNamesAServiceAPortScanCouldNot(t *testing.T) {
+	h := newHarness(t)
+	set := h.scope(t, include("acme.test"))
+	c := &clock{now: time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)}
+	ing := h.dated(c)
+
+	// A port and no HTTP, which is what an import of a port scan produces.
+	h.walk(t, c, ing, set, time.Hour, liveHost("app.acme.test",
+		ingest.Port{Port: 443, Protocol: "tcp", State: "open"}))
+
+	scheme, status, title, server := h.response(t, service)
+	if scheme != nil || status != nil {
+		t.Fatalf("a port scan established scheme %v and status %v", scheme, status)
+	}
+
+	if _, err := ing.Render(context.Background(), h.queries, h.target(t), page(302, "Sign in", "AkamaiGHost")); err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	scheme, status, title, server = h.response(t, service)
+	if scheme == nil || *scheme != "https" {
+		t.Fatalf("the browser spoke https and the projection says %v, so the console has no address to open", scheme)
+	}
+	if status == nil || *status != 302 {
+		t.Fatalf("the render brought back a 302 and the projection says %v", status)
+	}
+	if title == nil || *title != "Sign in" || server == nil || *server != "AkamaiGHost" {
+		t.Fatalf("the page read %v from %v", title, server)
+	}
+
+	// The probe speaks, and it owns them from here.
+	h.answering(t, c, ing, set, 200, "App", "nginx")
+	scheme, status, title, _ = h.response(t, service)
+	if status == nil || *status != 200 || title == nil || *title != "App" {
+		t.Fatalf("the probe answered 200 and the projection kept %v %v", status, title)
+	}
+	if scheme == nil || *scheme != "https" {
+		t.Fatalf("the scheme is %v after a probe that reported the same one", scheme)
+	}
+}
+
+// response reads the four columns the console names an asset and its answer with.
+func (h *harness) response(t *testing.T, key string) (scheme *string, status *int32, title, server *string) {
+	t.Helper()
+
+	if err := h.pool.QueryRow(context.Background(),
+		`SELECT scheme, status_code, title, server FROM asset_current
+		  WHERE program_id = $1 AND key = $2`,
+		h.program, key).Scan(&scheme, &status, &title, &server); err != nil {
+		t.Fatalf("read the response of %s: %v", key, err)
+	}
+	return scheme, status, title, server
+}

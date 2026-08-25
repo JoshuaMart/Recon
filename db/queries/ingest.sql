@@ -222,6 +222,12 @@ WITH input AS (
         -- COALESCE would look equivalent and is not: a page that loses its
         -- title would keep the previous one forever.
         @promote::boolean          AS promote,
+        -- The scheme a render actually spoke, and only a render sends one. It is
+        -- the address half of the same fact the status code is: an imported
+        -- service carries a port and no scheme, so the console had nothing to
+        -- write but `host:port` and no address to open, while a browser had
+        -- already completed a request against it.
+        sqlc.narg(scheme)::text       AS scheme,
         sqlc.narg(status_code)::int   AS status_code,
         sqlc.narg(final_url)::text    AS final_url,
         sqlc.narg(title)::text        AS title,
@@ -435,6 +441,12 @@ projected AS (
         dns_state  = CASE WHEN i.layer = 'dns'  THEN i.layer_state ELSE c.dns_state  END,
         tcp_state  = CASE WHEN i.layer = 'tcp'  THEN i.layer_state ELSE c.tcp_state  END,
         http_state = CASE WHEN i.layer = 'http' THEN i.layer_state ELSE c.http_state END,
+
+        -- Kept once established, like the ingest path's. A scheme is a property
+        -- of the service rather than of one request, the first observer to
+        -- establish one is right, and a null from any other layer must not
+        -- erase it.
+        scheme       = COALESCE(c.scheme, i.scheme),
 
         status_code  = CASE WHEN i.promote THEN i.status_code  ELSE c.status_code  END,
         final_url    = CASE WHEN i.promote THEN i.final_url    ELSE c.final_url    END,

@@ -95,7 +95,16 @@
 				value: String(asset.status_code),
 				family: codeFamily(asset.status_code),
 				unit: chain.length > 1 ? `after ${chain.length - 1} ${chain.length === 2 ? 'hop' : 'hops'}` : undefined,
-				sub: asset.final_url ? `${hops}lands on ${asset.final_url}` : hops ? hops.slice(0, -3) : 'no redirect'
+				// A 3xx with nowhere to land is not "no redirect": the code says the
+				// service redirects and the observer did not follow it, which is
+				// what a browser reports when the hop it stopped on is the last.
+				sub: asset.final_url
+					? `${hops}lands on ${asset.final_url}`
+					: hops
+						? hops.slice(0, -3)
+						: codeFamily(asset.status_code) === '3xx'
+							? 'nothing followed it, so no landing was recorded'
+							: 'no redirect'
 			};
 		}
 		if (!asset.last_checked_at) {
