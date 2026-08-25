@@ -183,7 +183,7 @@ func (h *Assets) Facets(w http.ResponseWriter, r *http.Request, principal auth.P
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	page := search.FacetPage{}
+	var page search.FacetPage
 	if body.Field == "" {
 		page, err = search.Facets(ctx, tx, principal.OrgID, filter)
 	} else {
