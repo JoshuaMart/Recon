@@ -80,6 +80,7 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("pool: %v", err)
 	}
 	t.Cleanup(pool.Close)
+	fixturePartitions(t, pool)
 
 	h := &harness{
 		pool:    pool,
@@ -94,6 +95,36 @@ func newHarness(t *testing.T) *harness {
 	exec(t, pool, `INSERT INTO program (id, org_id, name, authorized_from) VALUES ($1, $2, 'p', now())`,
 		h.program, h.org)
 	return h
+}
+
+// fixturePartitions keeps the database clock from deciding whether the fixed
+// test clock can write. The production migration creates the current and future
+// months; these tests deliberately start in August 2026 and can advance into
+// September. Both partitioned tables receive the same RLS policy as a partition
+// created by the maintenance function.
+func fixturePartitions(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+
+	exec(t, pool, `
+		CREATE TABLE IF NOT EXISTS observation_2026_08
+		PARTITION OF observation
+		FOR VALUES FROM ('2026-08-01') TO ('2026-09-01')`)
+	exec(t, pool, `SELECT apply_tenant_policy('observation_2026_08')`)
+	exec(t, pool, `
+		CREATE TABLE IF NOT EXISTS observation_2026_09
+		PARTITION OF observation
+		FOR VALUES FROM ('2026-09-01') TO ('2026-10-01')`)
+	exec(t, pool, `SELECT apply_tenant_policy('observation_2026_09')`)
+	exec(t, pool, `
+		CREATE TABLE IF NOT EXISTS notification_event_2026_08
+		PARTITION OF notification_event
+		FOR VALUES FROM ('2026-08-01') TO ('2026-09-01')`)
+	exec(t, pool, `SELECT apply_tenant_policy('notification_event_2026_08')`)
+	exec(t, pool, `
+		CREATE TABLE IF NOT EXISTS notification_event_2026_09
+		PARTITION OF notification_event
+		FOR VALUES FROM ('2026-09-01') TO ('2026-10-01')`)
+	exec(t, pool, `SELECT apply_tenant_policy('notification_event_2026_09')`)
 }
 
 func exec(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {

@@ -169,7 +169,7 @@ func exportURL(row Row) string {
 		host = "[" + host + "]"
 	}
 	port := *row.Port
-	if !(*row.Scheme == "http" && port == 80 || *row.Scheme == "https" && port == 443) {
+	if (*row.Scheme != "http" || port != 80) && (*row.Scheme != "https" || port != 443) {
 		host += ":" + strconv.Itoa(int(port))
 	}
 	return *row.Scheme + "://" + host
