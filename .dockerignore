@@ -1,0 +1,20 @@
+# Repository metadata and local configuration never belong in an image layer.
+.git
+.env
+
+# Runtime data can be much larger than the source tree. In production this
+# includes PostgreSQL base backups and archived WAL segments.
+var/
+bin/
+
+# Generated frontend and documentation trees are rebuilt inside their images.
+web/node_modules/
+web/.svelte-kit/
+web/build/
+docs/node_modules/
+docs/.astro/
+docs/dist/
+
+# Local editor and operating-system files.
+.DS_Store
+**/.DS_Store
