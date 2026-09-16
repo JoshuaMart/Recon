@@ -231,10 +231,17 @@ func (h *Assets) Export(w http.ResponseWriter, r *http.Request, principal auth.P
 	begin := func() io.Writer {
 		started = true
 		contentType := "application/x-ndjson"
-		if format == search.FormatCSV {
+		filename := "recon-assets.jsonl"
+		switch format {
+		case search.FormatCSV:
 			contentType = "text/csv; charset=utf-8"
+			filename = "recon-assets.csv"
+		case search.FormatURLs:
+			contentType = "text/plain; charset=utf-8"
+			filename = "recon-urls.txt"
 		}
 		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusOK)
 		return w

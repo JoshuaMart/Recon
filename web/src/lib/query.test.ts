@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	badgeFilter,
+	exportHref,
 	facetFilter,
 	groupHref,
 	href,
@@ -30,6 +31,15 @@ describe('parseFilters', () => {
 	it('drops what it cannot read rather than guessing', () => {
 		const filters = parseFilters(new URLSearchParams('f=nonsense&f=:eq:x&f=port:eq:&f=port:eq:443'));
 		expect(filters).toEqual([{ field: 'port', op: 'eq', value: '443' }]);
+	});
+});
+
+describe('exportHref', () => {
+	it('keeps the current filters in every export format', () => {
+		const filters: Filter[] = [{ field: 'kind', op: 'eq', value: 'service' }];
+		expect(exportHref(filters)).toBe('/export?f=kind%3Aeq%3Aservice&format=jsonl');
+		expect(exportHref(filters, 'csv')).toContain('format=csv');
+		expect(exportHref(filters, 'urls')).toBe('/export?f=kind%3Aeq%3Aservice&format=urls');
 	});
 });
 

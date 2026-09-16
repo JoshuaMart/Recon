@@ -722,11 +722,12 @@ with the first.
 `OFFSET` on a million rows costs a scan of everything before it on every page, and materializing the result before
 sending it holds the whole inventory in memory for a file nobody reads until it is finished.
 
-**Two formats, and what each gives up.** JSONL is the lossless one, one line per asset, `attributes` and lineage
+**Three formats, and what each gives up.** JSONL is the lossless one, one line per asset, `attributes` and lineage
 included: that is the one for feeding another system. CSV is the one that opens in a spreadsheet, and it flattens.
 Promoted columns, joined technologies, volatility; no `attributes`, no lineage, because a nested object in a cell is
 neither readable nor usable. The loss is named here rather than discovered by someone looking for a favicon in a
-spreadsheet.
+spreadsheet. URLs is the narrow projection for feeding web tools: one declared URL or measured service address per
+line. A service whose scheme has not been observed is omitted rather than guessed from its port.
 
 **The export does not know the denylist.** The list removes a badge, never data, and an export applying a display
 filter would do exactly what that rule forbids while making it invisible, since a file does not say what it does not

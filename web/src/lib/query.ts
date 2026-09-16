@@ -185,7 +185,9 @@ export function facetHref(filters: Filter[], field: string): string {
 }
 
 /** exportHref is the same query as the list, by construction. */
-export function exportHref(filters: Filter[], format: 'jsonl' | 'csv' = 'jsonl'): string {
+export type ExportFormat = 'jsonl' | 'csv' | 'urls';
+
+export function exportHref(filters: Filter[], format: ExportFormat = 'jsonl'): string {
 	const search = params(filters);
 	search.set('format', format);
 	return '/export?' + search.toString();

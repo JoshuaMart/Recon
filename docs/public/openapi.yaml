@@ -202,6 +202,9 @@ paths:
         reported in the status.
 
         `jsonl` is lossless. `csv` flattens, and opens in a spreadsheet.
+        `urls` writes only openable web addresses, one per line. A service is
+        included only when its scheme has been measured; the port is never used
+        to guess one.
 
         `limit` here is a total rather than a page, and it is honoured exactly.
         Requires `read_assets`.
@@ -217,11 +220,11 @@ paths:
               properties:
                 format:
                   type: string
-                  enum: [jsonl, csv]
+                  enum: [jsonl, csv, urls]
                   default: jsonl
       responses:
         '200':
-          description: The walk, one asset per line.
+          description: The streamed walk in the requested representation.
           content:
             application/x-ndjson:
               schema:
@@ -230,6 +233,10 @@ paths:
             text/csv:
               schema:
                 type: string
+            text/plain:
+              schema:
+                type: string
+                description: One measured service or declared asset URL per line.
         '400':
           $ref: '#/components/responses/BadFilter'
         '401':
@@ -1403,7 +1410,7 @@ components:
             silently restarting or skipping the walk.
         format:
           type: string
-          enum: [jsonl, csv]
+          enum: [jsonl, csv, urls]
           description: Export only.
         field:
           type: string

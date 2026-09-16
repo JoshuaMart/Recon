@@ -26,7 +26,26 @@
 	 * by construction rather than by discipline: there is no "export
 	 * query", so the link comes from the same array the cards were rendered from.
 	 */
-	const download = $derived(exportHref(filters));
+	const exports = [
+		{
+			format: 'jsonl' as const,
+			label: 'Full data',
+			meta: 'JSONL',
+			description: 'Every field, one asset per line'
+		},
+		{
+			format: 'csv' as const,
+			label: 'Spreadsheet',
+			meta: 'CSV',
+			description: 'Flattened columns'
+		},
+		{
+			format: 'urls' as const,
+			label: 'URLs only',
+			meta: 'TXT',
+			description: 'Openable web addresses, one per line'
+		}
+	];
 </script>
 
 <div class="toolbar">
@@ -45,10 +64,26 @@
 
 	<span class="spacer"></span>
 
-	<a class="btn" href={download} data-sveltekit-reload>
-		<Icon name="download" />
-		Export
-	</a>
+	<details class="export-menu">
+		<summary class="btn" aria-label="Choose an export format">
+			<Icon name="download" />
+			Export
+			<span class="chevron" aria-hidden="true">⌄</span>
+		</summary>
+		<ul class="export-options" aria-label="Export formats">
+			{#each exports as option (option.format)}
+				<li>
+					<a href={exportHref(filters, option.format)} data-sveltekit-reload>
+						<span class="option-line">
+							<strong>{option.label}</strong>
+							<code>{option.meta}</code>
+						</span>
+						<small>{option.description}</small>
+					</a>
+				</li>
+			{/each}
+		</ul>
+	</details>
 </div>
 
 <style>
@@ -88,6 +123,91 @@
 
 	.chip .x:hover {
 		color: var(--code-5xx);
+	}
+
+	.export-menu {
+		position: relative;
+	}
+
+	.export-menu summary {
+		list-style: none;
+	}
+
+	.export-menu summary::-webkit-details-marker {
+		display: none;
+	}
+
+	.export-menu[open] summary {
+		border-color: var(--ink-3);
+	}
+
+	.export-menu summary:focus-visible {
+		outline: 2px solid var(--signal);
+		outline-offset: 2px;
+	}
+
+	.chevron {
+		color: var(--ink-3);
+		font-size: 13px;
+		line-height: 1;
+		margin-left: 2px;
+	}
+
+	.export-menu[open] .chevron {
+		transform: rotate(180deg);
+	}
+
+	.export-options {
+		position: absolute;
+		top: calc(100% + 5px);
+		right: 0;
+		z-index: 10;
+		width: min(238px, calc(100vw - 36px));
+		margin: 0;
+		padding: 4px;
+		list-style: none;
+		background: var(--card);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-control);
+		box-shadow: var(--card-shadow);
+	}
+
+	.export-options a {
+		display: block;
+		padding: 7px 8px;
+		border-radius: var(--radius-control);
+		text-decoration: none;
+	}
+
+	.export-options a:hover,
+	.export-options a:focus-visible {
+		background: var(--signal-bg);
+		outline: none;
+	}
+
+	.option-line {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 12px;
+	}
+
+	.option-line strong {
+		font-size: 12px;
+		font-weight: 500;
+	}
+
+	.option-line code {
+		font-family: var(--font-mono);
+		font-size: 10px;
+		color: var(--ink-3);
+	}
+
+	.export-options small {
+		display: block;
+		margin-top: 1px;
+		font-size: 10.5px;
+		color: var(--ink-3);
 	}
 
 	.hint {

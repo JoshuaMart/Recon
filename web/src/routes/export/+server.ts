@@ -16,7 +16,8 @@ import type { RequestHandler } from '@sveltejs/kit';
 export const GET: RequestHandler = async ({ locals, url, fetch }) => {
 	const token = locals.token!;
 	const filters = parseFilters(url.searchParams);
-	const format = url.searchParams.get('format') === 'csv' ? 'csv' : 'jsonl';
+	const asked = url.searchParams.get('format');
+	const format = asked === 'csv' || asked === 'urls' ? asked : 'jsonl';
 
 	try {
 		return await stream(token, '/assets/export', { filter: toAST(filters), format }, fetch);

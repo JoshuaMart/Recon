@@ -562,6 +562,37 @@ func TestTheExportAppliesNoDisplayFilterAndImposesNoCap(t *testing.T) {
 		if !strings.Contains(header, "volatility") || !strings.Contains(header, "technologies") {
 			t.Errorf("the CSV header is missing what it is supposed to flatten: %s", header)
 		}
+
+		// The URL projection carries only addresses that can actually be opened. A
+		// service has one only after a probe measured its scheme; a name does not.
+		out.Reset()
+		written, err = search.Export(ctx, tx, h.org, filter(t, `{"op":"and"}`),
+			search.FormatURLs, 0, into(&out))
+		if err != nil {
+			t.Fatalf("URL export: %v", err)
+		}
+		urls := strings.Split(strings.TrimSpace(out.String()), "\n")
+		if written != 4 || len(urls) != 4 {
+			t.Fatalf("URL export wrote %d lines, want the 4 measured services: %q", written, out.String())
+		}
+		for _, url := range urls {
+			if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
+				t.Errorf("URL export mixed a non-URL into the measured addresses: %q", url)
+			}
+		}
+		if !strings.Contains(out.String(), "https://app.target.test") {
+			t.Errorf("URL export omitted a measured service: %q", out.String())
+		}
+
+		out.Reset()
+		written, err = search.Export(ctx, tx, h.org, filter(t, `{"op":"and"}`),
+			search.FormatURLs, 2, into(&out))
+		if err != nil {
+			t.Fatalf("bounded URL export: %v", err)
+		}
+		if lines := strings.Split(strings.TrimSpace(out.String()), "\n"); written != 2 || len(lines) != 2 {
+			t.Errorf("bounded URL export wrote %d lines, want 2: %q", written, out.String())
+		}
 	})
 }
 

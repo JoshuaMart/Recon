@@ -22,6 +22,10 @@ const (
 	// loss is named here rather than discovered by somebody looking for a
 	// favicon in a column.
 	FormatCSV = "csv"
+	// FormatURLs is the one for feeding web tools: one measured, openable URL
+	// per line. Services whose scheme has not been observed are omitted rather
+	// than guessed from their port.
+	FormatURLs = "urls"
 )
 
 // exportPage is how many rows one round trip carries.
@@ -49,7 +53,7 @@ func Export(
 	begin func() io.Writer,
 ) (int, error) {
 	switch format {
-	case FormatJSONL, FormatCSV:
+	case FormatJSONL, FormatCSV, FormatURLs:
 	default:
 		return 0, refuse("no export format named %q", format)
 	}
@@ -65,7 +69,7 @@ func Export(
 		// A limit can be asked for; it is never imposed. A truncated export
 		// that says nothing is the worst of the three possible behaviours,
 		// ahead of the slow export and ahead of the refusal.
-		if limit > 0 && limit-written < page {
+		if format != FormatURLs && limit > 0 && limit-written < page {
 			page = limit - written
 		}
 		if page <= 0 {
@@ -86,12 +90,13 @@ func Export(
 		// still a status the caller can answer with.
 		if out == nil {
 			out = begin()
-			if format == FormatCSV {
+			switch format {
+			case FormatCSV:
 				sheet = csv.NewWriter(out)
 				if err := sheet.Write(csvHeader); err != nil {
 					return written, fmt.Errorf("write the header: %w", err)
 				}
-			} else {
+			case FormatJSONL:
 				encoder = json.NewEncoder(out)
 			}
 		}
@@ -101,10 +106,25 @@ func Export(
 				if err := sheet.Write(csvRow(row)); err != nil {
 					return written, fmt.Errorf("write a row: %w", err)
 				}
-			} else if err := encoder.Encode(row); err != nil {
-				return written, fmt.Errorf("write a row: %w", err)
+			} else if encoder != nil {
+				if err := encoder.Encode(row); err != nil {
+					return written, fmt.Errorf("write a row: %w", err)
+				}
+			} else {
+				url := exportURL(row)
+				if url == "" {
+					continue
+				}
+				if _, err := fmt.Fprintln(out, url); err != nil {
+					return written, fmt.Errorf("write a URL: %w", err)
+				}
 			}
 			written++
+			// URL exports can skip many rows. Keep their database pages large, but
+			// stop as soon as the requested number of emitted lines is reached.
+			if format == FormatURLs && limit > 0 && written == limit {
+				return written, nil
+			}
 		}
 		if answer.Next == "" {
 			break
@@ -121,6 +141,38 @@ func Export(
 		}
 	}
 	return written, nil
+}
+
+// exportURL projects a web asset onto the address somebody can open.
+//
+// It deliberately follows the same identity rule as the console: a declared URL
+// keeps its path, while a service is its measured scheme plus its host and port.
+// A port never implies a scheme. IPv6 literals need brackets in an authority.
+func exportURL(row Row) string {
+	switch row.Kind {
+	case "url":
+		return row.Key
+	case "service":
+		if row.Scheme == nil || row.Host == nil || row.Port == nil {
+			return ""
+		}
+	default:
+		return ""
+	}
+
+	if *row.Scheme != "http" && *row.Scheme != "https" {
+		return ""
+	}
+
+	host := *row.Host
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+		host = "[" + host + "]"
+	}
+	port := *row.Port
+	if !(*row.Scheme == "http" && port == 80 || *row.Scheme == "https" && port == 443) {
+		host += ":" + strconv.Itoa(int(port))
+	}
+	return *row.Scheme + "://" + host
 }
 
 // csvHeader is what flattens.
