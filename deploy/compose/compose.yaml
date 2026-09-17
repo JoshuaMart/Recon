@@ -65,7 +65,7 @@ services:
       # that gets postponed until the day it is needed.
       - postgres
       - -c
-      - archive_mode=on
+      - archive_mode=off
       - -c
       - archive_command=test ! -f /archive/wal/%f && cp %p /archive/wal/%f
       - -c
