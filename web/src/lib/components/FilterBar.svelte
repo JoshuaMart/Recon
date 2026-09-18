@@ -1,6 +1,6 @@
 <script lang="ts">
 	import Icon from './Icon.svelte';
-	import { encodeFilter, exportHref, href, label, withoutFilter, type Filter } from '$lib/query';
+	import { encodeFilter, exportHref, filterGroups, href, label, withoutFilter, type Filter } from '$lib/query';
 
 	interface Props {
 		filters: Filter[];
@@ -49,11 +49,14 @@
 </script>
 
 <div class="toolbar">
-	{#each filters as filter (encodeFilter(filter))}
-		<span class="chip">
-			<code>{label(filter, programNames)}</code>
-			<a class="x" href={href(withoutFilter(filters, filter), grouped)} aria-label="Remove this filter">×</a>
-		</span>
+	{#each filterGroups(filters) as group (group.map(encodeFilter).join('|'))}
+		{#each group as filter, index (encodeFilter(filter))}
+			{#if index > 0}<span class="or">or</span>{/if}
+			<span class="chip">
+				<code>{label(filter, programNames)}</code>
+				<a class="x" href={href(withoutFilter(filters, filter), grouped)} aria-label="Remove this filter">×</a>
+			</span>
+		{/each}
 	{/each}
 
 	{#if filters.length}
@@ -123,6 +126,14 @@
 
 	.chip .x:hover {
 		color: var(--code-5xx);
+	}
+
+	.or {
+		font-family: var(--font-mono);
+		font-size: 10px;
+		font-weight: 600;
+		text-transform: uppercase;
+		color: var(--ink-3);
 	}
 
 	.export-menu {

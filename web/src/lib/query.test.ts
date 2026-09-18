@@ -3,6 +3,8 @@ import {
 	badgeFilter,
 	exportHref,
 	facetFilter,
+	facetHref,
+	filterGroups,
 	groupHref,
 	href,
 	isGrouped,
@@ -31,6 +33,13 @@ describe('parseFilters', () => {
 	it('drops what it cannot read rather than guessing', () => {
 		const filters = parseFilters(new URLSearchParams('f=nonsense&f=:eq:x&f=port:eq:&f=port:eq:443'));
 		expect(filters).toEqual([{ field: 'port', op: 'eq', value: '443' }]);
+	});
+
+	it('keeps repeated values from the same facet', () => {
+		expect(parseFilters(new URLSearchParams('f=status_code:eq:200&f=status_code:eq:302'))).toEqual([
+			{ field: 'status_code', op: 'eq', value: '200' },
+			{ field: 'status_code', op: 'eq', value: '302' }
+		]);
 	});
 });
 
@@ -95,6 +104,43 @@ describe('toAST', () => {
 		// The control plane emits it outside the tree on every compilation.
 		expect(JSON.stringify(tree)).not.toContain('org');
 	});
+
+	it('ors values in one facet and ands that group with other facets', () => {
+		expect(
+			toAST([
+				{ field: 'status_code', op: 'eq', value: '200' },
+				{ field: 'kind', op: 'eq', value: 'service' },
+				{ field: 'status_code', op: 'eq', value: '302' }
+			])
+		).toEqual({
+			op: 'and',
+			clauses: [
+				{
+					op: 'or',
+					clauses: [
+						{ field: 'status_code', op: 'eq', value: 200 },
+						{ field: 'status_code', op: 'eq', value: 302 }
+					]
+				},
+				{ field: 'kind', op: 'eq', value: 'service' }
+			]
+		});
+	});
+
+	it('keeps different operators on one field as separate constraints', () => {
+		expect(
+			toAST([
+				{ field: 'port', op: 'gte', value: '80' },
+				{ field: 'port', op: 'lte', value: '443' }
+			])
+		).toEqual({
+			op: 'and',
+			clauses: [
+				{ field: 'port', op: 'gte', value: 80 },
+				{ field: 'port', op: 'lte', value: 443 }
+			]
+		});
+	});
 });
 
 describe('withFilter', () => {
@@ -145,6 +191,30 @@ describe('href and label', () => {
 		expect(label({ field: 'key', op: 'suffix', value: '.jomar.ovh' })).toBe('name ends with .jomar.ovh');
 		expect(label({ field: 'technologies', op: 'contains', value: 'nginx' })).toBe('technologies includes nginx');
 		expect(label({ field: 'is_cdn', op: 'eq', value: 'true' })).toBe('fronted is true');
+	});
+});
+
+describe('facetHref', () => {
+	it('keeps other facets but removes this facet so its alternatives stay visible', () => {
+		const filters: Filter[] = [
+			{ field: 'kind', op: 'eq', value: 'service' },
+			{ field: 'status_code', op: 'eq', value: '200' },
+			{ field: 'status_code', op: 'eq', value: '302' }
+		];
+		expect(facetHref(filters, 'status_code')).toBe('/facet?f=kind%3Aeq%3Aservice&field=status_code');
+	});
+});
+
+describe('filterGroups', () => {
+	it('groups only same-field equality or containment alternatives', () => {
+		const filters: Filter[] = [
+			{ field: 'status_code', op: 'eq', value: '200' },
+			{ field: 'kind', op: 'eq', value: 'service' },
+			{ field: 'status_code', op: 'eq', value: '302' },
+			{ field: 'port', op: 'gte', value: '80' },
+			{ field: 'port', op: 'lte', value: '443' }
+		];
+		expect(filterGroups(filters)).toEqual([[filters[0], filters[2]], [filters[1]], [filters[3]], [filters[4]]]);
 	});
 });
 

@@ -1,5 +1,5 @@
 import { call, fail } from '$lib/server/api';
-import { parseFilters, toAST } from '$lib/query';
+import { parseFilters, toAST, withoutField } from '$lib/query';
 import type { Facet } from '$lib/types';
 import { json, type RequestHandler } from '@sveltejs/kit';
 
@@ -11,9 +11,9 @@ import { json, type RequestHandler } from '@sveltejs/kit';
  * filterable, and there is nothing to click. This asks for the same aggregation
  * over the same filtered set, bounded higher, for the one field somebody opened.
  *
- * The filters travel, because a facet counts the filtered result and not the
- * inventory: opened without them the counts would disagree with the list beside
- * them.
+ * Filters from the other fields travel. This route also removes the chosen
+ * field defensively, so opening status after choosing 200 still returns 302 and
+ * its count under every other condition.
  */
 export const GET: RequestHandler = async ({ locals, url, fetch }) => {
 	const token = locals.token!;
@@ -24,7 +24,7 @@ export const GET: RequestHandler = async ({ locals, url, fetch }) => {
 		const page = await call<{ facets: Facet[]; favicons?: Record<string, string> }>(
 			token,
 			'/assets/facets',
-			{ filter: toAST(filters), field },
+			{ filter: toAST(withoutField(filters, field)), field },
 			fetch
 		);
 		return json(page);

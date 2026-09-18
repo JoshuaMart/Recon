@@ -3,9 +3,9 @@
  *
  * The structured representation comes first and the query language later, so
  * there is no text bar here and nothing parses a DSL. What the interface can
- * build is a flat conjunction of predicates, which is exactly what a facet click
- * and a badge click produce, and it travels in the URL as repeated `f` params so
- * that a filtered list is a shareable link and renders on the server.
+ * build is a conjunction of facets whose selected values are alternatives, and
+ * it travels in the URL as repeated `f` params so that a filtered list is a
+ * shareable link and renders on the server.
  *
  * The day the language arrives it produces this same tree. It does not replace
  * this module, it adds a second way to fill it.
@@ -175,11 +175,15 @@ export function searchHref(filters: Filter[], term: string, grouped = true): str
 	return href(withSearch(filters, term), grouped);
 }
 
-/** facetHref opens one facet on every value it has, as JSON. The filters travel
- *  because a facet counts the filtered result: opened without them, the counts
- *  beside the values would disagree with the list. */
+/** facetHref opens one facet on every value it has, as JSON.
+ *
+ * Filters from the other fields travel, but filters from this field do not. A
+ * selected status must not hide the other statuses: its facet answers the
+ * choices that remain under the rest of the question. This is the usual
+ * disjunctive-facet shape, `(status = 200 OR status = 302) AND kind = service`.
+ */
 export function facetHref(filters: Filter[], field: string): string {
-	const search = params(filters);
+	const search = params(withoutField(filters, field));
 	search.set('field', field);
 	return '/facet?' + search.toString();
 }
@@ -211,28 +215,57 @@ export function withoutFilter(filters: Filter[], filter: Filter): Filter[] {
 	return filters.filter((existing) => encodeFilter(existing) !== key);
 }
 
+/** Remove every selection made in one field while preserving the other facets. */
+export function withoutField(filters: Filter[], field: string): Filter[] {
+	return filters.filter((filter) => filter.field !== field);
+}
+
 /**
- * toAST compiles the filters into the tree the API expects.
+ * The groups the facet UI presents.
  *
- * No organization clause, and there could not be one: `org_id` is not a field of
- * the server's registry, so the tree cannot express it in either direction. The
- * control plane emits it on every compilation, outside the tree.
+ * Repeated equality and containment selections in one field are alternatives.
+ * Range and text-shape operators remain separate constraints: turning
+ * `port >= 80` and `port <= 443` into an OR would silently widen the query.
+ */
+export function filterGroups(filters: Filter[]): Filter[][] {
+	const groups: Filter[][] = [];
+	const alternatives = new Map<string, number>();
+
+	for (const filter of filters) {
+		if (filter.op === 'eq' || filter.op === 'contains') {
+			const key = `${filter.field}:${filter.op}`;
+			const index = alternatives.get(key);
+			if (index !== undefined) {
+				groups[index].push(filter);
+				continue;
+			}
+			alternatives.set(key, groups.length);
+		}
+		groups.push([filter]);
+	}
+	return groups;
+}
+
+/**
+ * toAST compiles facet selections into the tree the API expects.
+ *
+ * Values selected in the same facet are ORed. Different facets and every other
+ * constraint are ANDed. No organization clause can appear here: `org_id` is not
+ * a field of the server's registry, so the control plane always emits it outside
+ * the tree.
  */
 export function toAST(filters: Filter[]): Node | undefined {
 	if (filters.length === 0) return undefined;
 
-	// Each op goes through as itself, and there is deliberately no "is not". A
-	// negated equality drops the rows where the column is NULL, so
-	// "cdn_provider is not cloudflare" would exclude every asset that has no CDN
-	// at all, which is rarely what somebody means. The interface offers
-	// `is_cdn = false` instead, which the facet already carries, and the day a
-	// real "or is absent" is needed it is a group with `exists` rather than a
-	// clever rewrite here.
-	const clauses: Node[] = filters.map((filter) => ({
+	const leaf = (filter: Filter): Node => ({
 		field: filter.field,
 		op: filter.op,
 		value: typed(filter.field, filter.value)
-	}));
+	});
+	const clauses: Node[] = filterGroups(filters).map((group) => {
+		const alternatives = group.map(leaf);
+		return alternatives.length === 1 ? alternatives[0] : { op: 'or', clauses: alternatives };
+	});
 
 	if (clauses.length === 1) return clauses[0];
 	return { op: 'and', clauses };

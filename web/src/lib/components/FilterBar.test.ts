@@ -19,3 +19,23 @@ describe('FilterBar export menu', () => {
 		expect(html.match(/f=kind%3Aeq%3Aservice/g)).toHaveLength(3);
 	});
 });
+
+describe('FilterBar alternatives', () => {
+	it('shows same-facet values as OR and keeps each value removable', () => {
+		const html = render(FilterBar, {
+			props: {
+				filters: [
+					{ field: 'status_code', op: 'eq' as const, value: '200' },
+					{ field: 'kind', op: 'eq' as const, value: 'service' },
+					{ field: 'status_code', op: 'eq' as const, value: '302' }
+				]
+			}
+		}).body;
+
+		expect(html).toContain('status is 200');
+		expect(html).toContain('status is 302');
+		expect(html).toMatch(/class="or [^"]+">or<\/span>/);
+		expect(html).toContain('f=kind%3Aeq%3Aservice&amp;f=status_code%3Aeq%3A302');
+		expect(html).toContain('f=status_code%3Aeq%3A200&amp;f=kind%3Aeq%3Aservice');
+	});
+});

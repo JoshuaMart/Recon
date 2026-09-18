@@ -1,5 +1,5 @@
 import { call, fail, get } from '$lib/server/api';
-import { href, isGrouped, parseFilters, toAST, withSearch, type Filter } from '$lib/query';
+import { href, isGrouped, parseFilters, toAST, withSearch, withoutField, type Filter } from '$lib/query';
 import type { Capabilities, Facet, FlatPage, GroupedPage, Program } from '$lib/types';
 import { redirect } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
@@ -7,10 +7,9 @@ import type { PageServerLoad } from './$types';
 /**
  * The search view.
  *
- * Three calls, in parallel, because none needs another's answer: the facets are an
- * aggregation over the same filtered set as the list, and the capabilities depend
- * on neither. In sequence this would pay the filter twice in wall clock for no
- * reason.
+ * The list, sidebar and capabilities start in parallel. When a facet is selected,
+ * its own values are then refreshed without that field's filter. This keeps the
+ * other choices visible and gives the sidebar disjunctive-facet semantics.
  */
 export const load: PageServerLoad = async ({ locals, url, fetch }) => {
 	const token = locals.token!;
@@ -42,16 +41,18 @@ export const load: PageServerLoad = async ({ locals, url, fetch }) => {
 	const route = grouped ? '/assets/hosts' : '/assets/search';
 
 	try {
-		const [page, facets, capabilities] = await Promise.all([
+		const [page, sidebar, capabilities, names] = await Promise.all([
 			call<GroupedPage & FlatPage>(token, route, { filter, cursor, limit: 50 }, fetch),
-			call<{ facets: Facet[]; favicons?: Record<string, string> }>(token, '/assets/facets', { filter }, fetch),
+			call<FacetAnswer>(token, '/assets/facets', { filter }, fetch),
 			// Whether this deployment enriches at all. Asked of the server because
 			// the console cannot see the difference between "no MaxMind database"
 			// and "no match": both give zero ASN, and an empty infrastructure
 			// family reads as a broken interface rather than as a normal
 			// deployment.
-			get<Capabilities>(token, '/assets/fields', fetch)
+			get<Capabilities>(token, '/assets/fields', fetch),
+			programNames(token, filters, fetch)
 		]);
+		const facets = await disjunctiveFacets(token, filters, sidebar, fetch);
 
 		return {
 			filters,
@@ -71,14 +72,51 @@ export const load: PageServerLoad = async ({ locals, url, fetch }) => {
 			// server's to say. Guessed here, an array field comes back as a 400
 			// after somebody clicked it.
 			operators: capabilities.fields ?? {},
-			// Only when a program filter is present, which is what makes this free
-			// on every other page load.
-			programNames: await programNames(token, filters, fetch)
+			programNames: names
 		};
 	} catch (err) {
 		fail(err);
 	}
 };
+
+interface FacetAnswer {
+	facets: Facet[];
+	favicons?: Record<string, string>;
+}
+
+/**
+ * Refresh each selected facet without its own selections.
+ *
+ * The list still receives the complete filter. Only the counters for the active
+ * facet are self-excluding, so after choosing 200 the sidebar can still offer
+ * 302 while every other condition remains in force.
+ */
+async function disjunctiveFacets(
+	token: string,
+	filters: Filter[],
+	sidebar: FacetAnswer,
+	fetcher: typeof fetch
+): Promise<FacetAnswer> {
+	const selected = new Set(
+		filters.filter((filter) => filter.op === 'eq' || filter.op === 'contains').map((filter) => filter.field)
+	);
+	const fields = [...new Set(sidebar.facets.map((facet) => facet.field).filter((field) => selected.has(field)))];
+	if (fields.length === 0) return sidebar;
+
+	const answers = await Promise.all(
+		fields.map((field) =>
+			call<FacetAnswer>(token, '/assets/facets', { filter: toAST(withoutField(filters, field)), field }, fetcher)
+		)
+	);
+	const replacements = new Map(
+		answers.flatMap((answer) => answer.facets).map((facet) => [facet.field, facet] as const)
+	);
+
+	return {
+		facets: sidebar.facets.map((facet) => replacements.get(facet.field) ?? facet),
+		favicons: Object.assign({}, sidebar.favicons, ...answers.map((answer) => answer.favicons ?? {}))
+	};
+}
 
 /**
  * The names behind the program identifiers a filter carries.

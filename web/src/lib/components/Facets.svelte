@@ -75,8 +75,9 @@
 	 * bounded higher, so the values below the cut become what every other value
 	 * already is.
 	 *
-	 * Reset with the filters, since a facet counts the filtered result: the
-	 * answer opened under one search says nothing about the next one.
+	 * Reset with the filters, since a facet counts the result under the other
+	 * selected fields: the answer opened under one search says nothing about the
+	 * next one.
 	 */
 	let opened = $derived({ answer: filters, fields: {} as Record<string, Facet> });
 	/** The page's images, plus the ones that came with an opened facet. */
