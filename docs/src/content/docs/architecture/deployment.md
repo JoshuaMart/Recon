@@ -85,7 +85,7 @@ CREATE TABLE run (
   state          text NOT NULL,   -- pending | running | completed | failed | expired
   deadline       timestamptz NOT NULL,
   created_at     timestamptz NOT NULL DEFAULT now(),
-  started_at     timestamptz,     -- written when a scanner first reaches for the run, see 9.8
+  started_at     timestamptz,     -- written when a scanner or the platform first says it took the run, see 9.8
   finished_at    timestamptz,
   target_count   int,
   summary        jsonb,           -- stats, per source accounting, warnings
@@ -159,6 +159,28 @@ abandoned run leaves the inventory exactly as it found it and the next tick sele
 again. A sweeper marks runs past their deadline `expired`, which frees their targets and makes the
 failure visible; it does not have to repair anything.
 
+**The platform's word closes a run sooner than its deadline.** A report is what closes a run, and a run
+that dies delivers none, so the deadline was the only other way out: a scanner that crashed after five
+minutes held its apex for the rest of its thirty, and the console could only say it was waiting. The
+sweeper now also asks the platform, once a tick, what became of every open run it started. An execution
+the platform reports `failed`, `canceled` or `interrupted` closes the run `failed`, with the platform's
+reason and the scanner's exit code in `error`. An execution it reports `running` writes `started_at`,
+which is the first sign a discovery run gets of having been taken, since it has no target list to open.
+The platform's own error message is not copied: it is a truncated tail of the container's output, and
+what the scanner prints there is its report, so it would put scan data in an error column.
+
+**A person can close a run as well.** `POST /runs/{run}/cancel` closes an open run `failed` and asks the
+platform to stop the execution. It covers what nothing above does: a run started by mistake, or an
+execution the platform still calls `running` while it does nothing useful. A cancelled discovery is a
+failed one, so the retry delay of [9.8](#the-pass-for-discovery) applies to it like to any other.
+
+**Nothing closes a run whose report is being written.** Ingestion holds the run row for as long as it
+writes ([9.3](#93-ingesting-a-report)), and the deadline, the platform's word and a cancel all skip a row
+that is held rather than wait for it. A report on its way in is the run finishing, and closing the run
+underneath it would refuse work that was done. Waiting would be no better for the sweeper, which serves
+every tenant and cannot stop for one ingestion. The next tick finds the run completed and has nothing to
+do.
+
 **A run in a terminal state rejects any later report bearing its id.** That is the effective
 revocation, since a signed token cannot be recalled: it stays valid and stops being useful.
 
@@ -190,6 +212,18 @@ what its observations may conclude. Ingestion reads those signals before it qual
 **A late report is accepted and marked as such.** The data is still valid; the run may simply have been
 re-dispatched, and deduplication merges the two. Delivery is idempotent on the run id: the same report
 posted twice writes one series of observations.
+
+**Ingestion does not belong to the connection that delivered it.** This was learned on a real run: a
+discovery report took longer to write than the 30 seconds FastRecon waits by default, the scanner hung up,
+the request's context was cancelled, the transaction rolled back, and three retries repeated the same work
+to the same end. The run stayed open, the platform called the execution failed, and the scan was lost.
+Two changes close that. The run definition carries `--webhook-timeout`, so the scanner waits as long as a
+large report needs ([9.8](#what-actually-starts-one)). And ingestion runs on a context detached from the
+request and bounded on its own, so a scanner, or a proxy, that gives up does not undo what was delivered.
+
+**The run row is read `FOR UPDATE`.** A retry that arrives while the first attempt is still writing waits
+for it, then finds the run completed and is refused like any duplicate. Without the lock the two would
+ingest the same document side by side and race to close the run.
 
 **A run that delivered a report is `completed`, whatever its scope reached.** Running out of time is data
 rather than an error, and a scheduler reading `failed` would re-run work whose results it already holds.
@@ -324,7 +358,7 @@ inferred from the code:
 
 | Pool | What runs on it |
 |---|---|
-| `asm_sys` | the partition and housekeeping loop, the deadline sweeper, the discovery cadence, the due date pass, the candidate pass and its own selection, the Certificate Transparency set reload and its apex counters, the Notifier, the render pass, the external host sweep, and the two lookups that turn a credential into an organization, one per kind of credential |
+| `asm_sys` | the partition and housekeeping loop, the deadline sweeper and its question to the platform about every open run, the discovery cadence, the due date pass, the candidate pass and its own selection, the Certificate Transparency set reload and its apex counters, the Notifier, the render pass, the external host sweep, and the two lookups that turn a credential into an organization, one per kind of credential |
 | `asm_app` | everything a request does after that lookup, including the whole of report ingestion |
 
 The Certificate Transparency reload is on that list for the same reason as the lookups rather than for the
@@ -427,6 +461,13 @@ compromised is how narrow this key is.
 platform's, so that a long run still delivers a truncated report instead of being killed with nothing. The
 outer bound is on the definition, which Recon does not control, so the inner value is configuration and has
 to be set to match. The `deadline` on the run row derives from the same value.
+
+**A third timeout sits at the other end: how long the scanner waits for Recon.** FastRecon gives each
+delivery attempt 30 seconds by default, and writing a large discovery report takes longer. The definition
+carries `--webhook-timeout` from `verification.report_timeout`, ten minutes by default, and the same value
+bounds the ingestion on Recon's side. A reverse proxy in front of the API holds that connection too, so
+its own timeouts must not be shorter: when they are, the report is still written, but the scanner records
+a failed delivery and the platform a failed execution.
 
 **Platform retries stay off.** A scanner distinguishes several exit codes and only one of them is worth
 retrying, which a platform that sees only "non-zero" cannot single out. Retrying the others re-runs work
@@ -578,8 +619,8 @@ age, because two situations there call for opposite actions:
 - a run nobody has claimed is a run whose provisioning failed.
 
 What separates them is `started_at`, written the first time a scanner reaches for the run. On a
-verification run that is the fetch of its target list, and on a discovery run, which has none, it is the
-report. It is the only thing that says a scanner actually opened the run rather than a provisioner having
+verification run that is the fetch of its target list. A discovery run has none, so it is the platform
+reporting the execution `running` ([9.2](#92-a-run-has-a-row)), or failing that the report. It is the only thing that says a scanner actually opened the run rather than a provisioner having
 promised to, and taking it from the report alone would have left every verification run that died mid
 flight looking like one nothing ever started.
 

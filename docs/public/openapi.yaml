@@ -1137,6 +1137,77 @@ paths:
         '500':
           $ref: '#/components/responses/Unavailable'
 
+  /runs/{run}/cancel:
+    post:
+      tags: [runs]
+      operationId: cancelRun
+      summary: Close an open run and stop its execution.
+      description: |
+        For the case the sweeper does not cover: a run started by mistake, or
+        an execution the platform still calls running while it does nothing
+        useful. The run is closed `failed`, so a discovery falls under the
+        ordinary retry delay like any other run that delivered nothing.
+
+        The stop is asked of the platform after the commit and detached from
+        the request. A platform that refuses it does not reopen the run:
+        `stopped: false` says so, and the run's token is refused from then on
+        whatever the execution does.
+
+        A run whose report is being written is not closed underneath it. That
+        is a `409` with `report_in_progress`, and the run will be completed in
+        a moment.
+
+        Requires `manage_jobs`.
+      security:
+        - consoleToken: [manage_jobs]
+      parameters:
+        - name: run
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The run is closed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [run_id, state, stopped]
+                properties:
+                  run_id:
+                    type: string
+                    format: uuid
+                  state:
+                    type: string
+                    const: failed
+                  stopped:
+                    type: boolean
+                    description: |
+                      Whether the platform accepted the stop. False as well
+                      when nothing was started on a platform.
+        '400':
+          description: The path does not carry a run id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: |
+            `run_closed` when the run already finished, `report_in_progress`
+            when its report is being written right now.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /runs/{run}/targets:
     get:
       tags: [runs]

@@ -283,7 +283,7 @@ func routes(
 
 	// Where a run's report lands. It authenticates before reading anything
 	// else, and the run comes from the credential rather than from the body.
-	mux.Handle("POST /reports", api.NewReports(scoped, system, signer, ingestor, log))
+	mux.Handle("POST /reports", api.NewReports(scoped, system, signer, ingestor, cfg.Verification.ReportTimeout, log))
 
 	// The only thing a run is given about the inventory, scoped to that run.
 	mux.Handle("GET /runs/{run}/targets", api.NewTargets(scoped, system, signer, log))
@@ -293,6 +293,8 @@ func routes(
 	guard := api.NewGuard(system, log)
 	programs := api.NewPrograms(scoped, scheduler, ingestor, cfg.Runner.Timeout, log)
 	mux.Handle("POST /programs/{program}/runs", guard.Require(auth.ActionManageJobs, programs.StartRun))
+	// Closing a run is the other half of starting one, and the same privilege.
+	mux.Handle("POST /runs/{run}/cancel", guard.Require(auth.ActionManageJobs, programs.CancelRun))
 	// Entering an asset by hand is an assertion about the perimeter, which is
 	// a different privilege from writing what a scanner found.
 	mux.Handle("POST /programs/{program}/assets", guard.Require(auth.ActionManageScope, programs.EnterAssets))

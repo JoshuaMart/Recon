@@ -392,6 +392,17 @@
 								<span class="dim" title={exact(scan.finished_at ?? scan.started_at ?? scan.created_at)}>
 									{ago(scan.finished_at ?? scan.started_at ?? scan.created_at)}
 								</span>
+								{#if status.inFlight}
+									<!-- For what the sweeper does not see: a run started by
+									     mistake, or an execution the platform still calls running
+									     while it does nothing useful. The run closes as failed and
+									     the platform is asked to stop the execution. -->
+									<form method="POST" action="?/cancelRun" use:enhance>
+										<input type="hidden" name="run" value={scan.id} />
+										<input type="hidden" name="external" value={scan.external_id ?? ''} />
+										<button class="btn" type="submit">Cancel run</button>
+									</form>
+								{/if}
 							</div>
 
 							{#if scan.observations > 0}
@@ -412,8 +423,8 @@
 								<p class="dim">
 									Started on the platform as <code class="ext">{execution}</code>.
 									{#if status.stalled}
-										It stays <em>waiting for a scanner</em> until the run opens its target list, which is the only thing that
-										says a scanner really took it.
+										It stays <em>waiting for a scanner</em> until the platform says the execution is running. If the platform
+										ends it first, the run closes as failed and says why.
 									{/if}
 								</p>
 							{:else if answered.length}

@@ -211,6 +211,59 @@ func TestASecondRunIsRefusedByNamingTheFirst(t *testing.T) {
 	}
 }
 
+// A run can be closed from the console, once, by its own organization. The
+// token it carries is refused from then on, which is what makes the close
+// stick whatever the execution does.
+func TestARunIsCancelledOnceAndOnlyByItsOwnOrganization(t *testing.T) {
+	h := newHarness(t)
+	h.due(t, "one.target.test")
+	console := h.token(t, h.org, auth.ActionManageJobs)
+
+	resp, started := h.call(t, http.MethodPost, "/programs/"+h.program.String()+"/runs", console,
+		map[string]string{"scope": "resolve"})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("the run answered %s: %v", resp.Status, started)
+	}
+	run := firstRun(t, started)["run_id"].(string)
+
+	stranger := uuid.New()
+	h.exec(t, `INSERT INTO org (id, name) VALUES ($1, 'other')`, stranger)
+	other, _ := h.call(t, http.MethodPost, "/runs/"+run+"/cancel",
+		h.token(t, stranger, auth.ActionManageJobs), nil)
+	if other.StatusCode != http.StatusNotFound {
+		t.Fatalf("another organization's cancel answered %s", other.Status)
+	}
+
+	scopes, _ := h.call(t, http.MethodPost, "/runs/"+run+"/cancel",
+		h.token(t, h.org, auth.ActionManageScope), nil)
+	if scopes.StatusCode != http.StatusForbidden {
+		t.Fatalf("a scope credential cancelled a run: %s", scopes.Status)
+	}
+
+	cancelled, body := h.call(t, http.MethodPost, "/runs/"+run+"/cancel", console, nil)
+	if cancelled.StatusCode != http.StatusOK {
+		t.Fatalf("the cancel answered %s: %v", cancelled.Status, body)
+	}
+	if body["state"] != "failed" || body["stopped"] != false {
+		t.Fatalf("the cancel reads %v, and nothing was started on a platform here", body)
+	}
+	if n := h.count(t, `SELECT count(*) FROM run WHERE id = $1 AND state = 'failed'`, run); n != 1 {
+		t.Fatal("the run is not closed")
+	}
+
+	again, body := h.call(t, http.MethodPost, "/runs/"+run+"/cancel", console, nil)
+	if again.StatusCode != http.StatusConflict || body["error"] != "run_closed" {
+		t.Fatalf("a second cancel answered %s: %v", again.Status, body)
+	}
+
+	// And the slot is free: a run can be started again at once.
+	resp, body = h.call(t, http.MethodPost, "/programs/"+h.program.String()+"/runs", console,
+		map[string]string{"scope": "resolve"})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("a run after a cancel answered %s: %v", resp.Status, body)
+	}
+}
+
 // Nothing due is not a failure. A tick that finds nothing to do is the normal
 // state of a healthy inventory, and answering with an error would make a
 // console show one every few minutes.

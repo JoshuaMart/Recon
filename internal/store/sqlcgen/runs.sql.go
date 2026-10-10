@@ -149,8 +149,11 @@ UPDATE run SET
     state       = 'expired',
     finished_at = $1::timestamptz,
     error       = COALESCE(error, 'the deadline passed and no report was delivered')
- WHERE state IN ('pending', 'running')
-   AND deadline <= $1::timestamptz
+ WHERE id IN (
+        SELECT r.id FROM run r
+         WHERE r.state IN ('pending', 'running')
+           AND r.deadline <= $1::timestamptz
+           FOR UPDATE SKIP LOCKED)
 RETURNING id, org_id, program_id, kind, scope, started_at, target_count
 `
 
@@ -179,6 +182,12 @@ type ExpireRunsRow struct {
 //
 //	expires holds its targets forever, and the assets it froze are invisible to
 //	every later pass.
+//
+// A run whose report is being written is skipped rather than waited for.
+// Ingestion holds the row for as long as it writes, and that can be minutes: a
+// sweeper waiting on it stops expiring everybody else's runs for as long, and
+// once the wait ends it would close a run that had just delivered. The next
+// tick finds it completed.
 func (q *Queries) ExpireRuns(ctx context.Context, arg ExpireRunsParams) ([]ExpireRunsRow, error) {
 	rows, err := q.db.Query(ctx, expireRuns, arg.At)
 	if err != nil {
@@ -205,6 +214,53 @@ func (q *Queries) ExpireRuns(ctx context.Context, arg ExpireRunsParams) ([]Expir
 		return nil, err
 	}
 	return items, nil
+}
+
+const failRun = `-- name: FailRun :one
+UPDATE run SET
+    state       = 'failed',
+    finished_at = $1::timestamptz,
+    error       = $2::text
+ WHERE id = (
+        SELECT r.id FROM run r
+         WHERE r.id = $3::uuid
+           AND r.state IN ('pending', 'running')
+           FOR UPDATE SKIP LOCKED)
+RETURNING id, program_id, kind, external_id
+`
+
+type FailRunParams struct {
+	At    pgtype.Timestamptz
+	Error string
+	RunID pgtype.UUID
+}
+
+type FailRunRow struct {
+	ID         pgtype.UUID
+	ProgramID  pgtype.UUID
+	Kind       string
+	ExternalID *string
+}
+
+// FailRun closes an open run that delivered nothing.
+//
+// Two callers: the sweeper, when the platform says the execution failed, and a
+// person cancelling from the console. Both skip a run whose report is being
+// written rather than wait for it, for the reason ExpireRuns gives, and both
+// read no row back in that case: the run is about to be completed, which is
+// not theirs to overrule.
+//
+// @tenant: keyed
+func (q *Queries) FailRun(ctx context.Context, arg FailRunParams) (FailRunRow, error) {
+	row := q.db.QueryRow(ctx, failRun, arg.At, arg.Error, arg.RunID)
+	var i FailRunRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProgramID,
+		&i.Kind,
+		&i.ExternalID,
+	)
+	return i, err
 }
 
 const liveDiscoveryForApex = `-- name: LiveDiscoveryForApex :one
@@ -326,6 +382,62 @@ type MarkRunRunningParams struct {
 func (q *Queries) MarkRunRunning(ctx context.Context, arg MarkRunRunningParams) error {
 	_, err := q.db.Exec(ctx, markRunRunning, arg.At, arg.RunID)
 	return err
+}
+
+const openRunsOnPlatform = `-- name: OpenRunsOnPlatform :many
+SELECT id, org_id, program_id, kind, scope, external_id, started_at
+  FROM run
+ WHERE state IN ('pending', 'running')
+   AND external_id IS NOT NULL
+ ORDER BY created_at
+`
+
+type OpenRunsOnPlatformRow struct {
+	ID         pgtype.UUID
+	OrgID      pgtype.UUID
+	ProgramID  pgtype.UUID
+	Kind       string
+	Scope      string
+	ExternalID *string
+	StartedAt  pgtype.Timestamptz
+}
+
+// OpenRunsOnPlatform is what the sweeper asks the platform about.
+//
+// Only runs the platform named. One it never named was refused at the start,
+// and nothing can be asked about it: the deadline is its only way out, as it
+// always was.
+//
+// @tenant: cross-org
+// @why: the sweeper serves every tenant in one tick, and the question it asks
+//
+//	is about an execution on the platform, which knows no tenant either.
+func (q *Queries) OpenRunsOnPlatform(ctx context.Context) ([]OpenRunsOnPlatformRow, error) {
+	rows, err := q.db.Query(ctx, openRunsOnPlatform)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []OpenRunsOnPlatformRow{}
+	for rows.Next() {
+		var i OpenRunsOnPlatformRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.OrgID,
+			&i.ProgramID,
+			&i.Kind,
+			&i.Scope,
+			&i.ExternalID,
+			&i.StartedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const programForScheduling = `-- name: ProgramForScheduling :one
@@ -878,6 +990,35 @@ func (q *Queries) SelectDueHosts(ctx context.Context, arg SelectDueHostsParams) 
 		return nil, err
 	}
 	return items, nil
+}
+
+const startRunOnPlatform = `-- name: StartRunOnPlatform :exec
+UPDATE run SET
+    state      = 'running',
+    started_at = COALESCE(started_at, $1::timestamptz)
+ WHERE id = (
+        SELECT r.id FROM run r
+         WHERE r.id = $2::uuid
+           AND r.state = 'pending'
+           FOR UPDATE SKIP LOCKED)
+`
+
+type StartRunOnPlatformParams struct {
+	At    pgtype.Timestamptz
+	RunID pgtype.UUID
+}
+
+// StartRunOnPlatform records that the platform is executing a run.
+//
+// The first sign a discovery run gets of being taken, since it has no target
+// list to open. Skipped rather than waited for under an ingestion, like the
+// two above: the scanner is still running while it delivers, so this is
+// exactly the moment a report holds the row.
+//
+// @tenant: keyed
+func (q *Queries) StartRunOnPlatform(ctx context.Context, arg StartRunOnPlatformParams) error {
+	_, err := q.db.Exec(ctx, startRunOnPlatform, arg.At, arg.RunID)
+	return err
 }
 
 const touchDiscovery = `-- name: TouchDiscovery :exec

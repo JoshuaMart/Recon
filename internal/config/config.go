@@ -245,6 +245,12 @@ type Verification struct {
 	// The data is valid either way; the run may simply have been
 	// re-dispatched.
 	Grace time.Duration `koanf:"grace"`
+	// ReportTimeout is how long the scanner waits for Recon to answer a
+	// report, and how long Recon gives itself to write one. FastRecon's own
+	// default is thirty seconds, and a large discovery report takes longer to
+	// write than that: the scanner hung up, the write was rolled back, and the
+	// retries repeated the same work to the same end.
+	ReportTimeout time.Duration `koanf:"report_timeout"`
 	// SweepInterval is how often runs past their deadline are expired. A run
 	// nothing expires holds its targets forever.
 	SweepInterval time.Duration `koanf:"sweep_interval"`
@@ -420,6 +426,7 @@ func Defaults() Config {
 			Timeout:          30 * time.Minute,
 			CandidateTimeout: 5 * time.Minute,
 			Grace:            10 * time.Minute,
+			ReportTimeout:    10 * time.Minute,
 			SweepInterval:    time.Minute,
 			DiscoveryRetry:   time.Hour,
 			// Not nmap's top 100, which orders ports by how often they are
@@ -641,6 +648,7 @@ func (c *Config) Validate(role Role) error {
 			"timeout": c.Verification.Timeout, "sweep_interval": c.Verification.SweepInterval,
 			"candidate_timeout": c.Verification.CandidateTimeout,
 			"discovery_retry":   c.Verification.DiscoveryRetry,
+			"report_timeout":    c.Verification.ReportTimeout,
 			"full_floor":        c.Verification.FullFloor,
 			"render_sole":       c.Verification.RenderSole,
 			"render_recovery":   c.Verification.RenderRecovery,

@@ -56,6 +56,14 @@ var (
 	ErrRunInFlight = errors.New("a run is already in flight")
 	// ErrNoPerimeter is a programme with no apex to enumerate.
 	ErrNoPerimeter = errors.New("the programme declares no apex")
+	// ErrRunNotFound is a run this organization does not have.
+	ErrRunNotFound = errors.New("no such run")
+	// ErrRunClosed is a run that already finished, one way or the other.
+	ErrRunClosed = errors.New("the run is already closed")
+	// ErrReportInProgress is a run whose report is being written. It is about
+	// to be completed, and closing it underneath would refuse work that was
+	// done.
+	ErrReportInProgress = errors.New("the run's report is being written")
 )
 
 // InFlight is what a refusal has to say.
@@ -142,8 +150,31 @@ type Definition struct {
 type Platform interface {
 	// Start returns the platform's own identifier for the execution.
 	Start(ctx context.Context, def *Definition) (string, error)
+	// Status reads what became of an execution Start named.
+	Status(ctx context.Context, externalID string) (Execution, error)
+	// Stop asks the platform to end an execution. An execution that already
+	// ended is not an error.
+	Stop(ctx context.Context, externalID string) error
 	// Name is what a log line calls this platform.
 	Name() string
+}
+
+// Execution is the platform's record of running, read back.
+//
+// Three facts and no more, because those are the ones the sweeper acts on. A
+// state the platform adds later reads as neither running nor failed, which
+// leaves the run to its deadline exactly as before this existed.
+type Execution struct {
+	// Running is true once a container is executing the run.
+	Running bool
+	// Failed is true once the execution ended without success: it exited
+	// non-zero, was cancelled, or was interrupted.
+	Failed bool
+	// Reason is the platform's word for the ending, never its log tail. The
+	// tail is what the scanner printed, which is its report.
+	Reason string
+	// ExitCode is the scanner's own status, when the platform reports one.
+	ExitCode *int
 }
 
 // Scheduler provisions runs.
@@ -561,6 +592,10 @@ func (s *Scheduler) create(
 		"--scan-rate", strconv.Itoa(int(program1.RateLimitRps)),
 		"--webhook-url", strings.TrimSuffix(s.cfg.PublicURL, "/") + "/reports",
 		"--webhook-header", "Authorization: Bearer " + report,
+		// The scanner's default is thirty seconds per attempt, and writing a
+		// large report takes longer. It hung up, the write rolled back, and
+		// the retries repeated the same work to the same end.
+		"--webhook-timeout", s.cfg.ReportTimeout.String(),
 		"--timeout", timeout.String(),
 	}
 	def.Env = map[string]string{}
@@ -790,6 +825,136 @@ func (s *Scheduler) Launch(ctx context.Context, record Recorder, def *Definition
 	return nil
 }
 
+// exitMeanings are the scanner's exit statuses, from its own output contract.
+// They are what makes "exit code 3" mean something on a console.
+var exitMeanings = map[int]string{
+	1: "the scanner refused its configuration",
+	2: "the report was delivered with the scope unfinished",
+	3: "the report was produced and could not be delivered",
+	4: "the scanner produced no report",
+}
+
+// platformFailure is what a run's error says when the platform ended it.
+func platformFailure(execution Execution) string {
+	message := "the platform ended the execution"
+	if execution.Reason != "" {
+		message += " (" + execution.Reason + ")"
+	}
+	if execution.ExitCode != nil {
+		message += fmt.Sprintf(" with exit code %d", *execution.ExitCode)
+		if meaning, ok := exitMeanings[*execution.ExitCode]; ok {
+			message += ": " + meaning
+		}
+	}
+	return message
+}
+
+// Watch asks the platform what became of every open run it started.
+//
+// A report is what closes a run and a run that dies delivers none, so without
+// this the deadline was the only way out: a scanner that crashed after five
+// minutes held its apex for the rest of its budget, and the console could only
+// say it was waiting. It returns how many runs it closed.
+//
+// A platform that cannot be read is logged and skipped, run by run. It leaves
+// each run to its deadline, which is where it was before this existed.
+func (s *Scheduler) Watch(ctx context.Context, q *sqlcgen.Queries) (int, error) {
+	if s.platform == nil {
+		return 0, nil
+	}
+	open, err := q.OpenRunsOnPlatform(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("read open runs: %w", err)
+	}
+
+	closed := 0
+	for _, run := range open {
+		if run.ExternalID == nil {
+			continue
+		}
+		id := uuid.UUID(run.ID.Bytes)
+		execution, err := s.platform.Status(ctx, *run.ExternalID)
+		if err != nil {
+			s.log.WarnContext(ctx, "the platform could not say what became of a run",
+				"run", id, "external", *run.ExternalID, "error", err)
+			continue
+		}
+
+		switch {
+		case execution.Failed:
+			reason := platformFailure(execution)
+			_, err := q.FailRun(ctx, sqlcgen.FailRunParams{
+				RunID: run.ID, At: stamp(s.now()), Error: reason,
+			})
+			if errors.Is(err, pgx.ErrNoRows) {
+				// Its report is being written, or it closed since the read.
+				continue
+			}
+			if err != nil {
+				return closed, fmt.Errorf("close run %s: %w", id, err)
+			}
+			closed++
+			s.log.WarnContext(ctx, "run failed on the platform",
+				"run", id, "program", uuid.UUID(run.ProgramID.Bytes),
+				"kind", run.Kind, "scope", run.Scope, "external", *run.ExternalID, "reason", reason)
+		case execution.Running && !run.StartedAt.Valid:
+			if err := q.StartRunOnPlatform(ctx, sqlcgen.StartRunOnPlatformParams{
+				RunID: run.ID, At: stamp(s.now()),
+			}); err != nil {
+				return closed, fmt.Errorf("mark run %s running: %w", id, err)
+			}
+		}
+	}
+	return closed, nil
+}
+
+// cancelled is the error a run closed from the console carries.
+const cancelled = "cancelled from the console"
+
+// Cancel closes an open run and returns what the platform called its
+// execution, empty when nothing started one. The caller commits, then calls
+// Stop: asking the platform inside the transaction would hold a connection for
+// as long as somebody else's control plane takes to answer.
+func (s *Scheduler) Cancel(ctx context.Context, q *sqlcgen.Queries, runID uuid.UUID) (string, error) {
+	row, err := q.FailRun(ctx, sqlcgen.FailRunParams{
+		RunID: pgUUID(runID), At: stamp(s.now()), Error: cancelled,
+	})
+	if err == nil {
+		if row.ExternalID == nil {
+			return "", nil
+		}
+		return *row.ExternalID, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("close run: %w", err)
+	}
+
+	// Nothing was closed, and the three reasons call for different answers.
+	run, err := q.RunForTargets(ctx, sqlcgen.RunForTargetsParams{RunID: pgUUID(runID)})
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", ErrRunNotFound
+	case err != nil:
+		return "", fmt.Errorf("read run: %w", err)
+	case run.State == "pending" || run.State == "running":
+		return "", ErrReportInProgress
+	default:
+		return "", fmt.Errorf("%w: it is %s", ErrRunClosed, run.State)
+	}
+}
+
+// Stop asks the platform to end an execution. Without a platform there is
+// nothing to stop, which is not an error.
+func (s *Scheduler) Stop(ctx context.Context, externalID string) (bool, error) {
+	if s.platform == nil || externalID == "" {
+		return false, nil
+	}
+	if err := s.platform.Stop(ctx, externalID); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // Sweeper expires runs whose deadline passed.
 //
 // It is a loop of its own rather than a branch of the housekeeping tick,
@@ -829,9 +994,14 @@ func (s *Sweeper) Run(ctx context.Context) {
 	}
 }
 
-// Once does a single pass, which is also what a test calls.
+// Once does a single pass, which is also what a test calls. The deadline goes
+// first: a run past it is expired whatever the platform says, and asking about
+// it would be a call for nothing.
 func (s *Sweeper) Once(ctx context.Context) {
 	if _, err := s.scheduler.Sweep(ctx, s.queries); err != nil {
 		s.log.ErrorContext(ctx, "run sweep failed", "error", err)
+	}
+	if _, err := s.scheduler.Watch(ctx, s.queries); err != nil {
+		s.log.ErrorContext(ctx, "platform watch failed", "error", err)
 	}
 }

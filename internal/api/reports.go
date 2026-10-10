@@ -46,13 +46,21 @@ type Reports struct {
 	system   *pgxpool.Pool
 	signer   *auth.Signer
 	ingestor *ingest.Ingestor
-	now      func() time.Time
-	log      *slog.Logger
+	// timeout bounds a write that no longer answers to its connection.
+	timeout time.Duration
+	now     func() time.Time
+	log     *slog.Logger
 }
 
 // NewReports builds the handler.
-func NewReports(db *store.Scoped, system *pgxpool.Pool, signer *auth.Signer, ingestor *ingest.Ingestor, log *slog.Logger) *Reports {
-	return &Reports{db: db, system: system, signer: signer, ingestor: ingestor, now: time.Now, log: log}
+func NewReports(
+	db *store.Scoped, system *pgxpool.Pool, signer *auth.Signer, ingestor *ingest.Ingestor,
+	timeout time.Duration, log *slog.Logger,
+) *Reports {
+	return &Reports{
+		db: db, system: system, signer: signer, ingestor: ingestor,
+		timeout: timeout, now: time.Now, log: log,
+	}
 }
 
 // ServeHTTP accepts one report.
@@ -89,6 +97,15 @@ func (h *Reports) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("report schema %q is not %s.x", report.SchemaVersion, supportedSchemaMajor))
 		return
 	}
+
+	// From here the work belongs to the report, not to the connection that
+	// brought it. A large report outlasted the scanner's patience: it hung up,
+	// the context was cancelled, the transaction rolled back, and every retry
+	// repeated the same work to the same end. A retry now waits on the run row
+	// the first attempt holds, and finds the run completed.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), h.timeout)
+	defer cancel()
+	began := h.now()
 
 	org, err := sqlcgen.New(h.system).OrgForRun(ctx, sqlcgen.OrgForRunParams{RunID: uuidTo(runID)})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -211,7 +228,8 @@ func (h *Reports) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"hosts", summary.Hosts, "assets", summary.Assets,
 		"created", summary.Created, "observations", summary.Observations,
 		"deduplicated", summary.Deduplicated, "rejected", summary.Rejected,
-		"complete", report.Run.Completed, "late", late, "degraded", report.Run.Degraded)
+		"complete", report.Run.Completed, "late", late, "degraded", report.Run.Degraded,
+		"took", h.now().Sub(began).Round(time.Millisecond).String())
 
 	writeJSON(w, http.StatusOK, summary)
 }

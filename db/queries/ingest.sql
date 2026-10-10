@@ -828,7 +828,12 @@ SELECT r.id, r.org_id, r.program_id, r.kind, r.scope, r.state, r.deadline,
             SELECT 1 FROM asset a WHERE a.program_id = p.id LIMIT 500) bounded) AS assets
   FROM run r
   JOIN program p ON p.id = r.program_id
- WHERE r.id = @run_id::uuid;
+ WHERE r.id = @run_id::uuid
+   -- Held until the ingestion commits. A retry of the same report waits here,
+   -- then finds the run completed and is refused, rather than writing the same
+   -- document beside the first attempt and racing it to close the run. The
+   -- sweeper and a cancel skip a row held this way.
+   FOR UPDATE OF r;
 
 -- @tenant: keyed
 -- name: ListRunTargets :many

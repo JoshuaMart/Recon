@@ -624,9 +624,22 @@ type recorder struct {
 	err   error
 	calls int
 	args  []string
+	// executions is what Status answers, by external id, and stopped is what
+	// Stop was asked to end.
+	executions map[string]runs.Execution
+	stopped    []string
 }
 
 func (r *recorder) Name() string { return "recorder" }
+
+func (r *recorder) Status(_ context.Context, external string) (runs.Execution, error) {
+	return r.executions[external], nil
+}
+
+func (r *recorder) Stop(_ context.Context, external string) error {
+	r.stopped = append(r.stopped, external)
+	return nil
+}
 
 func (r *recorder) Start(_ context.Context, def *runs.Definition) (string, error) {
 	r.calls++

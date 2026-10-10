@@ -120,3 +120,105 @@ func TestAnInvocationIsSafeToWriteDown(t *testing.T) {
 		t.Fatal("redaction rewrote the invocation it was asked to describe")
 	}
 }
+
+// The body is the one the platform returned for a run whose report could not
+// be delivered, minus the fields this does not read. error_message is kept in
+// it on purpose: it is the tail of what the scanner printed, which is its
+// report, and the reason must not carry any of it.
+func TestAFailedExecutionIsReadWithItsReasonAndExitCode(t *testing.T) {
+	t.Parallel()
+
+	var path, token string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path, token = r.URL.Path, r.Header.Get("X-Auth-Token")
+		_, _ = io.WriteString(w, `{"id":"run-42","state":"failed","reason":"exited_with_error",`+
+			`"exit_code":3,"error_message":"[TRUNCATED MESSAGE]: \"host\":\"www.acme.test\""}`)
+	}))
+	defer server.Close()
+
+	platform := runner.NewScaleway(server.URL, "fr-par", uuid.NewString(), "secret", 5*time.Second, quiet())
+	execution, err := platform.Status(context.Background(), "run-42")
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+
+	if path != "/serverless-jobs/v1alpha2/regions/fr-par/job-runs/run-42" {
+		t.Errorf("the status was read at %s", path)
+	}
+	if token != "secret" {
+		t.Errorf("the status was read with %q", token)
+	}
+	if !execution.Failed || execution.Running {
+		t.Fatalf("a failed execution read as %+v", execution)
+	}
+	if execution.ExitCode == nil || *execution.ExitCode != 3 {
+		t.Errorf("the exit code is %v", execution.ExitCode)
+	}
+	if execution.Reason != "failed, exited_with_error" {
+		t.Errorf("the reason is %q", execution.Reason)
+	}
+	if strings.Contains(execution.Reason, "acme") {
+		t.Error("the reason carries the scanner's output")
+	}
+}
+
+// Only the endings that delivered nothing the platform knows of fail a run. A
+// succeeded execution has delivered its report, and a state this does not know
+// leaves the run to its deadline.
+func TestOnlyAFailingEndingFailsARun(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]struct{ running, failed bool }{
+		"queued":      {},
+		"running":     {running: true},
+		"succeeded":   {},
+		"failed":      {failed: true},
+		"canceled":    {failed: true},
+		"interrupted": {failed: true},
+		"a_new_state": {},
+	}
+	for state, want := range cases {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = io.WriteString(w, `{"state":"`+state+`"}`)
+		}))
+		platform := runner.NewScaleway(server.URL, "fr-par", "job", "secret", 5*time.Second, quiet())
+		execution, err := platform.Status(context.Background(), "run-42")
+		server.Close()
+		if err != nil {
+			t.Fatalf("%s: %v", state, err)
+		}
+		if execution.Running != want.running || execution.Failed != want.failed {
+			t.Errorf("%s read as running=%v failed=%v", state, execution.Running, execution.Failed)
+		}
+	}
+}
+
+// The platform refuses to stop an execution that already ended, and that
+// refusal is the outcome a cancel asked for. A refusal on a running execution
+// is a real one.
+func TestAStopRefusedOnAnEndedExecutionIsNotAnError(t *testing.T) {
+	t.Parallel()
+
+	for state, wantErr := range map[string]bool{"failed": false, "succeeded": false, "running": true} {
+		var stopped bool
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/job-runs/run-42/stop") {
+				stopped = true
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, `{"message":"job run cannot be stopped"}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"state":"`+state+`"}`)
+		}))
+		platform := runner.NewScaleway(server.URL, "fr-par", "job", "secret", 5*time.Second, quiet())
+		err := platform.Stop(context.Background(), "run-42")
+		server.Close()
+
+		if !stopped {
+			t.Fatalf("%s: the stop was never asked", state)
+		}
+		if (err != nil) != wantErr {
+			t.Errorf("%s: a refused stop returned %v", state, err)
+		}
+	}
+}

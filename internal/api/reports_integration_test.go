@@ -127,11 +127,12 @@ func newHarness(t *testing.T) *harness {
 	// about a refusal is which of them answers, and a mux built per test would
 	// let a route be reachable in a test and unrouted in the binary.
 	mux := http.NewServeMux()
-	mux.Handle("POST /reports", api.NewReports(scoped, sysPool, signer, ingestor, quiet))
+	mux.Handle("POST /reports", api.NewReports(scoped, sysPool, signer, ingestor, time.Minute, quiet))
 	mux.Handle("GET /runs/{run}/targets", api.NewTargets(scoped, sysPool, signer, quiet))
 	guard := api.NewGuard(sysPool, quiet)
 	programs := api.NewPrograms(scoped, h.sched, ingestor, time.Minute, quiet)
 	mux.Handle("POST /programs/{program}/runs", guard.Require(auth.ActionManageJobs, programs.StartRun))
+	mux.Handle("POST /runs/{run}/cancel", guard.Require(auth.ActionManageJobs, programs.CancelRun))
 	mux.Handle("POST /programs/{program}/assets", guard.Require(auth.ActionManageScope, programs.EnterAssets))
 	mux.Handle("POST /programs/{program}/imports/bbot",
 		guard.Require(auth.ActionManageScope, programs.ImportBBOT))

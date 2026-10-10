@@ -126,14 +126,78 @@ SELECT id, kind, scope, state, deadline, created_at, started_at, target_count
 -- @why: the deadline sweeper serves every tenant in one tick. A run nothing
 --       expires holds its targets forever, and the assets it froze are invisible to
 --       every later pass.
+--
+-- A run whose report is being written is skipped rather than waited for.
+-- Ingestion holds the row for as long as it writes, and that can be minutes: a
+-- sweeper waiting on it stops expiring everybody else's runs for as long, and
+-- once the wait ends it would close a run that had just delivered. The next
+-- tick finds it completed.
 -- name: ExpireRuns :many
 UPDATE run SET
     state       = 'expired',
     finished_at = @at::timestamptz,
     error       = COALESCE(error, 'the deadline passed and no report was delivered')
- WHERE state IN ('pending', 'running')
-   AND deadline <= @at::timestamptz
+ WHERE id IN (
+        SELECT r.id FROM run r
+         WHERE r.state IN ('pending', 'running')
+           AND r.deadline <= @at::timestamptz
+           FOR UPDATE SKIP LOCKED)
 RETURNING id, org_id, program_id, kind, scope, started_at, target_count;
+
+-- OpenRunsOnPlatform is what the sweeper asks the platform about.
+--
+-- Only runs the platform named. One it never named was refused at the start,
+-- and nothing can be asked about it: the deadline is its only way out, as it
+-- always was.
+--
+-- @tenant: cross-org
+-- @why: the sweeper serves every tenant in one tick, and the question it asks
+--       is about an execution on the platform, which knows no tenant either.
+-- name: OpenRunsOnPlatform :many
+SELECT id, org_id, program_id, kind, scope, external_id, started_at
+  FROM run
+ WHERE state IN ('pending', 'running')
+   AND external_id IS NOT NULL
+ ORDER BY created_at;
+
+-- FailRun closes an open run that delivered nothing.
+--
+-- Two callers: the sweeper, when the platform says the execution failed, and a
+-- person cancelling from the console. Both skip a run whose report is being
+-- written rather than wait for it, for the reason ExpireRuns gives, and both
+-- read no row back in that case: the run is about to be completed, which is
+-- not theirs to overrule.
+--
+-- @tenant: keyed
+-- name: FailRun :one
+UPDATE run SET
+    state       = 'failed',
+    finished_at = @at::timestamptz,
+    error       = @error::text
+ WHERE id = (
+        SELECT r.id FROM run r
+         WHERE r.id = @run_id::uuid
+           AND r.state IN ('pending', 'running')
+           FOR UPDATE SKIP LOCKED)
+RETURNING id, program_id, kind, external_id;
+
+-- StartRunOnPlatform records that the platform is executing a run.
+--
+-- The first sign a discovery run gets of being taken, since it has no target
+-- list to open. Skipped rather than waited for under an ingestion, like the
+-- two above: the scanner is still running while it delivers, so this is
+-- exactly the moment a report holds the row.
+--
+-- @tenant: keyed
+-- name: StartRunOnPlatform :exec
+UPDATE run SET
+    state      = 'running',
+    started_at = COALESCE(started_at, @at::timestamptz)
+ WHERE id = (
+        SELECT r.id FROM run r
+         WHERE r.id = @run_id::uuid
+           AND r.state = 'pending'
+           FOR UPDATE SKIP LOCKED);
 
 -- MarkRunRunning records that a scanner opened the run.
 --

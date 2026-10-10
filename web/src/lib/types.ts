@@ -347,7 +347,8 @@ export interface Run {
 	state: 'pending' | 'running' | 'completed' | 'failed' | 'expired';
 	deadline: string;
 	created_at: string;
-	/** Written the first time a scanner reached for the run. Absent means nothing
+	/** Written the first time a scanner reached for the run, or the platform said it
+	 *  was executing it. Absent means nothing
 	 *  claimed it, which calls for the opposite action to a run in flight. */
 	started_at?: string;
 	finished_at?: string;

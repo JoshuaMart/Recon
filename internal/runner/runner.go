@@ -41,3 +41,11 @@ func (n *None) Start(ctx context.Context, def *runs.Definition) (string, error) 
 		"targets", def.TargetCount, "args", runs.Redacted(def.Args))
 	return "", nil
 }
+
+// Status has nothing to read: Start named no execution, so nothing calls it.
+func (n *None) Status(context.Context, string) (runs.Execution, error) {
+	return runs.Execution{}, nil
+}
+
+// Stop has nothing to stop, for the same reason.
+func (n *None) Stop(context.Context, string) error { return nil }

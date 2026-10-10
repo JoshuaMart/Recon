@@ -117,6 +117,7 @@ func TestTheCrossingsAreTheOnesArguedFor(t *testing.T) {
 		"ForgetApexesOutsideTheSet",
 		"OnboardingDue",
 		"OneOrganization",
+		"OpenRunsOnPlatform",
 		"OrgForRun",
 		"PendingEvents",
 		"PrincipalForToken",

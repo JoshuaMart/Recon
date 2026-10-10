@@ -221,6 +221,63 @@ func (h *Programs) StartRun(w http.ResponseWriter, r *http.Request, principal au
 	})
 }
 
+// CancelRun closes an open run and asks the platform to stop its execution.
+//
+// For what the sweeper does not cover: a run started by mistake, or an
+// execution the platform still calls running while it does nothing useful. The
+// run is closed failed, so a discovery falls under the ordinary retry delay.
+func (h *Programs) CancelRun(w http.ResponseWriter, r *http.Request, principal auth.Principal) {
+	ctx := r.Context()
+
+	runID, ok := pathUUID(w, r, "run")
+	if !ok {
+		return
+	}
+
+	tx, err := h.db.Begin(ctx, principal.OrgID)
+	if err != nil {
+		h.unavailable(ctx, w, "begin failed", err)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	external, err := h.scheduler.Cancel(ctx, sqlcgen.New(tx), runID)
+	switch {
+	case errors.Is(err, runs.ErrRunNotFound):
+		fail(w, http.StatusNotFound, "not_found", "no such run")
+		return
+	case errors.Is(err, runs.ErrReportInProgress):
+		fail(w, http.StatusConflict, "report_in_progress",
+			"the run's report is being written, and the run will be completed in a moment")
+		return
+	case errors.Is(err, runs.ErrRunClosed):
+		fail(w, http.StatusConflict, "run_closed", err.Error())
+		return
+	case err != nil:
+		h.unavailable(ctx, w, "cancel failed", err)
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		h.unavailable(ctx, w, "commit failed", err)
+		return
+	}
+
+	// After the commit and detached from the request, for the reasons StartRun
+	// gives. A stop the platform refuses does not reopen the run: its token is
+	// refused from now on, whatever the execution does.
+	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), h.launchTimeout)
+	defer cancel()
+	stopped, err := h.scheduler.Stop(stopCtx, external)
+	if err != nil {
+		h.log.ErrorContext(ctx, "run cancelled, the platform did not stop it",
+			"run", runID, "external", external, "error", err)
+	}
+	h.log.InfoContext(ctx, "run cancelled", "run", runID, "external", external, "stopped", stopped)
+
+	writeJSON(w, http.StatusOK, map[string]any{"run_id": runID, "state": "failed", "stopped": stopped})
+}
+
 // EnterAssets records assets somebody typed in.
 func (h *Programs) EnterAssets(w http.ResponseWriter, r *http.Request, principal auth.Principal) {
 	ctx := r.Context()

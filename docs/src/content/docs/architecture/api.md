@@ -6,7 +6,7 @@ sidebar:
 ---
 
 The control plane's whole surface is described in [`openapi.yaml`](/openapi.yaml), an OpenAPI 3.1 document
-covering twenty four operations. It is the file to hand to anything that has to call this without reading the
+covering twenty five operations. It is the file to hand to anything that has to call this without reading the
 Go.
 
 This chapter is not a copy of it. It says what the surface is shaped by, which a schema cannot carry.

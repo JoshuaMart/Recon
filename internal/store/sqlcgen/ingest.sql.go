@@ -738,6 +738,11 @@ SELECT r.id, r.org_id, r.program_id, r.kind, r.scope, r.state, r.deadline,
   FROM run r
   JOIN program p ON p.id = r.program_id
  WHERE r.id = $1::uuid
+   -- Held until the ingestion commits. A retry of the same report waits here,
+   -- then finds the run completed and is refused, rather than writing the same
+   -- document beside the first attempt and racing it to close the run. The
+   -- sweeper and a cancel skip a row held this way.
+   FOR UPDATE OF r
 `
 
 type RunForIngestParams struct {

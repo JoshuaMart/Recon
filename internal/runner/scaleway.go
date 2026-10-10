@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -108,4 +109,112 @@ func (s *Scaleway) Start(ctx context.Context, def *runs.Definition) (string, err
 		return "", nil
 	}
 	return decoded.Runs[0].ID, nil
+}
+
+// jobRun is the part of a job run this reads. Transcribed from a real failed
+// run rather than from the reference: the state, the platform's reason and the
+// exit code. error_message is left out on purpose, because it is the
+// truncated tail of the container's output, and what the scanner prints there
+// is its report.
+type jobRun struct {
+	State    string `json:"state"`
+	Reason   string `json:"reason"`
+	ExitCode *int   `json:"exit_code"`
+}
+
+// ended is every state the platform does not leave again.
+var ended = map[string]bool{
+	"succeeded": true, "failed": true, "canceled": true, "interrupted": true,
+}
+
+// failedStates are the endings that delivered nothing the platform knows of.
+// succeeded is not one: an execution that exited zero has delivered its
+// report, so a run still open after it is a report being written.
+var failedStates = map[string]bool{"failed": true, "canceled": true, "interrupted": true}
+
+// Status reads what became of an execution.
+func (s *Scaleway) Status(ctx context.Context, externalID string) (runs.Execution, error) {
+	run, err := s.read(ctx, externalID)
+	if err != nil {
+		return runs.Execution{}, err
+	}
+	execution := runs.Execution{
+		Running:  run.State == "running",
+		Failed:   failedStates[run.State],
+		ExitCode: run.ExitCode,
+	}
+	if execution.Failed {
+		execution.Reason = run.State
+		if run.Reason != "" {
+			execution.Reason += ", " + run.Reason
+		}
+	}
+	return execution, nil
+}
+
+// Stop asks the platform to end an execution.
+//
+// The platform refuses to stop what already ended, and that refusal is the
+// outcome asked for rather than a failure, so a refused stop is checked against
+// the execution's state before it is reported.
+func (s *Scaleway) Stop(ctx context.Context, externalID string) error {
+	status, payload, err := s.call(ctx, http.MethodPost, s.jobRunURL(externalID)+"/stop")
+	if err != nil {
+		return fmt.Errorf("stop run: %w", err)
+	}
+	if status < 300 {
+		return nil
+	}
+	if run, readErr := s.read(ctx, externalID); readErr == nil && ended[run.State] {
+		return nil
+	}
+	return fmt.Errorf("stop run: %d: %s", status, payload)
+}
+
+func (s *Scaleway) read(ctx context.Context, externalID string) (jobRun, error) {
+	status, payload, err := s.call(ctx, http.MethodGet, s.jobRunURL(externalID))
+	if err != nil {
+		return jobRun{}, fmt.Errorf("read run: %w", err)
+	}
+	if status >= 300 {
+		return jobRun{}, fmt.Errorf("read run: %d: %s", status, payload)
+	}
+	var run jobRun
+	if err := json.Unmarshal(payload, &run); err != nil {
+		return jobRun{}, fmt.Errorf("decode run: %w", err)
+	}
+	return run, nil
+}
+
+func (s *Scaleway) jobRunURL(externalID string) string {
+	return fmt.Sprintf("%s/serverless-jobs/v1alpha2/regions/%s/job-runs/%s",
+		s.endpoint, s.region, url.PathEscape(externalID))
+}
+
+// call makes one authenticated request and returns the status and body. An
+// error body is quoted rather than summarised by the caller, for the reason
+// Start gives.
+func (s *Scaleway) call(ctx context.Context, method, target string) (int, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, method, target, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("X-Auth-Token", s.secret)
+	if method == http.MethodPost {
+		// The stop takes an empty object, and an empty body is refused as
+		// not being one.
+		req.Body = io.NopCloser(strings.NewReader("{}"))
+		req.ContentLength = 2
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := s.http.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return 0, nil, err
+	}
+	return resp.StatusCode, bytes.TrimSpace(payload), nil
 }

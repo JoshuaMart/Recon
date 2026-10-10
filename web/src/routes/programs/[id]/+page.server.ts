@@ -148,6 +148,36 @@ export const actions: Actions = {
 		}
 	},
 
+	cancelRun: async ({ request, locals, fetch }) => {
+		const form = await request.formData();
+		const run = String(form.get('run') ?? '');
+		const started = String(form.get('external') ?? '') !== '';
+		try {
+			const answer = await call<{ stopped: boolean }>(
+				locals.token!,
+				'/runs/' + encodeURIComponent(run) + '/cancel',
+				{},
+				fetch
+			);
+			// The run is closed either way. A stop the platform did not confirm
+			// is said, because the execution may still be spending.
+			if (started && !answer.stopped) {
+				return {
+					message: 'The run is closed, but the platform did not confirm the stop. Check the execution there.',
+					stale: false
+				};
+			}
+			return { cancelled: true };
+		} catch (err) {
+			// A 409 here is a run that finished or is finishing, and the message
+			// says which. Not `refused`: no reload changes it.
+			return {
+				message: err instanceof APIError ? err.message : 'the run could not be cancelled',
+				stale: false
+			};
+		}
+	},
+
 	updateProgram: async ({ request, locals, params, fetch }) => {
 		const form = await request.formData();
 		// The name travels on every edit because the write is a statement of the
