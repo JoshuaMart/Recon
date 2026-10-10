@@ -8,6 +8,7 @@ package compose
 
 import (
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -378,6 +379,33 @@ func TestTheProductionFilePublishesNoPort(t *testing.T) {
 		if len(service.Ports) > 0 {
 			t.Errorf("%s publishes %v: on a public host that is a listener the reverse proxy "+
 				"knows nothing about", name, service.Ports)
+		}
+	}
+}
+
+// Every RECON_ setting the example offers reaches the control plane.
+//
+// The process reads any RECON_ variable on its own, but compose hands a
+// container only the keys its environment names, so a setting added to the
+// example and not here is a line somebody edits in .env to no effect. That is
+// how verification.report_timeout first shipped.
+func TestEverySettingTheExampleOffersReachesTheControlPlane(t *testing.T) {
+	raw, err := os.ReadFile("../../.env.example")
+	if err != nil {
+		t.Fatalf("read the example: %v", err)
+	}
+	offered := regexp.MustCompile(`(?m)^#? ?(RECON_[A-Z_]+)=`).FindAllStringSubmatch(string(raw), -1)
+	if len(offered) == 0 {
+		t.Fatal("the example offers no RECON_ setting, so this test would pass on nothing")
+	}
+
+	for _, file := range []string{"compose.yaml", "compose.prod.yaml"} {
+		env := load(t, file).Services["controlplane"].Environment
+		for _, match := range offered {
+			if _, ok := env[match[1]]; !ok {
+				t.Errorf(".env.example offers %s and %s does not pass it to the control plane",
+					match[1], file)
+			}
 		}
 	}
 }
