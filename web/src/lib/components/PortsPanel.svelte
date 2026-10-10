@@ -15,13 +15,9 @@
 	const hostHref = $derived(asset.host ? href([{ field: 'host', op: 'eq', value: asset.host }]) : '');
 
 	/**
-	 * The count of scanned ports, which the raw tree deliberately hides.
-	 *
-	 * `evidence.ts` drops `scanned_ports`, `closed_ports` and `filtered_ports` because a
-	 * hundred numbers identical on every asset are the probe's settings echoed once per
-	 * row. Their **count** is a different fact and the one a reader wants here: it
-	 * separates "nothing else is open" from "nothing else was tried", and the port rule turned
-	 * every open port into an asset precisely because that distinction was invisible.
+	 * The count of scanned ports, which the raw tree hides: `evidence.ts` drops `scanned_ports`,
+	 * `closed_ports` and `filtered_ports` (identical on every asset, the probe's settings). The count is
+	 * a different fact: it separates "nothing else is open" from "nothing else was tried".
 	 */
 	const scanned = $derived(ports.scanned);
 </script>

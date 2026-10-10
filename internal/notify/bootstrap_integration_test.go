@@ -67,10 +67,9 @@ func newPool(t *testing.T) *pgxpool.Pool {
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-// The row is keyed on the organization and the config marker rather than on the
-// URL. Without that marker, changing the configured URL and restarting inserts
-// a second active row without disabling the first, and every alert then goes
-// out twice, one of them to the destination just replaced.
+// The row is keyed on the organization and the config marker, not the URL. Without the
+// marker, changing the URL and restarting inserts a second active row without disabling
+// the first, and every alert goes out twice, one to the replaced destination.
 func TestChangingTheConfiguredURLDoesNotDoubleTheAlerts(t *testing.T) {
 	pool := newPool(t)
 	ctx := context.Background()

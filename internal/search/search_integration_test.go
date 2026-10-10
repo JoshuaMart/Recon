@@ -141,9 +141,9 @@ func (h *harness) asset(t *testing.T, org uuid.UUID, key string, columns map[str
 		value(columns, "change_buckets", []int32{0, 0, 0, 0, 0, 0, 0, 0}),
 		columns["buckets_day"], seen)
 
-	// The counters are maintained on write by ingestion. Here the rows are
-	// written directly, so the same invariant is applied directly: pivot_count
-	// is a function of the counted keys and of nothing else.
+	// Counters are maintained on write by ingestion; rows are written directly here,
+	// so the invariant is applied directly: pivot_count is a function of the counted
+	// keys and nothing else.
 	h.exec(t, `INSERT INTO pivot_count AS pc (org_id, pivot_type, pivot_value, count)
 	           SELECT $1, p.pivot_type, p.pivot_value, 1
 	             FROM asset_current c, pivot_values(c.attributes) p
@@ -213,9 +213,8 @@ func (h *harness) inventory(t *testing.T) {
 	})
 	h.asset(t, h.org, "target.test", map[string]any{"lifecycle": "candidate"})
 
-	// The other tenant, carrying the same shapes. Nothing below may ever see
-	// one of these rows, and a filter that named them could not: the field does
-	// not exist in the registry.
+	// The other tenant, with the same shapes. Nothing below may see these rows, and a
+	// filter naming them could not: the field is not in the registry.
 	h.asset(t, h.other, "app.target.test:443/tcp", map[string]any{
 		"port": 443, "scheme": "https", "status_code": 200,
 		"technologies": []string{"nginx"}, "asn": 13335, "country": "FR",
@@ -236,9 +235,8 @@ func TestASuffixReadsTheInventoryUnderOneDomain(t *testing.T) {
 		}
 
 		keys := keysOf(page)
-		// A string suffix and not domain membership: the dot is in the pattern,
-		// so "evil-target.test" does not come back, and "target.test" itself
-		// does not either.
+		// A string suffix, not domain membership: the dot is in the pattern, so
+		// "evil-target.test" does not come back, nor does "target.test" itself.
 		if strings.Contains(strings.Join(keys, ","), "evil-target") {
 			t.Errorf("evil-target.test came back under .target.test: %v", keys)
 		}
@@ -253,12 +251,9 @@ func TestASuffixReadsTheInventoryUnderOneDomain(t *testing.T) {
 	})
 }
 
-// The console's search field, against the database: a substring of the name,
-// anywhere in it, and still inside one tenant.
-//
-// It is the operator no index answers, so what is measured here is the answer
-// rather than the plan: the term sits in the middle of the key, which is
-// exactly the question a prefix and a suffix cannot ask.
+// The console's search field against the database: a substring anywhere in the
+// name, inside one tenant. No index answers it, so the answer is measured, not the
+// plan; the term sits mid-key, which a prefix and a suffix cannot ask.
 func TestASubstringOfTheNameSearchesInsideIt(t *testing.T) {
 	h := newHarness(t)
 	h.inventory(t)
@@ -279,9 +274,8 @@ func TestASubstringOfTheNameSearchesInsideIt(t *testing.T) {
 		}
 	})
 
-	// The other tenant holds "app.target.test:443/tcp" too, and a search that
-	// scans rather than seeks is the place where a missing tenant clause would
-	// not show up as an error.
+	// The other tenant holds "app.target.test:443/tcp" too, and a scan (as opposed to
+	// a seek) is where a missing tenant clause would not show as an error.
 	h.scoped(t, h.org, func(tx pgx.Tx) {
 		page, err := search.List(context.Background(), tx, h.org, search.Request{
 			Filter: filter(t, `{"op":"contains","field":"key","value":"app.target"}`),
@@ -295,12 +289,9 @@ func TestASubstringOfTheNameSearchesInsideIt(t *testing.T) {
 	})
 }
 
-// TestTheFacetsReflectTheFilteredResult is what separates a facet from a
-// statistic.
-//
-// The side counters of an ASM interface are aggregations over the current
-// filtered result, recomputed on every query. Global counts would answer a
-// different question, and nobody asked it.
+// What separates a facet from a statistic: the side counters of an ASM interface
+// are aggregations over the current filtered result, recomputed per query. Global
+// counts answer a different question.
 func TestTheFacetsReflectTheFilteredResult(t *testing.T) {
 	h := newHarness(t)
 	h.inventory(t)
@@ -338,12 +329,10 @@ func TestTheFacetsReflectTheFilteredResult(t *testing.T) {
 	})
 }
 
-// A value below the sidebar's cut is in the inventory, is filterable, and was
-// unreachable: the cap said "20+" and there was nothing to click.
-//
-// Twenty-two technologies, so the sidebar cuts and the rarest one is the one
-// nobody could reach. Opening the facet asks for the same aggregation over the
-// same filtered set, bounded higher.
+// A value below the sidebar's cut is filterable yet was unreachable: "20+" with
+// nothing to click. Twenty-two technologies make the sidebar cut, leaving the rarest
+// unreachable; opening the facet asks the same aggregation over the same set,
+// bounded higher.
 func TestACutFacetOpensOnEveryValue(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -517,9 +506,8 @@ func TestTheExportAppliesNoDisplayFilterAndImposesNoCap(t *testing.T) {
 		if len(lines) != written {
 			t.Fatalf("%d lines for %d assets", len(lines), written)
 		}
-		// A file does not say what it does not contain, so a display decision
-		// inside one is invisible. The export answers the question it can
-		// answer, the counter, and leaves the badge unanswered.
+		// A file does not say what it omits, so a display decision in it is invisible. The
+		// export answers the counter and leaves the badge unanswered.
 		if strings.Contains(out.String(), `"badge"`) {
 			t.Error("the export carries a badge decision, which is a display filter inside a file")
 		}
@@ -600,10 +588,9 @@ func TestTheExportAppliesNoDisplayFilterAndImposesNoCap(t *testing.T) {
 func TestThePaginationIsStableAcrossAWalk(t *testing.T) {
 	h := newHarness(t)
 
-	// Every row carrying the same instant, which is what a report writing a
-	// batch in one transaction produces. Without a tiebreaker on the identity,
-	// which rows come back is the planner's choice and a walk can repeat or
-	// skip one.
+	// Every row has the same instant, as a batch written in one transaction does.
+	// Without an identity tiebreaker the planner chooses the order and a walk can
+	// repeat or skip a row.
 	at := time.Now().UTC().Truncate(time.Second)
 	for i := range 25 {
 		h.asset(t, h.org, fmt.Sprintf("h%02d.target.test:443/tcp", i),
@@ -642,12 +629,9 @@ func TestThePaginationIsStableAcrossAWalk(t *testing.T) {
 	})
 }
 
-// TestAnExportThatFailsBeforeItBeginsIsNotAnEmptyFile.
-//
-// The export streams, so past the first page a failure cannot become a status
-// any more. Before it, it still can, and that is the difference between a
-// caller reading "the database refused" and a caller reading "my inventory is
-// empty" off a zero byte file.
+// The export streams, so past the first page a failure cannot become a status.
+// Before it, it still can, and that separates "the database refused" from "my
+// inventory is empty" read off a zero-byte file.
 func TestAnExportThatFailsBeforeItBeginsIsNotAnEmptyFile(t *testing.T) {
 	h := newHarness(t)
 	h.inventory(t)
@@ -722,15 +706,10 @@ func term(page search.FacetPage, field, value string) int {
 	return 0
 }
 
-// TestNoQueryTouchesTheJournal is the boundary demonstrated rather than read.
-//
-// Principle 1 does not say nobody reads the journal. It says the interface
-// queries asset_current, and what stays true is the substance: the list, the
-// facets and the export never touch it, because those are what run over a
-// million rows and on every keystroke.
-//
-// Rereading the code is a statement about the reader. Revoking the privilege
-// makes the database answer.
+// The boundary demonstrated, not read. The interface queries asset_current; the
+// list, facets and export never touch the journal, as they run over a million rows
+// and on every keystroke. Rereading code is a statement about the reader; revoking
+// the privilege makes the database answer.
 func TestNoQueryTouchesTheJournal(t *testing.T) {
 	h := newHarness(t)
 	h.inventory(t)
@@ -738,9 +717,9 @@ func TestNoQueryTouchesTheJournal(t *testing.T) {
 
 	h.exec(t, `ALTER ROLE asm_app WITH LOGIN PASSWORD 'app-password-for-a-container'`)
 	h.exec(t, `REVOKE SELECT ON observation FROM asm_app`)
-	// The privilege is granted by ALTER DEFAULT PRIVILEGES, which does not
-	// reach the partitions: revoking on the parent alone leaves every one of
-	// them readable, and a test that stopped here would prove nothing.
+	// The privilege comes from ALTER DEFAULT PRIVILEGES, which does not reach the
+	// partitions: revoking on the parent alone leaves every one readable, and a test
+	// stopping there proves nothing.
 	h.exec(t, `DO $$
 	           DECLARE part record;
 	           BEGIN
@@ -807,19 +786,14 @@ func TestNoQueryTouchesTheJournal(t *testing.T) {
 	}
 }
 
-// The third state of a nullable boolean, proved against PostgreSQL rather than
-// argued from the SQL standard.
+// The third state of a nullable boolean, proved against PostgreSQL. is_cdn is null
+// when no pass could look: a timed-out resolution carries no address, CNAME or
+// provider, and writing false would clear the flag on a genuinely fronted asset.
+// Candidates and hand-entered hosts stay null until something reaches them.
 //
-// is_cdn is null when no pass has been able to look, and ingestion writes that
-// deliberately: a resolution that timed out carries no address, no CNAME and no
-// provider, and writing false from it would clear the flag on an asset that is
-// genuinely behind an edge. Candidates and hand entered hosts sit there until
-// something reaches them.
-//
-// The assertion that matters is the middle one. "Everything that is not
-// fronted" written as a negation looks complete and is not: NOT (NULL = true)
-// is NULL, a null predicate excludes the row, and the assets nobody has looked
-// at disappear from an answer that claims to be about all of them.
+// The middle assertion matters: "everything not fronted" as a negation looks
+// complete but NOT (NULL = true) is NULL, which excludes the row, so unlooked-at
+// assets vanish from an answer claiming to cover all.
 func TestANegationDoesNotReachTheStateOnlyExistsCanAskFor(t *testing.T) {
 	h := newHarness(t)
 
@@ -882,15 +856,11 @@ func TestANegationDoesNotReachTheStateOnlyExistsCanAskFor(t *testing.T) {
 	})
 }
 
-// The consequence of the grouping, measured against PostgreSQL rather than
-// asserted as a string.
-//
-// SQL binds AND tighter than OR and the tree does not, so a nested group joined
-// flat lets its OR branch escape every condition beside it. This asks the
-// question that shape gets wrong, "on port 443, and answering 200 or 301", with
-// an asset that satisfies only the OR branch and sits on another port. Flat, it
-// comes back and the answer is about the whole tenant; parenthesised, it does
-// not.
+// The grouping's consequence, measured against PostgreSQL. SQL binds AND tighter
+// than OR and the tree does not, so a flat nested group lets its OR branch escape
+// every condition. This asks "on port 443, and answering 200 or 301" with an asset
+// satisfying only the OR branch on another port: flat, it comes back and the answer
+// covers the whole tenant; parenthesised, it does not.
 func TestAnOrInsideAnAndDoesNotEscapeIt(t *testing.T) {
 	h := newHarness(t)
 

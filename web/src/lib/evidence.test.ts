@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { keyCount, rows, sections } from './evidence';
 
 /**
- * The cases are the ones from the real inventory that made this module necessary,
- * because the version it replaces flattened all three into one line each.
+ * The cases are the real inventory's that made this module necessary: the version it replaces
+ * flattened all three into one line each.
  */
 describe('rows', () => {
 	it('keeps the fingerprinter headers, which live inside chain[]', () => {
@@ -27,9 +27,9 @@ describe('rows', () => {
 		expect(via!.depth).toBeGreaterThan(out.find((row) => row.key === 'chain')!.depth);
 	});
 
-	// the identity rule moved the identity to the service, so the requested URL stopped being a
-	// repeat of the asset's own key and became the one thing that key cannot say:
-	// which scheme answered. It was on the http denylist for the old reason.
+	// The service became the identity, so the requested URL stopped repeating the asset's key and
+	// became the one thing the key cannot say: which scheme answered. It was on the http denylist for
+	// the old reason.
 	it('shows the requested url on the http layer', () => {
 		const out = rows('http', {
 			url: 'https://qui.jomar.ovh',
@@ -96,9 +96,8 @@ describe('rows', () => {
 });
 
 /**
- * The blocks of the raw fold. The cases are the ones that made the flat run unreadable on the
- * asset view: a payload whose nesting was carried by indentation alone, and one key
- * printed twice in full.
+ * The blocks of the raw fold. The cases made the flat run unreadable on the asset view: nesting
+ * carried by indentation alone, and one key printed twice in full.
  */
 describe('sections', () => {
 	it('gives every object and array its own block, and gathers the scalars into one', () => {
@@ -117,9 +116,8 @@ describe('sections', () => {
 		expect(values).toEqual(['status_code', 'title']);
 	});
 
-	// `http-check` writes the answering hop's headers twice: inside `chain`, and again at
-	// the top level where the projection reads them. Printed in full one after the other
-	// they are forty identical lines in the middle of the evidence.
+	// `http-check` writes the answering hop's headers twice: in `chain` and at the top level where the
+	// projection reads them. In full, one after the other, they are forty identical lines.
 	it('marks a headers block that repeats the answering hop', () => {
 		const headers = { 'content-type': 'text/html', server: 'Caddy' };
 		const out = sections('http', {

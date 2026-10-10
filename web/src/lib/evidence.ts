@@ -1,15 +1,8 @@
 /**
- * Turning an observation payload into rows a person can read.
- *
- * The first version flattened everything into one line per top-level key, joining
- * objects and arrays with spaces. On real data that produced a wall: six scripts
- * with their urls and hashes on one line, a base64 favicon a thousand characters
- * long, and the fingerprinter's headers invisible because they live inside
- * `chain[]` and were joined into the blob with everything else.
- *
- * So the structure is kept instead of destroyed. It is still walked rather than
- * named field by field, which is what lets a probe report something new without a
- * change here.
+ * Turning an observation payload into rows a person can read. Flattening everything into one line
+ * per top-level key gave a wall (six scripts on one line, a thousand-character favicon, the
+ * fingerprinter's headers lost in `chain[]`), so the structure is kept. It is still walked, not
+ * named field by field, so a probe can report something new without a change here.
  */
 
 /** One rendered row. Depth is how far in the payload it sits. */
@@ -25,30 +18,20 @@ export interface Row {
 }
 
 /**
- * Keys that do not earn their place, per layer.
+ * Keys that do not earn their place, per layer. A denylist, not an allowlist, for the pivot rules'
+ * reason: a keep-list silently hides whatever a producer starts reporting.
  *
- * A denylist and not an allowlist, for the reason the pivot rules give: a list
- * of what to keep silently hides whatever a producer starts reporting, where a list
- * of what to drop lets it through and gets one entry longer when somebody looks.
- *
- * The tcp ones are the case that made this necessary. `scanned_ports` is the curated
- * port list of the configuration, identical on every asset, so it is the probe's
- * settings echoed once per row. `closed_ports` and `filtered_ports` are that list
- * minus the open ones, split by which kind of silence answered — together a hundred
- * numbers to say nothing, and the split matters to the lifecycle rather than to a
- * reader. `host` repeats the asset's own key, and `state` repeats the layer state the
- * card already shows — the rule against a zone repeating what another zone
- * carries, applied one level down.
- *
- * What survives on this layer is `open_ports`, which is the finding.
+ * The tcp ones forced this: `scanned_ports` is the configured list, identical on every asset, and
+ * `closed_ports`/`filtered_ports` are that list minus the open ones, a hundred numbers saying
+ * nothing to a reader. `host` repeats the key and `state` the card's layer state. What survives is
+ * `open_ports`, the finding.
  */
 const hidden: Record<string, Set<string>> = {
 	tcp: new Set(['closed_ports', 'filtered_ports', 'scanned_ports', 'host', 'state']),
 	// On dns the host repeats the asset's own key.
 	dns: new Set(['host', 'name']),
-	// `url` was hidden here on the ground that it was the asset. the identity rule makes the
-	// service the asset, so the requested URL is now the one thing the key cannot
-	// say: which scheme answered, and on which base URL the chain below starts.
+	// `url` was once hidden as being the asset. The service is now the asset, so the requested URL is
+	// the one thing the key cannot say: which scheme answered and which base URL the chain starts on.
 	http: new Set(['host'])
 };
 
@@ -92,9 +75,8 @@ function walk(out: Row[], layer: string, value: unknown, depth: number, key: str
 	}
 
 	const text = scalar(value);
-	// A data: image is shown rather than printed. The favicon arrives as one, and a
-	// thousand characters of base64 is the single least readable thing a payload
-	// carries.
+	// A data: image is shown, not printed: a favicon arrives as one, and a thousand characters of
+	// base64 is the least readable thing a payload carries.
 	if (text.startsWith('data:image/')) {
 		out.push({ key, depth, value: '', image: text });
 		return;
@@ -121,18 +103,10 @@ export interface Section {
 }
 
 /**
- * The same walk, cut into blocks.
- *
- * `rows` renders a payload as one flat run, which is what the card's fold wants. On the
- * asset view the same run was forty screens of undifferentiated key-value: the nesting
- * was carried by indentation alone, so `tls` and `x-permitted-cross-domain-policies`
- * read at exactly the same weight, and the only way to find the certificate was to know
- * it was there.
- *
- * A block is structural — it comes from the shape of the payload, never from a list of
- * keys worth grouping — which is what keeps this a denylist and not the allowlist the pivot rules
- * refuses. A producer that starts emitting something new gets a block of its own, or a
- * line among the scalars, without a change here.
+ * The same walk, cut into blocks. `rows` suits the card's fold; on the asset view it was forty
+ * screens of undifferentiated key-value, nesting carried by indentation alone. A block is
+ * structural, from the payload's shape and never a list of keys worth grouping, which keeps this a
+ * denylist: a new producer field gets a block or a scalar line with no change here.
  */
 export function sections(layer: string, data: unknown): Section[] {
 	if (data === null || typeof data !== 'object' || Array.isArray(data)) {
@@ -170,13 +144,10 @@ function isBlock(value: unknown): boolean {
 }
 
 /**
- * The one repetition worth naming.
- *
- * `http-check` writes the answering hop's headers twice: inside `chain`, and again at
- * the top level where the projection reads them. Both are the payload and neither is
- * wrong, but printed in full one after the other they are forty identical lines in the
- * middle of the evidence. The block is kept and marked rather than dropped, because a
- * fold that removed a key would be a fold nobody could trust.
+ * The one repetition worth naming. `http-check` writes the answering hop's headers twice: in
+ * `chain` and at the top level where the projection reads them. Neither is wrong, but printed
+ * in full they are forty identical lines in the evidence. The block is kept and marked, not
+ * dropped: a fold removing a key is one nobody can trust.
  */
 function markDuplicates(blocks: Section[], data: Record<string, unknown>): void {
 	const chain = data.chain;
@@ -192,11 +163,9 @@ function markDuplicates(blocks: Section[], data: Record<string, unknown>): void 
 }
 
 /**
- * The favicon, out of the fingerprint payload.
- *
- * On the asset view it is free: that screen already reads the journal , so the
- * bytes are in hand. The list is a different question — the projection carries the
- * hash and not the image — and this is deliberately not a way around that.
+ * The favicon, out of the fingerprint payload. Free on the asset view, which already reads the
+ * journal, so the bytes are in hand. The list is another question (the projection carries the
+ * hash, not the image) and this deliberately does not work around that.
  */
 export function faviconOf(evidence: { layer: string; data: unknown }[]): string | undefined {
 	const render = evidence.find((layer) => layer.layer === 'fingerprint');

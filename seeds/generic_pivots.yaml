@@ -1,18 +1,14 @@
-# Values that group without discriminating, and therefore are not pivots.
+# Values that group without discriminating, and so are not pivots.
 #
-# The relevant frequency is on the internet, not inside one organization.
-# PHPSESSID is noise because it is universal, not because it is locally
-# frequent: on a small perimeter the variance dominates, and three occurrences
-# of a framework cookie are statistically indistinguishable from two of a rare
-# application one.
+# The relevant frequency is the internet's, not one organization's: PHPSESSID is noise because
+# it is universal. On a small perimeter variance dominates, and three occurrences of a framework
+# cookie are statistically indistinguishable from two of a rare application one.
 #
-# This removes a badge and never a piece of data. Every name is indexed without
-# exception, so a misclassified entry loses nothing and the explicit search
-# still works.
+# This removes a badge, never data: every name is indexed, so a misclassified entry loses
+# nothing and explicit search still works.
 #
-# The file is the truth and the table is its reflection. The seed replaces the
-# whole table rather than merging into it: a merge would let an entry added by
-# hand survive every deployment and make the divergence invisible.
+# The file is the truth and the table its reflection. The seed replaces the whole table: a merge
+# would let a hand-added entry survive every deployment, invisibly.
 
 cookie_name:
   # Framework sessions.
@@ -54,9 +50,8 @@ cookie_name:
   - pattern: __utm*
     note: legacy Google Analytics
 
-  # Edges and mitigations. These identify the provider in front of a target,
-  # which is already a promoted column, and they are shared by every customer
-  # of it.
+  # Edges and mitigations. They identify the provider in front of a target (already a promoted
+  # column) and are shared by every customer of it.
   - pattern: __cfduid
     note: Cloudflare
   - pattern: __cf_bm
@@ -103,8 +98,7 @@ cookie_name:
   - pattern: OptanonAlertBoxClosed
 
 favicon:
-  # Default icons shipped by a product. They identify the product, which is
-  # already a technology, and they group every default installation on the
-  # internet.
+  # Default icons shipped by a product. They identify the product (already a technology) and
+  # group every default installation on the internet.
   - pattern: "0"
     note: an empty or unreadable icon

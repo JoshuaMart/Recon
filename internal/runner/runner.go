@@ -1,10 +1,7 @@
-// Package runner starts a run definition on the platform it is deployed to.
-//
-// The control plane starts, it never updates. Nothing here modifies a
-// definition: the call that does replaces its whole environment map, so it
-// would wipe the source API keys the definition carries, and nothing would
-// fail. The next run would simply query fewer sources and find less, which is
-// the exact failure mode that accounting exists to make visible.
+// Package runner starts a run definition on the platform it is deployed to. The
+// control plane starts, it never updates: the update call replaces the whole
+// environment map, wiping the source API keys without any error, and later runs
+// would just query fewer sources.
 package runner
 
 import (
@@ -14,12 +11,9 @@ import (
 	"github.com/JoshuaMart/recon/internal/runs"
 )
 
-// None renders a definition and starts nothing.
-//
-// It is the development shape: the console shows the definition and a person
-// runs the image with it. That is the same shape as production minus the call,
-// which is what keeps the local path from becoming a second way of starting a
-// run.
+// None renders a definition and starts nothing: the development shape, where a
+// person runs the image with the console's definition. It is production minus the
+// call, so the local path is not a second way of starting a run.
 type None struct{ log *slog.Logger }
 
 // NewNone builds it.
@@ -28,13 +22,10 @@ func NewNone(log *slog.Logger) *None { return &None{log: log} }
 // Name is what a log line calls this platform.
 func (n *None) Name() string { return "none" }
 
-// Start logs what would have been started and returns no identifier.
-//
-// The invocation is redacted, and that is not caution. It carries two live
-// bearer credentials: one that posts this run's report and one that fetches its
-// frozen target list. Writing them at INFO would put in every log exactly what
-// the rest of this path took the trouble to keep out of a URL, and for the same
-// reason: logs outlive the run by a long way.
+// Start logs what would have been started and returns no identifier. The
+// invocation is redacted: it carries two live bearer credentials (report posting
+// and target fetching), and at INFO they would land in every log, which outlives
+// the run.
 func (n *None) Start(ctx context.Context, def *runs.Definition) (string, error) {
 	n.log.InfoContext(ctx, "run definition ready, nothing starts it here",
 		"run", def.RunID, "kind", def.Kind, "scope", def.Scope,

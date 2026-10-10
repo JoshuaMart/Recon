@@ -1,21 +1,16 @@
--- Roles come before any business migration, because retrofitting them means
--- reassigning ownership of every existing object, which is tedious and risky
--- on a live database.
+-- Roles come before any business migration: retrofitting them means reassigning ownership
+-- of every existing object, tedious and risky on a live database.
 --
--- Three reasons for the separation, two of which go well beyond tidiness:
+-- Why separate them:
 --
---   1. Row-level security does not apply to a table's owner. An application
---      connected as owner would make enabling it silently inoperative, which
---      is the worst failure mode an isolation mechanism can have: it signals
---      nothing.
+--   1. Row-level security does not apply to a table's owner. An application connected as
+--      owner would make it silently inoperative, the worst failure for an isolation
+--      mechanism.
 --   2. A role without DDL cannot drop a table, which bounds an SQL injection.
---   3. A REVOKE only has an effect with two roles. An owner keeps its
---      privileges and can grant them back to itself.
+--   3. A REVOKE only works with two roles; an owner can grant privileges back to itself.
 --
--- The schema knows nothing about authentication. These roles are NOLOGIN and
--- carry no password: granting LOGIN and a secret belongs to the deployment
--- entrypoint, never to a migration file, because the method varies and the
--- schema has no business knowing it.
+-- The schema knows nothing about authentication. These roles are NOLOGIN with no password:
+-- LOGIN and a secret belong to the deployment entrypoint, as the method varies.
 
 -- +goose Up
 
@@ -36,20 +31,18 @@ $$;
 
 GRANT USAGE ON SCHEMA public TO asm_app, asm_sys;
 
--- Without default privileges, every new table would need a manual GRANT that
--- will be forgotten. Without the one on sequences, bigserial columns fail in a
--- way that is hard to diagnose.
+-- Without default privileges every new table needs a manual GRANT that gets forgotten, and
+-- without the one on sequences bigserial columns fail obscurely.
 --
--- No FOR ROLE clause: the default is the current role, migrations always run
--- as the owner, and naming it here would hard-code what the deployment picked.
+-- No FOR ROLE clause: the default is the current role, migrations run as the owner, and
+-- naming it would hard-code the deployment's choice.
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO asm_app, asm_sys;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
     GRANT USAGE, SELECT ON SEQUENCES TO asm_app, asm_sys;
 
--- ANALYZE ordinarily requires table ownership, and run by a non-owner it is
--- skipped with a warning rather than an error, which is how stale statistics
--- stay invisible. MAINTAIN grants it without granting anything else.
+-- ANALYZE normally needs table ownership, and a non-owner's run is skipped with a warning,
+-- leaving stale statistics invisible. MAINTAIN grants it and nothing else.
 GRANT MAINTAIN ON ALL TABLES IN SCHEMA public TO asm_sys;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT MAINTAIN ON TABLES TO asm_sys;
 
@@ -63,9 +56,8 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
 
 REVOKE USAGE ON SCHEMA public FROM asm_app, asm_sys;
 
--- Drops what the roles own and revokes what was granted to them in this
--- database. Without it, DROP ROLE fails on any leftover privilege, and a
--- migration that cannot be rolled back is one milestone 0 refuses.
+-- Drops what the roles own and revokes what was granted to them in this database. Without
+-- it DROP ROLE fails on any leftover privilege, making the migration irreversible.
 DROP OWNED BY asm_app, asm_sys;
 
 DROP ROLE IF EXISTS asm_app;

@@ -3,33 +3,28 @@ package lifecycle
 import "time"
 
 // ReachThreshold is how many concordant results a regime change takes, in both
-// directions, so that a transient failure absorbs instead of flipping.
+// directions, so a transient failure is absorbed rather than flipping.
 const ReachThreshold = 3
 
-// Reach is what the two observers have managed on one asset.
-//
-// The counters are signed, positive for consecutive successes and negative for
-// failures, so the threshold reads the same in both directions with one column
-// per observer.
+// Reach is what the two observers have managed on one asset. The counters are
+// signed (positive successes, negative failures), so the threshold reads the same
+// both ways with one column per observer.
 type Reach struct {
 	HTTP        int
 	Fingerprint int
 }
 
-// Unobservable reports whether neither observer gets through.
-//
-// Both must have tried. A streak at zero is an observer that never ran rather
-// than one that fails, and reading it as a failure would tip every asset the
-// renderer has not reached yet into a state that means something else entirely.
+// Unobservable reports whether neither observer gets through. Both must have
+// tried: a streak at zero is an observer that never ran, and reading it as failing
+// would tip every asset the renderer has not reached into a different state.
 func (r Reach) Unobservable() bool {
 	return r.HTTP <= -ReachThreshold && r.Fingerprint <= -ReachThreshold
 }
 
 // Regime is which observer currently gets a result, as the projection holds it.
-//
-// Nil is undefined rather than false: an asset whose observers have not yet
-// agreed three times running has no regime, and treating that as a failure
-// would put every freshly rendered service on the alert cadence.
+// Nil is undefined, not false: observers that have not agreed three times yet give
+// no regime, and treating it as failure would put every freshly rendered service
+// on the alert cadence.
 type Regime struct {
 	HTTP        *bool
 	Fingerprint *bool
@@ -37,14 +32,11 @@ type Regime struct {
 
 func settled(flag *bool) bool { return flag == nil || *flag }
 
-// Render is how long until this asset is rendered again.
-//
-// Four regimes, and the two middle ones are the reason this is a table rather
-// than a constant. When the raw client is blocked the renderer is the only
-// detector left and has to run at a detector's rate; when the renderer is the
-// one being blocked it is a recovery attempt rather than a measurement, and
-// paying for a browser every three weeks to be turned away again is the
-// expensive way to learn nothing.
+// Render is how long until this asset is rendered again. Four regimes, the two
+// middle ones making this a table: when the raw client is blocked the renderer is
+// the only detector and runs at a detector's rate; when the renderer is the one
+// blocked, rendering is a recovery attempt, and paying for a browser every three
+// weeks to be turned away is an expensive way to learn nothing.
 func (c Cadence) Render(r Regime) time.Duration {
 	http, fingerprint := settled(r.HTTP), settled(r.Fingerprint)
 	switch {
@@ -59,9 +51,7 @@ func (c Cadence) Render(r Regime) time.Duration {
 	}
 }
 
-// Detector reports whether the HTTP layer is the one watching this asset.
-//
-// When it is not, a diff on that layer stops triggering a render: the probe
-// keeps running for reachability and for TLS, but what it sees of a target that
-// is refusing it is not a change worth a browser.
+// Detector reports whether the HTTP layer is the one watching this asset. If not,
+// a diff on that layer no longer triggers a render: the probe keeps running for
+// reachability and TLS, but what it sees of a refusing target is not worth a browser.
 func (r Regime) Detector() bool { return settled(r.HTTP) }

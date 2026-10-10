@@ -10,29 +10,20 @@ import (
 	"github.com/google/uuid"
 )
 
-// Grouping the list by host.
-//
-// The service is the unit of identity and every open port becomes an asset, so
-// one name occupies several rows: the fqdn, https, http, and one per additional
-// open port. Five ports of one address have the same ASN, the same geolocation
-// and often the same certificate, so the repetition is a property of the model
-// and has to be solved by the structure of the screen.
-//
-// Done here rather than in the page, and that is the load bearing half. Folding
-// fifty already fetched assets breaks at the page boundary: a host whose
-// services fall on either side renders as two partial groups with two wrong
-// counts. So pagination is over hosts, and the cursor is a host cursor.
+// Grouping the list by host. Every open port is an asset, so one name occupies several rows
+// sharing ASN, geolocation and often certificate. The fold must happen here, not in the page:
+// folding fifty fetched assets breaks at the page boundary, rendering a host split across
+// pages as two partial groups with wrong counts. So pagination is over hosts, with a host
+// cursor.
 
 // Group is one host and the assets of the result that belong to it.
 type Group struct {
-	// Host is the value the members share. A row whose host column is null is
-	// grouped under its own key, which shows it alone and in its place in the
-	// order rather than pooling every such row under one name that means
-	// nothing.
+	// Host is the value the members share. A row with a null host is grouped under
+	// its own key, alone and in place, instead of pooling all of them under a
+	// meaningless name.
 	Host string `json:"host"`
-	// LastSeen is the most recent of the group, and what the groups are ordered
-	// by: what moved recently stays at the top one level up, and folding must
-	// not cost that.
+	// LastSeen is the most recent of the group and what groups are ordered by, so
+	// folding keeps recently moved hosts on top.
 	LastSeen time.Time `json:"last_seen"`
 	Rows     []Row     `json:"assets"`
 }
@@ -40,28 +31,24 @@ type Group struct {
 // GroupedPage is one answer of the folded list.
 type GroupedPage struct {
 	Groups []Group `json:"groups"`
-	// Favicons are the images of the page, keyed by hash. On the page and not
-	// on each row: a shared favicon is the interesting case, and repeating two
-	// kilobytes per asset would undo the point of storing one copy.
+	// Favicons are the page's images keyed by hash. On the page, not each row: a
+	// shared favicon is the interesting case, and repeating two kilobytes per asset
+	// would undo storing one copy.
 	Favicons map[string]string `json:"favicons,omitempty"`
 	Next     string            `json:"next_cursor,omitempty"`
 }
 
-// GroupCursor is where a walk over hosts left off.
-//
-// It carries the host itself rather than an asset identifier: two hosts can
-// share a last_seen to the microsecond on a first scan, and the tie has to
-// break on something stable.
+// GroupCursor is where a walk over hosts left off. It carries the host, not an
+// asset id: two hosts can share a last_seen to the microsecond on a first scan,
+// and the tie needs a stable break.
 type GroupCursor struct {
 	LastSeen time.Time `json:"s"`
 	Host     string    `json:"h"`
 }
 
-// String encodes it for a client to hand back.
-//
-// Opaque, and deliberately not the same encoding as the flat list's. A caller
-// that swaps one for the other gets a refusal rather than a walk that restarts
-// or skips, because neither decodes as the other.
+// String encodes it for a client to hand back. Opaque, and deliberately unlike
+// the flat list's encoding: swapping them is refused, instead of restarting or
+// skipping.
 func (c GroupCursor) String() string {
 	if c.Host == "" {
 		return ""
@@ -83,9 +70,8 @@ func ParseGroupCursor(encoded string) (GroupCursor, error) {
 		return GroupCursor{}, refuse("the cursor is not one this list handed out")
 	}
 	var cursor GroupCursor
-	// The host is the half that has to be there. A zero timestamp is a
-	// legitimate value nobody will ever page past; an empty host is a cursor
-	// from the flat list, and accepting it would silently restart the walk.
+	// The host must be there. A zero timestamp is legitimate; an empty host is a
+	// flat-list cursor, and accepting it would silently restart the walk.
 	if err := json.Unmarshal(raw, &cursor); err != nil || cursor.Host == "" {
 		return GroupCursor{}, refuse("the cursor is not one this list handed out")
 	}
@@ -108,13 +94,10 @@ type hostRow struct {
 	lastSeen time.Time
 }
 
-// ListGrouped answers one page of hosts.
-//
-// Two statements rather than one. The first picks the page's hosts, ordered by
-// their most recent asset; the second reads every asset of those hosts under
-// the same filter. A single statement with a window function would read the
-// whole filtered set to number it, which on a filter matching a hundred
-// thousand assets is the expensive half done for fifty rows.
+// ListGrouped answers one page of hosts in two statements: one picks the page's
+// hosts by most recent asset, the other reads every asset of those hosts under
+// the same filter. A window function would read the whole filtered set to
+// number it, the expensive half for fifty rows.
 func ListGrouped(ctx context.Context, q Querier, org uuid.UUID, req GroupRequest) (GroupedPage, error) {
 	compiled, err := Compile(org, req.Filter)
 	if err != nil {
@@ -131,8 +114,7 @@ func ListGrouped(ctx context.Context, q Querier, org uuid.UUID, req GroupRequest
 
 	page := GroupedPage{Groups: []Group{}}
 
-	// One host beyond the page is how the next cursor is known to exist,
-	// without a second count over the same predicate.
+	// One host beyond the page tells a next cursor exists, without a second count.
 	hosts, err := hostsOf(ctx, q, compiled, limit+1, req.Cursor)
 	if err != nil {
 		return GroupedPage{}, err
@@ -166,20 +148,11 @@ func hostsOf(
 ) ([]hostRow, error) {
 	args := append([]any{}, compiled.Args...)
 
-	// The cursor bounds the group, in HAVING alone, and never the row.
-	//
-	// A row level bound looks like a free narrowing and is a defect. The
-	// argument for it, that a host whose maximum is below the cursor has every
-	// row below it, is true of the host and false of the aggregate: dropping
-	// the rows above changes what max() is computed from, so a host already
-	// returned comes back with a smaller maximum and passes the bound a second
-	// time.
-	//
-	// The cost is stated rather than hidden: without a row level bound the
-	// aggregate is computed over the whole filtered set on every page. On the
-	// perimeters this is built for that is a grouping over thousands of rows,
-	// and the honest fix the day it stops being is a materialized per host
-	// timestamp, not a bound that is wrong.
+	// The cursor bounds the group in HAVING alone, never the row: dropping the rows above the
+	// cursor changes what max() is computed from, so a host already returned comes back with a
+	// smaller maximum and passes the bound again. The cost is stated: the aggregate runs over the
+	// whole filtered set on every page (thousands of rows at the intended scale); if it stops
+	// being so, the fix is a materialized per-host timestamp, not a wrong bound.
 	having := ""
 	if !cursor.Zero() {
 		args = append(args, cursor.LastSeen, cursor.Host)
@@ -217,12 +190,9 @@ func hostsOf(
 	return out, nil
 }
 
-// assetsOfHosts reads every asset of the page's hosts, under the same filter.
-//
-// Under the same filter, which is what makes the counts true: a group on a list
-// filtered to status_code = 200 shows the services that match and not the eight
-// the host has. Reading every asset of the host instead would make the fold
-// disagree with the facets beside it.
+// assetsOfHosts reads every asset of the page's hosts under the same filter,
+// which makes the counts true: a group on a list filtered to status_code = 200
+// shows the matching services, not all eight, and agrees with the facets.
 func assetsOfHosts(ctx context.Context, q Querier, compiled Compiled, hosts []hostRow) ([]Row, error) {
 	names := make([]string, 0, len(hosts))
 	for _, host := range hosts {
@@ -230,8 +200,8 @@ func assetsOfHosts(ctx context.Context, q Querier, compiled Compiled, hosts []ho
 	}
 
 	args := append([]any{}, compiled.Args...)
-	// The list is a display, always. There is no grouped export: the export
-	// walks the flat list, so nothing here ever needs the badges off.
+	// The list is always a display. There is no grouped export, so the badges are
+	// never off here.
 	args = append(args, true)
 	join := fmt.Sprintf(pivotJoin, len(args))
 	args = append(args, names)
@@ -261,12 +231,10 @@ func assetsOfHosts(ctx context.Context, q Querier, compiled Compiled, hosts []ho
 	return out, nil
 }
 
-// fold puts the assets into their groups, keeping the order of the hosts.
-//
-// In Go rather than in the query, because the order of the groups is decided by
-// the first statement and the order inside a group by the second. Expressing
-// both in one ORDER BY would mean sorting the assets by their host's timestamp,
-// which is a column the row does not carry.
+// fold puts the assets into their groups, keeping the hosts' order. In Go
+// because the first statement decides group order and the second decides order
+// inside a group; one ORDER BY would need the host's timestamp, which the row
+// lacks.
 func fold(hosts []hostRow, rows []Row) []Group {
 	byHost := make(map[string][]Row, len(hosts))
 	for _, row := range rows {
@@ -281,9 +249,8 @@ func fold(hosts []hostRow, rows []Row) []Group {
 	for _, host := range hosts {
 		members := byHost[host.host]
 		if len(members) == 0 {
-			// A host whose assets vanished between the two statements. Rare and
-			// not an error: an empty group is dropped rather than rendered as a
-			// header over nothing.
+			// A host whose assets vanished between the statements: dropped, not rendered as
+			// a header over nothing.
 			continue
 		}
 		groups = append(groups, Group{Host: host.host, LastSeen: host.lastSeen, Rows: members})
@@ -291,12 +258,9 @@ func fold(hosts []hostRow, rows []Row) []Group {
 	return groups
 }
 
-// Favicons reads the images the rows of a page refer to.
-//
-// Rendered as data URIs. An endpoint per image is a request per row from a page
-// that has just been drawn, and the bound that makes this safe is already in
-// the schema: an image above 64 kB is not stored, so a page of fifty carries
-// what a page of fifty can carry.
+// Favicons reads the images the rows of a page refer to, as data URIs: an
+// endpoint per image would be a request per row. The schema already bounds it,
+// since an image above 64 kB is not stored.
 func Favicons(ctx context.Context, q Querier, org uuid.UUID, rows []Row) (map[string]string, error) {
 	seen := map[string]struct{}{}
 	hashes := make([]string, 0, 8)
@@ -318,19 +282,16 @@ func Favicons(ctx context.Context, q Querier, org uuid.UUID, rows []Row) (map[st
 	return faviconsByHash(ctx, q, org, hashes)
 }
 
-// faviconsByHash reads the images a set of hashes names.
-//
-// Separate from the walk above because the two callers arrive with different
-// things in hand: a page has rows, and the sidebar has the values its own
-// aggregation ranked, which is not the same set.
+// faviconsByHash reads the images a set of hashes names. Separate because the
+// callers differ: a page has rows, the sidebar has the values its aggregation
+// ranked.
 func faviconsByHash(ctx context.Context, q Querier, org uuid.UUID, hashes []string) (map[string]string, error) {
 	if len(hashes) == 0 {
 		return nil, nil
 	}
 
-	// The organization is in the statement as well as in the policy. The two
-	// are not redundant: one is structural and the other is the guarantee this
-	// query cannot remove from itself.
+	// The organization is in the statement as well as the policy; one is
+	// structural, the other the guarantee this query cannot remove from itself.
 	images, err := q.Query(ctx, `
 		SELECT hash, media_type, bytes
 		  FROM favicon_image
@@ -352,9 +313,8 @@ func faviconsByHash(ctx context.Context, q Querier, org uuid.UUID, hashes []stri
 	if err := images.Err(); err != nil {
 		return nil, fmt.Errorf("read the favicons: %w", err)
 	}
-	// A hash with no image is left out rather than mapped to an empty string. A
-	// favicon above the bound is not stored, and a page that received "" for it
-	// would render a broken image where the honest answer is no image.
+	// A hash with no image is left out, not mapped to "": an image above the bound
+	// is not stored, and "" would render a broken image.
 	if len(out) == 0 {
 		return nil, nil
 	}

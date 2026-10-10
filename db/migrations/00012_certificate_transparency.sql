@@ -1,15 +1,12 @@
 -- The candidate lane, and the two things Certificate Transparency has to write.
 --
--- The lane is the one that decides the phase. A CT candidate is due one minute
--- after it is created, and the whole aggressive curve rests on that first check
--- happening then. One live verification run per programme is a slot held for
--- the run's whole deadline, so a candidate arriving a minute into a sweep would
--- wait half an hour for a check the curve wanted at sixty seconds: the
--- freshness advantage spent on a queue.
+-- A CT candidate is due one minute after creation and the aggressive curve rests on that
+-- check. One live verification run per programme holds a slot for the run's whole deadline,
+-- so a candidate arriving a minute into a sweep would wait half an hour: the freshness
+-- advantage spent on a queue.
 --
--- It costs an index rather than a mechanism, because the reservation is already
--- per kind. That is the whole reason a third kind is the answer here and a
--- second reservation scheme is not.
+-- It costs an index, not a mechanism, as the reservation is already per kind: a third kind
+-- is the answer, not a second reservation scheme.
 
 -- +goose Up
 
@@ -19,36 +16,25 @@ ALTER TABLE run DROP CONSTRAINT run_kind_known;
 ALTER TABLE run ADD CONSTRAINT run_kind_known
     CHECK (kind IN ('discovery', 'verification', 'candidate'));
 
--- Pinned to resolve, and the database says so rather than the caller.
---
--- One round trip to a resolver pool per name, and nothing at all sent to the
--- target, which is what lets a candidate run and a verification run be in
--- flight on the same programme without adding up to anything the rate budget
--- has an opinion about. Widened to full it would add up, and "the scheduler
--- only ever sets resolve" is a convention: the console reaches run creation
--- too, and a convention is what the next caller has no way to read.
+-- Pinned to resolve, and the database says so, not the caller. One resolver round trip per
+-- name and nothing sent to the target is what lets candidate and verification runs be in
+-- flight on one programme without adding up against the rate budget; widened to full they
+-- would. "The scheduler only sets resolve" is a convention, and the console reaches run
+-- creation too.
 ALTER TABLE run ADD CONSTRAINT run_candidate_resolves_only
     CHECK (kind <> 'candidate' OR scope = 'resolve');
 
 CREATE UNIQUE INDEX run_one_live_candidate_idx ON run (program_id)
     WHERE kind = 'candidate' AND state IN ('pending', 'running');
 
--- What Certificate Transparency has actually delivered under one apex.
+-- What CT has actually delivered under one apex. Counters per apex, not a flag on the
+-- programme: apexes behave differently (one all wildcard, another a certificate per host), and
+-- a boolean would lose which it spoke of and never expire. No coverage score: the reading is
+-- derived at query time, as a stored score cannot be recomputed when its formula changes.
 --
--- Counters per apex rather than a flag on the programme, because a programme
--- holds several apexes and they do not behave alike: one served entirely by a
--- wildcard, another issuing a certificate per host. A boolean would lose which
--- apex it spoke about, and it would never expire.
---
--- No coverage score here, on purpose. The reading is derived from these numbers
--- at query time, because a stored score is a number nobody can recompute the
--- day its formula changes, and this one is computed on data nobody has yet.
---
--- A row is deleted when its apex leaves the set. watched_since would otherwise
--- say a name has been watched since a date that spans a period nothing was
--- watching it, and an apex removed and put back would read as continuously
--- covered. The counts go with it, which is acceptable for the same reason the
--- flush below may lose a minute: this is a metric, not the journal.
+-- A row is deleted when its apex leaves the set: watched_since would otherwise span a period
+-- of no watching, and an apex removed and put back would read as continuously covered. The
+-- counts go too, acceptable like the flush losing a minute: a metric, not the journal.
 CREATE TABLE ct_apex (
     org_id           uuid NOT NULL REFERENCES org(id) ON DELETE CASCADE,
     program_id       uuid NOT NULL REFERENCES program(id) ON DELETE CASCADE,
@@ -64,23 +50,14 @@ CREATE TABLE ct_apex (
 
 SELECT apply_tenant_policy('ct_apex');
 
--- One row per minute in which the feed delivered something.
+-- One row per minute in which the feed delivered something. The aggregator keeps no history
+-- for Recon, so a dropped socket loses what passed while it was down; without a record of when
+-- the feed was alive, an outage and an apex the logs have nothing to say about give the same
+-- number. Presence, not absence: a dead process writes no minute, so a gap needs nothing to
+-- notice it and no reconciliation after a restart.
 --
--- The gap is the reason this exists. The aggregator keeps no history on Recon's
--- behalf, so a dropped socket loses whatever passed while it was down and
--- reconnecting resumes at the present. Without a record of when the feed was
--- alive, an outage and an apex the logs genuinely have nothing to say about
--- produce the same number, and the coverage reading above would call the first
--- one the second.
---
--- Presence rather than absence, which is the same rule as everywhere else here:
--- a process that dies writes no minute, so a gap needs nothing to notice it and
--- no reconciliation after a restart. Inferring the outage from its edges would
--- need the loop to survive the thing it is trying to record.
---
--- It carries no org_id and that is deliberate: one socket serves the whole
--- deployment, so this is a fact about the feed and not about a tenant. It is on
--- the exempt list in the schema test, with that reason.
+-- No org_id, deliberately: one socket serves the deployment, so this is a fact about the feed,
+-- not a tenant. It is on the exempt list in the schema test, with that reason.
 CREATE TABLE ct_feed_minute (
     minute timestamptz PRIMARY KEY,
     frames bigint NOT NULL DEFAULT 0
@@ -98,9 +75,9 @@ DROP TABLE IF EXISTS ct_apex;
 DROP INDEX IF EXISTS run_one_live_candidate_idx;
 ALTER TABLE run DROP CONSTRAINT IF EXISTS run_candidate_resolves_only;
 
--- A kind that no longer exists cannot be kept, so the rows go with it. That is
--- loss of a run and not of an observation: a run is replayable and its report
--- is not what this system refuses to lose (P3). Their frozen lists cascade.
+-- A kind that no longer exists cannot be kept, so its rows go. That loses a run, not an
+-- observation: a run is replayable and its report is not what this system refuses to lose.
+-- Their frozen lists cascade.
 DELETE FROM run WHERE kind = 'candidate';
 
 ALTER TABLE run DROP CONSTRAINT run_kind_known;

@@ -163,11 +163,9 @@ func TestTheConfigPathIsNotAnOption(t *testing.T) {
 	}
 }
 
-// The loops that serve every tenant need the role that is allowed to, and the
-// absence of that credential has no safe reading: under row-level security the
-// application role answers them with zero rows rather than with an error, so
-// the housekeeping creates no partition and the notifier sends nothing, quietly
-// and while looking healthy.
+// The loops serving every tenant need the role allowed to, and its absence has no safe
+// reading: under row-level security the application role answers them with zero rows,
+// so housekeeping creates no partition and the notifier sends nothing, looking healthy.
 func TestTheControlPlaneRefusesToStartWithOnlyOneCredential(t *testing.T) {
 	t.Parallel()
 
@@ -186,10 +184,9 @@ func TestTheControlPlaneRefusesToStartWithOnlyOneCredential(t *testing.T) {
 	}
 }
 
-// The two pools have two budgets, because one setting read twice is a
-// deployment tuned for N backends quietly opening 2N, which on a managed
-// instance with a hard max_connections is how the next service fails to
-// connect.
+// Two pools, two budgets: one setting read twice is a deployment tuned for N backends
+// quietly opening 2N, which on a managed instance with a hard max_connections breaks the
+// next service.
 func TestTheTwoPoolsAreBoundedSeparately(t *testing.T) {
 	t.Parallel()
 

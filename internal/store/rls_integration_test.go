@@ -1,8 +1,7 @@
 //go:build integration
 
-// Milestone 6's isolation half, and the rule that decides how it is written:
-// an isolation property is demonstrated by making it fail, never by observing
-// that it holds. Every assertion here either revokes something, unsets
+// The isolation half. The rule: an isolation property is demonstrated by making it
+// fail, never by observing that it holds. Every assertion revokes something, unsets
 // something, or asks for a tenant it is not.
 package store_test
 
@@ -90,14 +89,10 @@ func roleURL(ownerURL, role, password string) string {
 		role, password, cfg.Host, cfg.Port, cfg.Database)
 }
 
-// refuseToRunPrivileged is the preamble the doc asks for, and it is not a
-// formality.
-//
-// A policy does not apply to a table's owner, so a suite run as asm_owner
-// passes entirely without exercising anything. A modified connection string
-// would then make the whole of this file inoperative while leaving the
-// milestone green, and a green milestone on an absent property is what teaches
-// people to stop reading milestones.
+// refuseToRunPrivileged is the preamble, not a formality. A policy does not apply to
+// a table's owner, so a suite run as asm_owner passes without exercising anything;
+// a modified connection string would make the file inoperative while everything stays
+// green, which teaches people to stop reading green runs.
 func refuseToRunPrivileged(t *testing.T, conn *pgx.Conn) {
 	t.Helper()
 
@@ -106,12 +101,9 @@ func refuseToRunPrivileged(t *testing.T, conn *pgx.Conn) {
 	}
 }
 
-// privileged is the check itself, separated from the failure so that the check
-// can be tested.
-//
-// A preamble nobody exercises is a preamble that can stop checking, and this one
-// is the thing standing between a modified connection string and a whole file of
-// green assertions measuring nothing.
+// privileged is the check itself, separated from the failure so it can be tested: an
+// unexercised preamble can stop checking, and it stands between a modified connection
+// string and a file of assertions measuring nothing.
 func privileged(conn *pgx.Conn) error {
 	ctx := context.Background()
 	var role string
@@ -156,12 +148,9 @@ func privileged(conn *pgx.Conn) error {
 	return nil
 }
 
-// TestTheSuiteRefusesToRunPrivileged is the preamble tested rather than
-// trusted.
-//
-// A policy does not apply to a table's owner, so this whole file run as
-// asm_owner passes entirely without exercising anything, and a green milestone
-// on an absent property is what teaches people to stop reading milestones.
+// The preamble tested rather than trusted: run as asm_owner this file passes without
+// exercising anything, and a green run on an absent property teaches people to stop
+// reading green runs.
 func TestTheSuiteRefusesToRunPrivileged(t *testing.T) {
 	tn := setupTenants(t)
 
@@ -184,13 +173,10 @@ func TestTheSuiteRefusesToRunPrivileged(t *testing.T) {
 	}
 }
 
-// asOrg runs one statement in a transaction that carries an organization.
-//
-// The variable is set at the start of the transaction carrying the query and
-// never when the connection is acquired. A plain SET at acquisition survives
-// the connection going back to the pool, and the next query from another tenant
-// inherits the previous context, which is the leak this mechanism exists to
-// prevent introduced by the mechanism meant to prevent it.
+// asOrg runs one statement in a transaction that carries an organization. The
+// variable is set at the transaction's start, never at connection acquisition: a
+// plain SET survives the connection returning to the pool, and the next tenant's query
+// inherits the previous context, the leak this mechanism exists to prevent.
 func asOrg(t *testing.T, conn *pgx.Conn, org uuid.UUID, query string, args ...any) int {
 	t.Helper()
 
@@ -257,14 +243,11 @@ func TestAnApplicationSessionReadsOneTenantAndNoOther(t *testing.T) {
 	_ = tx.Commit(ctx)
 }
 
-// TestAConnectionWithNoOrganizationReadsNothingTwiceOver is the one that has to
-// reuse a connection.
-//
-// SET LOCAL restores whatever the session held before the transaction, and a
-// custom variable never set at session level holds ” rather than nothing. So
-// current_setting(...)::uuid returns zero rows on a connection's first
-// transaction and raises on its second, and a suite acquiring a fresh
-// connection per case passes with that fault in place.
+// The one that has to reuse a connection. SET LOCAL restores what the session held
+// before, and a custom variable never set at session level holds ” rather than
+// nothing, so current_setting(...)::uuid returns zero rows on a connection's first
+// transaction and raises on its second. A suite taking a fresh connection per case
+// passes with that fault in place.
 func TestAConnectionWithNoOrganizationReadsNothingTwiceOver(t *testing.T) {
 	tn := setupTenants(t)
 	refuseToRunPrivileged(t, tn.appConn)
@@ -298,28 +281,25 @@ func TestAnApplicationSessionCannotWriteIntoAnotherTenant(t *testing.T) {
 		t.Fatalf("set: %v", err)
 	}
 
-	// Its own tenant first. Without this the refusal below would pass just as
-	// well on a role that cannot write at all, and a failed statement aborts
-	// the transaction, so the order is not a preference.
+	// Its own tenant first: otherwise the refusal below passes just as well on a role
+	// that cannot write at all, and a failed statement aborts the transaction, so the
+	// order is not a preference.
 	if _, err := tx.Exec(ctx, `INSERT INTO pivot_count (org_id, pivot_type, pivot_value, count)
 	                           VALUES ($1, 'favicon', 'its own', 1)`, tn.one); err != nil {
 		t.Fatalf("an organization could not write its own row: %v", err)
 	}
 
-	// A write is the half a USING clause does not cover. Without WITH CHECK a
-	// session could file rows under any tenant it liked and read none of them
-	// back, which is worse than reading them.
+	// A write is the half a USING clause does not cover. Without WITH CHECK a session
+	// could file rows under any tenant and read none back, worse than reading them.
 	if _, err := tx.Exec(ctx, `INSERT INTO pivot_count (org_id, pivot_type, pivot_value, count)
 	                           VALUES ($1, 'favicon', 'smuggled', 1)`, tn.two); err == nil {
 		t.Error("an organization wrote a row belonging to another")
 	}
 }
 
-// TestTheCrossingRoleCrossesAndTheFallbackCarriesIt exercises both paths.
-//
-// A fallback nobody exercises is no better than an absent one: it only adds the
-// certainty of having one. So the attribute is taken away in the middle of this
-// test and the same assertion is made again.
+// Exercises both paths. An unexercised fallback is no better than an absent one: it
+// only adds the certainty of having one, so the attribute is taken away mid-test and
+// the assertion repeated.
 func TestTheCrossingRoleCrossesAndTheFallbackCarriesIt(t *testing.T) {
 	tn := setupTenants(t)
 
@@ -362,12 +342,10 @@ func TestTheCrossingRoleCrossesAndTheFallbackCarriesIt(t *testing.T) {
 	}
 }
 
-// TestEveryTenantTableCarriesItsPolicies walks the catalog rather than a list.
-//
-// The fallback moves the property from the role to the policy, therefore onto
-// something a migration can forget to carry onto a new table. This is what
-// notices, and it counts partitions: a policy on a partitioned parent is
-// applied to a partition reached through the parent and to nothing else.
+// Walks the catalog, not a list. The fallback moves the property from the role to the
+// policy, which a migration can forget to carry to a new table; this notices. It
+// counts partitions, since a policy on a partitioned parent applies to a partition
+// reached through the parent and nothing else.
 func TestEveryTenantTableCarriesItsPolicies(t *testing.T) {
 	tn := setupTenants(t)
 	ctx := context.Background()
@@ -418,13 +396,9 @@ func TestEveryTenantTableCarriesItsPolicies(t *testing.T) {
 	}
 }
 
-// TestAPartitionCreatedLaterIsCoveredToo is the case a first application cannot
-// see.
-//
-// The policies are applied by the migration to what exists that day. A
-// partition created next month by the housekeeping loop is a table that did not
-// exist then, and an uncovered one reads every tenant while the parent reads
-// one.
+// The case a first application cannot see. The migration applies policies to what
+// exists that day; a partition the housekeeping loop creates next month is a new
+// table, and an uncovered one reads every tenant while the parent reads one.
 func TestAPartitionCreatedLaterIsCoveredToo(t *testing.T) {
 	tn := setupTenants(t)
 	ctx := context.Background()
@@ -460,18 +434,14 @@ func TestAPartitionCreatedLaterIsCoveredToo(t *testing.T) {
 	}
 }
 
-// TestCreatingAPartitionTouchesNoOtherTable is the cost of the previous test
-// being paid once rather than every month.
+// The cost of the previous test, paid once rather than monthly. Covering the new
+// partition by re-applying policies everywhere would be five ACCESS EXCLUSIVE locks
+// per table held until the maintenance transaction commits, blocking the application
+// on asset_current and asset each month, and failing on max_locks_per_transaction as
+// partitions only accumulate.
 //
-// Covering the new partition by re-applying the policies to everything would be
-// five ACCESS EXCLUSIVE locks per table, held until the maintenance transaction
-// commits, so the first tick of each month would block the whole application on
-// asset_current and on asset. And the partition set only grows: after a couple
-// of years that tick holds several hundred of those locks and starts failing on
-// max_locks_per_transaction.
-//
-// Proved by taking a policy away from a table the tick has no business
-// touching. If it comes back, the tick is touching everything.
+// Proved by removing a policy from a table the tick has no business touching: if it
+// returns, the tick touches everything.
 func TestCreatingAPartitionTouchesNoOtherTable(t *testing.T) {
 	tn := setupTenants(t)
 	ctx := context.Background()
@@ -513,12 +483,8 @@ func TestCreatingAPartitionTouchesNoOtherTable(t *testing.T) {
 	}
 }
 
-// TestAPartitionReachedDirectlyIsScopedToo is the assertion that found the
-// hole.
-//
-// Nothing in this repository names a partition. That is exactly the sort of
-// statement row-level security is the last line for, and the parent's policy
-// does not reach it.
+// The assertion that found the hole. Nothing here names a partition, which is what
+// row-level security is the last line for, and the parent's policy does not reach it.
 func TestAPartitionReachedDirectlyIsScopedToo(t *testing.T) {
 	tn := setupTenants(t)
 	refuseToRunPrivileged(t, tn.appConn)

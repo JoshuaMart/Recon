@@ -1,14 +1,10 @@
 // Package config is the only place in this repository that reads the
-// environment.
+// environment, enforced by the linter. Everything else receives a *Config.
 //
-// That is enforced by the linter rather than by convention, because without an
-// automatic constraint the rule holds for about three weeks. Everything else
-// receives a *Config; nothing reaches for a package-level global.
-//
-// Merge order is defaults in code, then a YAML file, then environment
-// variables prefixed RECON_. The env name of an option is its path uppercased
-// with "." replaced by "__", so database.migration_url is
-// RECON_DATABASE__MIGRATION_URL. Two underscores nest, one stays part of a key.
+// Merge order: defaults in code, a YAML file, then RECON_ environment
+// variables. An option's env name is its path uppercased with "." as "__", so
+// database.migration_url is RECON_DATABASE__MIGRATION_URL. Two underscores
+// nest; one stays part of a key.
 package config
 
 import (
@@ -29,10 +25,8 @@ import (
 )
 
 // Role is which binary is asking. It decides what a configuration must carry
-// and, more importantly, what it must not: the separation of database
-// credentials is a fact of deployment rather than a naming convention, so it
-// is checked here instead of being left to whoever writes the next compose
-// file.
+// and must not: database credential separation is checked here rather than left
+// to the next compose file.
 type Role string
 
 const (
@@ -42,9 +36,8 @@ const (
 	RoleMigrate Role = "migrate"
 )
 
-// MinSigningKeyLength is what the signing key has to reach. It mirrors what the
-// signer itself enforces, so a deployment finds out at startup rather than on
-// the first run it tries to authenticate.
+// MinSigningKeyLength mirrors what the signer enforces, so a bad key fails at
+// startup and not on the first authenticated run.
 const MinSigningKeyLength = 32
 
 // Runners a deployment can start runs with.
@@ -56,8 +49,7 @@ const (
 )
 
 // Environments the configuration accepts. Several options are refused outside
-// dev, so an unknown value must fail rather than default to the permissive
-// side.
+// dev, so an unknown value must fail instead of defaulting to the permissive side.
 const (
 	EnvDev     = "dev"
 	EnvStaging = "staging"
@@ -82,134 +74,103 @@ type Config struct {
 	CT           CT           `koanf:"ct"`
 }
 
-// CT is the Certificate Transparency feed and the matcher that walks it.
-//
-// The feed is a component and the matcher is not: certstream-server-go is
-// deployed as an image, and what lives in this process is a loop that dials it.
-// So the only address here is the aggregator's.
+// CT is the Certificate Transparency feed and its matcher. The feed is
+// certstream-server-go, deployed as an image; this process only dials it, so
+// the only address here is the aggregator's.
 type CT struct {
-	// URL is the aggregator's websocket. Empty turns the matcher off, which is
-	// a normal deployment rather than a degraded one: periodic enumeration
-	// still walks every perimeter, and nothing pretends to be watching the
-	// logs.
+	// URL is the aggregator's websocket. Empty turns the matcher off, a normal
+	// deployment: periodic enumeration still walks every perimeter.
 	URL string `koanf:"url"`
-	// Interval reloads the apex set and flushes the counters. It also decides
-	// the granularity of the feed's presence record, so above a minute that
-	// record is coarser than the table it is written to.
+	// Interval reloads the apex set and flushes the counters. It also sets the
+	// granularity of the feed's presence record, coarser than its table above a minute.
 	Interval time.Duration `koanf:"interval"`
 	// Ceiling is how many candidates one programme may create per Window.
 	//
-	// It bounds a mistake rather than a perimeter. An apex rule pointing at
-	// somebody else's shared infrastructure is one typo away, and without a
-	// bound a public feed decides the size of a customer's inventory. What it
-	// held back is logged when the window rolls, because a silent cap reads as
-	// a small answer rather than a truncated one.
+	// It bounds a mistake: an apex rule pointing at someone else's shared
+	// infrastructure is one typo away, and a public feed would decide the size of an
+	// inventory. What was held back is logged when the window rolls, since a silent
+	// cap reads as a small answer.
 	Ceiling int           `koanf:"ceiling"`
 	Window  time.Duration `koanf:"window"`
-	// CacheTTL and CacheSize bound the short term deduplication. It is a cost
-	// control and never the correctness one, which is the database's unique
-	// constraint, so both of these are free to be wrong in either direction.
+	// CacheTTL and CacheSize bound short-term deduplication. It is a cost control;
+	// correctness is the database's unique constraint, so both may err either way.
 	CacheTTL  time.Duration `koanf:"cache_ttl"`
 	CacheSize int           `koanf:"cache_size"`
 }
 
-// Notify is where alerts go and how often they leave.
-//
-// One generic webhook and only that. Discord and Slack are a payload template
-// rather than a connector: writing one in Go would freeze what a template
-// expresses and start over at the next one.
+// Notify is where alerts go and how often they leave. One generic webhook:
+// Discord and Slack are a payload template, not connectors.
 type Notify struct {
-	// WebhookURL is the configured channel. Empty means an organization with no
-	// channel, which is a deliberate configuration rather than an outage:
-	// events are marked delivered and counted, so "computed and sent nowhere"
-	// stays visible.
+	// WebhookURL is the configured channel. Empty is a deliberate setup, not an
+	// outage: events are marked delivered and counted, so "computed and sent
+	// nowhere" stays visible.
 	WebhookURL string `koanf:"webhook_url"`
-	// Template renders the body. Empty takes the default, which is the shape
-	// Discord and Slack both accept.
+	// Template renders the body. Empty takes the default, accepted by Discord and Slack.
 	Template string `koanf:"template"`
 	// MinPriority is the floor the configured channel wants.
 	MinPriority string `koanf:"min_priority"`
-	// Interval is how often the queue is drained. A takeover is sent with at
-	// most one tick between being written and being sent, so this is what
-	// "immediate" actually means.
+	// Interval is how often the queue is drained, which is what "immediate" means:
+	// a takeover waits at most one tick.
 	Interval time.Duration `koanf:"interval"`
 	Batch    int           `koanf:"batch"`
 	Timeout  time.Duration `koanf:"timeout"`
-	// UnobservableAlert is the share of a programme's inventory that makes a
-	// mass tip an event.
+	// UnobservableAlert is the share of a programme's inventory that makes a mass
+	// tip an event.
 	UnobservableAlert float64 `koanf:"unobservable_alert"`
 }
 
-// Runner is how a run definition is actually started.
+// Runner is how a run definition is started.
 //
-// The control plane starts, it never updates. The call that modifies a
-// definition replaces its whole environment map rather than merging into it, so
-// a control plane that wrote its overrides that way would wipe the source API
-// keys the definition carries, and nothing would fail: the next run would
-// simply query fewer sources and find less. Only the start call is made here,
-// and it takes its overrides per run.
+// The control plane starts, it never updates: the update call replaces the
+// whole environment map, wiping the source API keys the definition carries
+// without any error. Only the start call is made, with per-run overrides.
 type Runner struct {
 	// Provider is "none" or "scaleway". None renders the definition and starts
-	// nothing, which is the development shape: a person runs the image with
-	// what the console shows. It is the same shape as production minus the
-	// call, which is what keeps the local path from becoming a second way of
-	// starting a run.
+	// nothing: the development shape, where a person runs the image with what the
+	// console shows. It is production minus the call, so the local path is not a
+	// second way of starting a run.
 	Provider string `koanf:"provider"`
 	Region   string `koanf:"region"`
-	// JobID is the definition to start. It is deployed once, out of band, and
-	// this names it.
+	// JobID names the definition to start; it is deployed once, out of band.
 	JobID string `koanf:"job_id"`
-	// SecretKey is the only credential, and it is scoped to starting this
-	// definition and to nothing else on the account. It sits in the process
-	// that already holds the inventory, so how narrow it is is the only thing
-	// bounding the damage of that process being compromised.
+	// SecretKey is the only credential, scoped to starting this definition. It sits
+	// in the process holding the inventory, so its narrowness bounds the damage of
+	// a compromise.
 	SecretKey string `koanf:"secret_key"`
-	// Endpoint is the API base, so a test does not call a cloud.
+	// Endpoint is the API base, so tests do not call a cloud.
 	Endpoint string        `koanf:"endpoint"`
 	Timeout  time.Duration `koanf:"timeout"`
 }
 
-// Render is the browser side of verification.
-//
-// It is a separate block from verification because it answers to a different
-// unit: a probe is milliseconds and a render is seconds and several hundred
-// megabytes, so the two cannot share a batch size or a cadence without one of
-// them being wrong.
+// Render is the browser side of verification. It is separate from verification
+// because a probe takes milliseconds while a render takes seconds and hundreds
+// of megabytes, so they cannot share a batch size or cadence.
 type Render struct {
-	// URL is where the rendering service listens. Empty turns the loop off,
-	// which is the one honest way to run without a browser: the assets keep
-	// their due dates and nothing pretends to have looked.
+	// URL is where the rendering service listens. Empty turns the loop off: assets
+	// keep their due dates and nothing pretends to have looked.
 	URL     string        `koanf:"url"`
 	Timeout time.Duration `koanf:"timeout"`
 	// Interval is how often the pass runs.
 	Interval time.Duration `koanf:"interval"`
 	Batch    int           `koanf:"batch"`
-	// Concurrency is set above where the budget binds rather than at it, so
-	// the thing throttling a programme is its published rate limit and not a
-	// number nobody calibrated.
+	// Concurrency is set above where the budget binds, so the throttle is the
+	// programme's published rate limit rather than an uncalibrated number.
 	Concurrency int `koanf:"concurrency"`
 	// Cost is what one render is charged against a programme's rate limit. A
-	// browser fetches a page and then everything the page pulls, so billing it
-	// as one request would make the most expensive thing in the system the
-	// cheapest on the counter.
+	// browser fetches the page and everything it pulls, so billing it as one request
+	// would make the costliest operation the cheapest.
 	Cost int `koanf:"cost"`
-	// UnobservableAlert is the share of a programme's inventory that turns a
-	// mass tip into an alert. A mass tip says something about the observer
-	// rather than about the targets.
+	// UnobservableAlert is the share of a programme's inventory that turns a mass
+	// tip into an alert; a mass tip is about the observer, not the targets.
 	UnobservableAlert float64 `koanf:"unobservable_alert"`
-	// ReplanSpread is how long a forced refresh after a service update is
-	// spread over. It exists to restore baseline consistency without a mass
-	// alert, and doing that in an hour would be the mass alert.
+	// ReplanSpread is how long a forced refresh after a service update is spread
+	// over. It restores baselines without a mass alert, which an hour would be.
 	ReplanSpread time.Duration `koanf:"replan_spread"`
 }
 
-// Verification is the loop that keeps the inventory honest, and the shape of
-// the runs it provisions.
-//
-// The cadences are configuration rather than constants because the stage ladder
-// is the cost knob: a resolve is one round trip to the resolver pool and a full
-// is a hundred connections per host, so the right numbers depend on the size of
-// a perimeter and on what the programme allows.
+// Verification is the loop that keeps the inventory honest and the shape of its
+// runs. Cadences are configuration because the stage ladder is the cost knob: a
+// resolve is one resolver round trip, a full is a hundred connections per host.
 type Verification struct {
 	Resolve     time.Duration `koanf:"resolve"`
 	Full        time.Duration `koanf:"full"`
@@ -217,82 +178,65 @@ type Verification struct {
 	Inactive    time.Duration `koanf:"inactive"`
 	Jitter      time.Duration `koanf:"jitter"`
 	// RenderSole, RenderRecovery and RenderBlind are the cadences of the three
-	// regimes that are not the nominal one. They are separate values because
-	// each answers a different question: who is still detecting, and is a
-	// render a measurement or a recovery attempt.
+	// non-nominal regimes: who is still detecting, and whether a render is a
+	// measurement or a recovery attempt.
 	RenderSole     time.Duration `koanf:"render_sole"`
 	RenderRecovery time.Duration `koanf:"render_recovery"`
 	RenderBlind    time.Duration `koanf:"render_blind"`
-	// FullFloor is how often a failing asset's port sweep may run at its
-	// fastest. A backoff curve is written for the cheap rung, and applying it
-	// unchanged to the expensive one turns a confirmation into a flood.
+	// FullFloor is the fastest a failing asset's port sweep may run. A backoff curve
+	// is written for the cheap rung; unchanged on the expensive one it becomes a flood.
 	FullFloor time.Duration `koanf:"full_floor"`
-	// BatchSize is how many hosts one run freezes. It is what actually bounds
-	// a pass: a due date decides eligibility, and this decides what goes out.
+	// BatchSize is how many hosts one run freezes. A due date decides eligibility,
+	// this decides what goes out.
 	BatchSize int `koanf:"batch_size"`
-	// Timeout is a run's own budget, and it has to expire before the
-	// platform's. The outer bound sits on a job definition Recon does not
-	// control, so this value has to be set to match: a run killed from outside
-	// delivers nothing, where one that runs out of its own time still delivers
-	// a truncated report.
+	// Timeout is a run's own budget and must expire before the platform's, which
+	// sits on a job definition Recon does not control. A run killed from outside
+	// delivers nothing; one that runs out of its own time delivers a truncated report.
 	Timeout time.Duration `koanf:"timeout"`
-	// CandidateTimeout is a candidate run's budget, and it is much shorter
-	// because that run does one rung over a short list. The deadline is how
-	// long the lane's slot is held, so a candidate run given a sweep's budget
-	// would turn the bound the lane exists for back into the problem it solves.
+	// CandidateTimeout is a candidate run's budget, much shorter since it does one
+	// rung over a short list. The deadline is how long the lane's slot is held.
 	CandidateTimeout time.Duration `koanf:"candidate_timeout"`
-	// Grace is how long past the deadline a report is still worth ingesting.
-	// The data is valid either way; the run may simply have been
-	// re-dispatched.
+	// Grace is how long past the deadline a report is still ingested. The data is
+	// valid; the run may have been re-dispatched.
 	Grace time.Duration `koanf:"grace"`
-	// ReportTimeout is how long the scanner waits for Recon to answer a
-	// report, and how long Recon gives itself to write one. FastRecon's own
-	// default is thirty seconds, and a large discovery report takes longer to
-	// write than that: the scanner hung up, the write was rolled back, and the
-	// retries repeated the same work to the same end.
+	// ReportTimeout is how long the scanner waits for Recon to answer a report and
+	// how long Recon gives itself to write one. FastRecon's thirty second default
+	// is shorter than a large discovery report takes: the scanner hung up, the
+	// write rolled back, and retries repeated the same work.
 	ReportTimeout time.Duration `koanf:"report_timeout"`
-	// SweepInterval is how often runs past their deadline are expired. A run
-	// nothing expires holds its targets forever.
+	// SweepInterval is how often runs past their deadline are expired; an
+	// unexpired run holds its targets forever.
 	SweepInterval time.Duration `koanf:"sweep_interval"`
-	// DiscoveryRetry is how long after a discovery run that delivered nothing
-	// a replacement may be provisioned. It is much shorter than the discovery
-	// interval, because a run that failed in thirty seconds must not cost a
-	// week of coverage, and much longer than the tick, because a permanently
-	// broken runner would otherwise provision and bill on every one.
+	// DiscoveryRetry is how long after an empty discovery run a replacement may be
+	// provisioned. Far shorter than the discovery interval, so a thirty-second
+	// failure does not cost a week, and far longer than the tick, so a permanently
+	// broken runner is not provisioned and billed every tick.
 	DiscoveryRetry time.Duration `koanf:"discovery_retry"`
-	// Ports is the curated list, and it is data rather than code. It travels
-	// in the run definition so discovery and verification scan the same ports:
-	// a second list configured on the scanner would be a second list to keep
-	// in agreement, and nothing would raise an error when the two diverged.
+	// Ports is the curated list, as data. It travels in the run definition so
+	// discovery and verification scan the same ports; a second list on the scanner
+	// could diverge without any error.
 	Ports string `koanf:"ports"`
-	// PublicURL is the base a run reaches this control plane on, for its
-	// target list and for its report. It is not derivable from the listen
-	// address: the scanner runs somewhere else entirely.
+	// PublicURL is the base a run reaches this control plane on. It cannot be
+	// derived from the listen address: the scanner runs elsewhere.
 	PublicURL string `koanf:"public_url"`
 }
 
-// Security holds the one secret the control plane signs with.
-//
-// A run's credentials are HMACs over the run, the purpose and an expiry, so
-// there is nothing to store, nothing to revoke and nothing to purge. The whole
-// of that rests on this key, which is why a short one is refused: an HMAC whose
-// key can be guessed lets anyone mint a token for any run.
+// Security holds the one secret the control plane signs with. Run credentials
+// are HMACs over run, purpose and expiry, so nothing is stored or revoked. All
+// of it rests on this key, hence a short one is refused: a guessable key lets
+// anyone mint a token for any run.
 type Security struct {
 	SigningKey string `koanf:"signing_key"`
 }
 
-// Maintenance is the housekeeping tick.
-//
-// It has no enable flag on purpose. A partition job that can be turned off is
-// an ingestion outage three months later, triggered by a button that talks
-// about something else.
+// Maintenance is the housekeeping tick. It has no enable flag: a partition job
+// that can be turned off is an ingestion outage three months later.
 type Maintenance struct {
 	Interval time.Duration `koanf:"interval"`
 }
 
 // Log controls what the process writes to stderr. Everything is structured and
-// carries a correlation id from ingestion onwards; grafting that on later means
-// touching every write path.
+// carries a correlation id; adding that later touches every write path.
 type Log struct {
 	Level  string `koanf:"level"`
 	Format string `koanf:"format"`
@@ -305,64 +249,52 @@ type HTTP struct {
 	ShutdownTimeout time.Duration `koanf:"shutdown_timeout"`
 }
 
-// Database holds one connection string per role. They are separate variables
-// rather than one string with a switch, because the role a process connects
-// with is chosen when a pool is opened and not case by case in the code.
+// Database holds one connection string per role, as separate variables: the
+// role is chosen when a pool is opened, not case by case in the code.
 type Database struct {
-	// URL is asm_app: the control plane's requests, subject to row-level
-	// security once it exists.
+	// URL is asm_app: the control plane's requests, under row-level security.
 	URL string `koanf:"url"`
-	// SystemURL is asm_sys: the background loops that serve every tenant in
-	// one tick, and the two lookups that turn a credential into an
-	// organization. It is required on the control plane, because under
-	// row-level security a loop connected as the application role reads zero
-	// rows rather than failing.
+	// SystemURL is asm_sys: the background loops serving every tenant in one tick,
+	// and the two lookups turning a credential into an organization. Required on the
+	// control plane, since under row-level security a loop on the application role
+	// reads zero rows instead of failing.
 	SystemURL string `koanf:"system_url"`
 	// MigrationURL is asm_owner. It must never be in the control plane's
-	// environment: role separation buys nothing if whoever reaches execution
-	// there finds the owner credentials next to the application ones.
+	// environment, or role separation buys nothing.
 	MigrationURL string `koanf:"migration_url"`
 
 	MaxConns int32 `koanf:"max_conns"`
-	// SystemMaxConns bounds the second pool separately, and it has to: both
-	// pools reading one setting means a deployment tuned so the control plane
-	// never exceeds N backends quietly opens 2N, which on a managed instance
-	// with a hard max_connections is how the *next* service fails to connect.
-	//
-	// It is much smaller because the work is: a handful of loops on a timer,
-	// against a pool that serves every request.
+	// SystemMaxConns bounds the second pool separately. Sharing one setting would
+	// make a deployment tuned for N backends quietly open 2N, which on a managed
+	// instance with a hard max_connections breaks the next service. It is much
+	// smaller because the work is: a few timed loops against a request-serving pool.
 	SystemMaxConns int32         `koanf:"system_max_conns"`
 	ConnectTimeout time.Duration `koanf:"connect_timeout"`
 }
 
-// External is the sweep that asks whether somebody else's domain is still
+// External is the sweep asking whether someone else's domain is still
 // registered.
 //
-// A DNS lookup is allowed outside a scan authorization: what the guardrails
-// protect is interaction with a third party's infrastructure, and a query to a
-// public resolver reaches neither the domain nor its servers. An interval of
-// zero turns the loop off entirely, for a deployment that would rather not make
-// outbound queries at all.
+// A DNS lookup is allowed outside a scan authorization: the guardrails protect
+// interaction with a third party's infrastructure, and a public resolver query
+// reaches neither the domain nor its servers. An interval of zero turns the
+// loop off for deployments that want no outbound queries.
 type External struct {
 	Interval time.Duration `koanf:"interval"`
 	Timeout  time.Duration `koanf:"timeout"`
 	Batch    int           `koanf:"batch"`
 }
 
-// Enrich points at the Geo-IP databases.
-//
-// Both paths are optional and a deployment with neither is a normal
-// deployment. What matters is that the difference is visible: the console
-// cannot tell "not configured" from "configured with no match" by looking at
-// the data, since both leave an asset without an operator.
+// Enrich points at the Geo-IP databases. Both paths are optional, but the
+// difference must be visible: the console cannot tell "not configured" from
+// "configured, no match", as both leave an asset without an operator.
 type Enrich struct {
 	CityDatabase string `koanf:"city_database"`
 	ASNDatabase  string `koanf:"asn_database"`
 }
 
-// Defaults are the values a deployment inherits when it says nothing. They
-// live in code rather than in a shipped file so that an empty environment is
-// still a working one.
+// Defaults are the values a deployment inherits when it says nothing. They live
+// in code so an empty environment still works.
 func Defaults() Config {
 	return Config{
 		Env: EnvDev,
@@ -378,10 +310,9 @@ func Defaults() Config {
 			ConnectTimeout: 5 * time.Second,
 		},
 		Maintenance: Maintenance{Interval: time.Hour},
-		// Six hours, because a domain expiring is a step that stays rather
-		// than a transient, and a tighter cadence would buy latency on a fact
-		// that does not move while paying for it in queries against every
-		// third party a whole deployment references.
+		// Six hours: an expiring domain is a step that stays, so a tighter cadence buys
+		// latency on a fact that does not move at the cost of queries against every
+		// referenced third party.
 		External: External{Interval: 6 * time.Hour, Timeout: 5 * time.Second, Batch: 5000},
 		Notify: Notify{
 			MinPriority:       "low",
@@ -429,10 +360,9 @@ func Defaults() Config {
 			ReportTimeout:    10 * time.Minute,
 			SweepInterval:    time.Minute,
 			DiscoveryRetry:   time.Hour,
-			// Not nmap's top 100, which orders ports by how often they are
-			// open across the whole internet and therefore leads with mail and
-			// printing. The criterion here is that a port earns its place if
-			// it can carry a finding.
+			// Not nmap's top 100, which ranks by how often a port is open across the
+			// internet and so leads with mail and printing. A port earns its place if it
+			// can carry a finding.
 			Ports: "80,443,8080,8443,8000,8090,9000,9443,3000,5000," +
 				"2375,2376,6443,10250,15672,5601,8983,9990,2083,2087," +
 				"3306,5432,27017,6379,9200,11211,9042,2379," +
@@ -442,21 +372,18 @@ func Defaults() Config {
 }
 
 // Options adjust where a configuration is read from. The zero value reads the
-// process environment and the file RECON_CONFIG names, which is what every
-// binary uses: no command reaches for the environment itself.
+// process environment and the file RECON_CONFIG names, as every binary does.
 type Options struct {
-	// File is an optional YAML path, overriding RECON_CONFIG. Missing is not
-	// an error: a deployment configured entirely through the environment is
-	// the normal case.
+	// File is an optional YAML path, overriding RECON_CONFIG. Missing is not an
+	// error: environment-only deployments are normal.
 	File string
-	// Environ overrides the source of environment variables. Tests set it so
-	// that they never touch the process environment, which is also why this
-	// package can be tested in parallel.
+	// Environ overrides the source of environment variables, so tests never touch
+	// the process environment and can run in parallel.
 	Environ func() []string
 }
 
-// configVar names the file to read. It is deliberately not an option of the
-// structure: a configuration cannot say where it is loaded from.
+// configVar names the file to read. It is not a structure option: a
+// configuration cannot say where it is loaded from.
 const configVar = prefix + "CONFIG"
 
 func (o Options) environ() []string {
@@ -484,10 +411,9 @@ const (
 	nest   = "__"
 )
 
-// Load merges the three layers, decodes into a typed structure and validates
-// it for the role that asked. It returns every problem it found rather than
-// the first, because a half-configured deployment is usually half-configured
-// in several places at once.
+// Load merges the three layers, decodes into a typed structure and validates it
+// for the role. It returns every problem found, not the first, since a
+// half-configured deployment usually is in several places.
 func Load(role Role, opts Options) (*Config, error) {
 	k := koanf.New(delim)
 
@@ -522,9 +448,7 @@ func Load(role Role, opts Options) (*Config, error) {
 			DecodeHook: mapstructure.ComposeDecodeHookFunc(
 				mapstructure.StringToTimeDurationHookFunc(),
 			),
-			// An unknown key is a typo, and a typo in configuration is a
-			// setting somebody believes they changed. Failing on it costs one
-			// error message; accepting it costs an afternoon.
+			// An unknown key is a typo, i.e. a setting someone believes they changed.
 			ErrorUnused:      true,
 			WeaklyTypedInput: true,
 		},
@@ -539,8 +463,8 @@ func Load(role Role, opts Options) (*Config, error) {
 }
 
 // transform turns RECON_DATABASE__MIGRATION_URL into database.migration_url.
-// An empty name is dropped by the provider, which is how RECON_CONFIG stays
-// out of the decoded structure: it says where to read, not what to be.
+// The provider drops an empty name, which keeps RECON_CONFIG out of the decoded
+// structure.
 func transform(key, value string) (string, any) {
 	if key == configVar {
 		return "", nil
@@ -588,12 +512,10 @@ func (c *Config) Validate(role Role) error {
 		if c.Database.URL == "" {
 			fail("database.url is required: the control plane connects as the application role")
 		}
-		// Required rather than optional, and the reason is that its absence has
-		// no safe reading. A control plane with one credential would have to
-		// run the loops that serve every tenant as the application role, which
-		// row-level security answers with zero rows: the housekeeping would
-		// create no partition, the sweeper would expire no run and the notifier
-		// would send nothing, all of it quietly and all of it looking healthy.
+		// Required because its absence has no safe reading: the loops serving every
+		// tenant would run as the application role, which row-level security answers
+		// with zero rows. No partition created, no run expired, nothing notified, all
+		// looking healthy.
 		if c.Database.SystemURL == "" {
 			fail("database.system_url is required: the loops that serve every tenant in one tick " +
 				"connect as the system role, and under row-level security the application role " +
@@ -607,7 +529,7 @@ func (c *Config) Validate(role Role) error {
 				"crosses tenants is the role that must not: the separation is a fact of deployment " +
 				"rather than a naming convention")
 		}
-		// The one refusal that is a security property rather than a check.
+		// A security property, not a check.
 		if c.Database.MigrationURL != "" {
 			fail("database.migration_url must not be set on the control plane: " +
 				"separating the roles buys nothing if the owner credentials sit " +
@@ -626,9 +548,8 @@ func (c *Config) Validate(role Role) error {
 		if c.Maintenance.Interval <= 0 {
 			fail("maintenance.interval must be positive, got %s", c.Maintenance.Interval)
 		}
-		// Validated whether or not a feed is configured. A deployment that
-		// turns the matcher on later would otherwise find its tunables refused
-		// at the moment it least wants a startup failure.
+		// Validated whether or not a feed is configured, so turning the matcher on later
+		// does not refuse its tunables at startup.
 		if c.Verification.CandidateTimeout > c.Verification.Timeout {
 			fail("verification.candidate_timeout (%s) exceeds verification.timeout (%s): the "+
 				"candidate lane exists so a candidate does not wait behind a sweep, and a slot "+
@@ -676,9 +597,8 @@ func (c *Config) Validate(role Role) error {
 				fail("render.%s must be positive, got %s", name, value)
 			}
 		}
-		// Seconds, because that is the unit the statement spreads over. Under
-		// one second it truncates to zero and the modulo divides by it, which
-		// turns every replan into a 500.
+		// Seconds, the unit the statement spreads over: below one second it truncates
+		// to zero, the modulo divides by it, and every replan returns a 500.
 		if c.Render.ReplanSpread < time.Second {
 			fail("render.replan_spread must be at least a second, got %s", c.Render.ReplanSpread)
 		}
@@ -691,9 +611,8 @@ func (c *Config) Validate(role Role) error {
 		switch c.Runner.Provider {
 		case RunnerNone:
 		case RunnerScaleway:
-			// Each of these is a way for a run to be started against nothing,
-			// and the failure would arrive as a scanner that never appears
-			// rather than as a missing setting.
+			// Each would start a run against nothing, surfacing as a scanner that never
+			// appears and not as a missing setting.
 			if c.Runner.Region == "" {
 				fail("runner.region is required with the %s runner", RunnerScaleway)
 			}
@@ -722,19 +641,17 @@ func (c *Config) Validate(role Role) error {
 		if c.Notify.Interval <= 0 || c.Notify.Timeout <= 0 || c.Notify.Batch <= 0 {
 			fail("notify.interval, notify.timeout and notify.batch must all be positive")
 		}
-		// The floor is the first re-emission tier, and below it the mass tip
-		// would never speak at all: the setting would be accepted, pass its own
-		// check, and be silently overridden.
+		// The floor is the first re-emission tier; below it the mass tip would never
+		// speak, and the setting would pass its check and be silently overridden.
 		if floor := notify.UnobservableTiers[0]; c.Notify.UnobservableAlert < floor || c.Notify.UnobservableAlert > 1 {
 			fail("notify.unobservable_alert must be a share in [%v, 1], because %v is the first "+
 				"tier a mass tip re-emits at and nothing below it can ever fire, got %v",
 				floor, floor, c.Notify.UnobservableAlert)
 		}
 
-		// A run reaches this control plane from somewhere else entirely, so
-		// this cannot be derived from the listen address. Without it a run
-		// definition names nowhere, and the failure would surface as a scanner
-		// that cannot fetch its targets rather than as a missing setting.
+		// A run reaches this control plane from elsewhere, so this cannot be derived
+		// from the listen address. Without it the scanner cannot fetch its targets, and
+		// that would not look like a missing setting.
 		if c.Verification.PublicURL == "" {
 			fail("verification.public_url is required: it is where a run fetches its " +
 				"target list and posts its report")
@@ -744,8 +661,8 @@ func (c *Config) Validate(role Role) error {
 		if c.Database.MigrationURL == "" {
 			fail("database.migration_url is required: the migrator runs as the owner")
 		}
-		// Symmetric to the refusal above. This process has no business holding
-		// the application credential either.
+		// Symmetric to the refusal above: this process must not hold the application
+		// credential either.
 		if c.Database.URL != "" {
 			fail("database.url must not be set on the migrator: it runs as the owner")
 		}
@@ -760,7 +677,6 @@ func (c *Config) Validate(role Role) error {
 	return errors.Join(errs...)
 }
 
-// IsDev reports whether options refused outside development may be used. It is
-// a method rather than a comparison at each call site so that adding an
-// environment does not mean auditing every one of them.
+// IsDev reports whether options refused outside development may be used. A
+// method so adding an environment does not mean auditing every comparison.
 func (c *Config) IsDev() bool { return c.Env == EnvDev }

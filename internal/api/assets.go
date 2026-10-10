@@ -14,26 +14,19 @@ import (
 	"github.com/JoshuaMart/recon/internal/store"
 )
 
-// maxQueryBytes bounds a filter tree.
-//
-// A tree is a few hundred bytes and the compiler already bounds its depth and
-// its clause count. This is the layer in front of both, so a body that would
-// exhaust the decoder never reaches them.
+// maxQueryBytes bounds a filter tree. A tree is a few hundred bytes and the
+// compiler bounds depth and clause count; this sits in front so a body that
+// would exhaust the decoder never reaches them.
 const maxQueryBytes = 1 << 20
 
-// Assets is the search surface.
-//
-// A structured tree rather than a query string, and a POST rather than a GET,
-// because the question is a document. A textual language comes later and
-// produces the same tree, which is what avoids freezing a syntax before anybody
-// knows what actually gets filtered.
+// Assets is the search surface. A structured tree over POST because the question
+// is a document; a textual language can later produce the same tree without
+// freezing a syntax before anyone knows what gets filtered.
 type Assets struct {
 	db *store.Scoped
-	// enriched is what this deployment can do, not what it has found. A
-	// deployment without a MaxMind database is a normal one, and the console
-	// cannot tell that from "enriched with no match" by looking at the data:
-	// no asset carries an ASN in either case. So the server says it, and
-	// deducing it from missing data would be guessing.
+	// enriched is what this deployment can do, not what it found. Without a MaxMind
+	// database the console cannot tell "not configured" from "enriched, no match" (no
+	// asset carries an ASN either way), so the server says it.
 	enriched bool
 	now      func() time.Time
 	log      *slog.Logger
@@ -50,8 +43,8 @@ type query struct {
 	Limit  int             `json:"limit,omitempty"`
 	Cursor string          `json:"cursor,omitempty"`
 	Format string          `json:"format,omitempty"`
-	// Field asks the facets for one field, deeper. Empty is the sidebar, which
-	// is every facet capped short.
+	// Field asks the facets for one field, deeper. Empty is the sidebar with every
+	// facet capped short.
 	Field string `json:"field,omitempty"`
 }
 
@@ -87,12 +80,9 @@ func (h *Assets) Search(w http.ResponseWriter, r *http.Request, principal auth.P
 	writeJSON(w, http.StatusOK, page)
 }
 
-// Hosts answers one page of the folded list.
-//
-// The list the console renders, and a route of its own rather than a flag on
-// the one above. The two hand out cursors that mean different columns, so
-// behind one route a client that kept the cursor and flipped the flag would get
-// a walk that restarts or skips, and neither says anything.
+// Hosts answers one page of the folded list, the one the console renders. A route
+// of its own, not a flag: the cursors mean different columns, and a client
+// flipping a flag with a kept cursor would get a walk that restarts or skips.
 func (h *Assets) Hosts(w http.ResponseWriter, r *http.Request, principal auth.Principal) {
 	ctx := r.Context()
 
@@ -124,12 +114,10 @@ func (h *Assets) Hosts(w http.ResponseWriter, r *http.Request, principal auth.Pr
 	writeJSON(w, http.StatusOK, page)
 }
 
-// Get answers one asset, with its evidence and its timeline.
-//
-// The only read path here that touches the journal, and the boundary is
-// demonstrated from both sides: with SELECT ON observation revoked, the list,
-// the facets and the export must work and this must fail. Without the second
-// half the boundary can move in silence.
+// Get answers one asset with its evidence and timeline. The only read path here
+// touching the journal, and tested from both sides: with SELECT ON observation
+// revoked the list, facets and export must work and this must fail, or the
+// boundary can move silently.
 func (h *Assets) Get(w http.ResponseWriter, r *http.Request, principal auth.Principal) {
 	ctx := r.Context()
 
@@ -148,9 +136,8 @@ func (h *Assets) Get(w http.ResponseWriter, r *http.Request, principal auth.Prin
 
 	detail, err := search.Get(ctx, tx, principal.OrgID, assetID, h.now())
 	if errors.Is(err, search.ErrNoAsset) {
-		// The same answer for an asset that does not exist and one belonging to
-		// another organization. The difference between them enumerates what
-		// exists, and one bit is enough.
+		// Same answer for a missing asset and another organization's: the difference
+		// enumerates what exists.
 		fail(w, http.StatusNotFound, "not_found", "no such asset")
 		return
 	}
@@ -161,12 +148,10 @@ func (h *Assets) Get(w http.ResponseWriter, r *http.Request, principal auth.Prin
 	writeJSON(w, http.StatusOK, detail)
 }
 
-// Facets aggregates over the filtered result rather than over the inventory.
-//
-// With a field named, one facet and deeper: the sidebar's cap is what makes a
-// value below it unreachable, and this is the same aggregation over the same
-// filtered set asked for one field at a time. One route rather than two,
-// because it is the same question with a different bound.
+// Facets aggregates over the filtered result, not the inventory. With a field
+// named it goes deeper on that one: the sidebar cap makes values below it
+// unreachable, and this is the same aggregation asked per field. One route, as it
+// is the same question with a different bound.
 func (h *Assets) Facets(w http.ResponseWriter, r *http.Request, principal auth.Principal) {
 	ctx := r.Context()
 
@@ -196,13 +181,10 @@ func (h *Assets) Facets(w http.ResponseWriter, r *http.Request, principal auth.P
 	writeJSON(w, http.StatusOK, page)
 }
 
-// Export writes the filtered result in full, as it walks it.
-//
-// It streams rather than accumulating, so the response starts before the walk
-// finishes and nothing holds an inventory in memory. The consequence is worth
-// stating: a failure halfway through has already sent a valid prefix, and the
-// status line is long gone. That is why the count is logged and why a limit the
-// caller asked for is honoured exactly rather than rounded.
+// Export writes the filtered result in full, streaming: the response starts
+// before the walk ends and nothing holds an inventory in memory. So a failure
+// halfway has already sent a valid prefix and the status line is gone, which is
+// why the count is logged and a requested limit is honoured exactly.
 func (h *Assets) Export(w http.ResponseWriter, r *http.Request, principal auth.Principal) {
 	ctx := r.Context()
 
@@ -223,10 +205,9 @@ func (h *Assets) Export(w http.ResponseWriter, r *http.Request, principal auth.P
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// The status is committed to only once the first page has come back, which
-	// is what lets a failure on the very first statement stay a failure. Sent
-	// up front, it would answer 200 with a zero byte body, and the caller has
-	// no way to tell that from an inventory with nothing in it.
+	// The status is committed only after the first page returns, so a failure on the
+	// first statement stays one; sent up front it would be a 200 with an empty body,
+	// indistinguishable from an empty inventory.
 	started := false
 	begin := func() io.Writer {
 		started = true
@@ -253,9 +234,9 @@ func (h *Assets) Export(w http.ResponseWriter, r *http.Request, principal auth.P
 			h.answerError(ctx, w, "export failed before it began", err)
 			return
 		}
-		// Past that point the body has begun and this cannot become a status.
-		// It is logged and the connection carries a truncated file, which is
-		// the one case where an export ends short: a failure rather than a cap.
+		// Past here the body has begun and this cannot become a status. It is logged and
+		// the connection carries a truncated file: the one way an export ends short, a
+		// failure and not a cap.
 		h.log.ErrorContext(ctx, "export failed part way",
 			"org", principal.OrgID, "written", written, "error", err)
 		return
@@ -264,20 +245,17 @@ func (h *Assets) Export(w http.ResponseWriter, r *http.Request, principal auth.P
 		"org", principal.OrgID, "format", format, "assets", written)
 }
 
-// Fields says what the search accepts.
-//
-// Served rather than deduced, for the same reason the enrichment state is: a
-// console learning a vocabulary against 400s learns it wrong.
+// Fields says what the search accepts, served rather than deduced like the
+// enrichment state.
 func (h *Assets) Fields(w http.ResponseWriter, _ *http.Request, _ auth.Principal) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"fields":       search.Fields(),
 		"facets":       search.FacetLimit,
 		"page_limit":   search.MaxLimit,
 		"page_default": search.DefaultLimit,
-		// What this deployment can do, which the console cannot deduce. With no
-		// database configured the infrastructure family is not shown rather
-		// than shown empty: an empty area reads as a broken interface, and
-		// somebody goes looking for a fault where there is none.
+		// What this deployment can do, which the console cannot deduce. With no database
+		// configured the infrastructure family is hidden, not shown empty: an empty area
+		// reads as a broken interface.
 		"enrichment": map[string]any{"configured": h.enriched},
 	})
 }
@@ -294,19 +272,16 @@ func (h *Assets) read(w http.ResponseWriter, r *http.Request) (query, search.Nod
 
 	filter, err := search.Parse(body.Filter)
 	if err != nil {
-		// Named rather than answered with an empty result set, which a console
-		// would read as an empty inventory.
+		// Named, not an empty result set the console would read as an empty inventory.
 		fail(w, http.StatusBadRequest, "bad_filter", err.Error())
 		return query{}, search.Node{}, false
 	}
 	return body, filter, true
 }
 
-// answerError tells a refusal from a failure.
-//
-// A query the registry does not describe is the caller's, and naming it is what
-// makes the vocabulary learnable. Anything else is ours and says nothing about
-// the database to the outside.
+// answerError tells a refusal from a failure. A query the registry does not
+// describe is the caller's, and naming it makes the vocabulary learnable.
+// Anything else is ours and says nothing about the database.
 func (h *Assets) answerError(ctx context.Context, w http.ResponseWriter, what string, err error) {
 	var refusal *search.Error
 	if errors.As(err, &refusal) {

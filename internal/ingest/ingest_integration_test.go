@@ -97,11 +97,10 @@ func newHarness(t *testing.T) *harness {
 	return h
 }
 
-// fixturePartitions keeps the database clock from deciding whether the fixed
-// test clock can write. The production migration creates the current and future
-// months; these tests deliberately start in August 2026 and can advance into
-// September. Both partitioned tables receive the same RLS policy as a partition
-// created by the maintenance function.
+// fixturePartitions keeps the database clock from deciding whether the fixed test clock
+// can write. The migration creates the current and future months; these tests start in
+// August 2026 and can advance into September. Both partitioned tables get the same RLS
+// policy as a partition made by the maintenance function.
 func fixturePartitions(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 
@@ -267,9 +266,8 @@ func TestTheDeduplicationRateClearsItsThreshold(t *testing.T) {
 	}
 
 	var submitted, deduplicated int
-	// Twenty passes rather than ten: the first can structurally deduplicate
-	// nothing, so at N passes the arithmetic ceiling is (N-1)/N, and ten would
-	// put that ceiling exactly on the threshold.
+	// Twenty passes, not ten: the first cannot deduplicate anything, so the ceiling at N
+	// passes is (N-1)/N, and ten would put it exactly on the threshold.
 	for range 20 {
 		for _, report := range reports {
 			summary, err := h.ing.Report(ctx, h.queries, h.run(), set, report)
@@ -383,9 +381,8 @@ func TestAURLPrefixExclusionLeavesItsServiceInScope(t *testing.T) {
 	}
 }
 
-// Two organizations tracking the same public target hold two independent
-// inventories: the authorization is granted per organization, and a shared one
-// would be an information leak.
+// Two organizations tracking one public target hold independent inventories: the
+// authorization is per organization, and sharing it would leak information.
 func TestTwoOrganizationsHoldTheSameHostIndependently(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -441,9 +438,8 @@ func TestAHostOutsideTheFrozenListIsRejected(t *testing.T) {
 	}
 }
 
-// The number is what keeps a first asset reaching the database quickly: at a
-// millisecond of latency, two statements per observation against seven is two
-// hundred milliseconds of waiting against seven hundred.
+// The number keeps a first asset reaching the database quickly: at a millisecond of
+// latency, two statements per observation against seven is 200 ms of waiting against 700.
 func TestTheIngestionCostStaysUnderItsBudget(t *testing.T) {
 	const budget = 3.0
 
@@ -482,9 +478,8 @@ func TestTheIngestionCostStaysUnderItsBudget(t *testing.T) {
 
 var _ = pgtype.Timestamptz{}
 
-// The projection carries the operator, and it travels with the upsert rather
-// than in a statement of its own: the enrichment is in hand at the moment the
-// row is written.
+// The projection carries the operator, travelling with the upsert and not a statement of
+// its own: the enrichment is in hand when the row is written.
 func TestTheOperatorReachesTheProjection(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -513,9 +508,8 @@ func TestTheOperatorReachesTheProjection(t *testing.T) {
 		t.Errorf("country = %v", country)
 	}
 
-	// A service derived from that host carries it too: five ports of one
-	// address have the same operator, and the row that describes a surface is
-	// the one somebody filters on.
+	// A service derived from the host carries it too: five ports of one address share an
+	// operator, and the row describing a surface is the one filtered on.
 	var serviceASN *int32
 	if err := h.pool.QueryRow(ctx,
 		`SELECT asn FROM asset_current WHERE kind = 'service'`).Scan(&serviceASN); err != nil {
@@ -536,12 +530,10 @@ func (fixedEnricher) Lookup(netip.Addr) enrich.Result {
 	return enrich.Result{ASN: 15133, ASNOrg: "Example Networks", Country: "FR", City: "Paris"}
 }
 
-// A four byte ASN is not a port. AS396982 is Google Cloud, AS132203 is Tencent,
-// and most numbers allocated in the last decade are above 65535. Reusing the
-// port helper here wrote the organization and the country while leaving the
-// number null, so every filter on an operator missed exactly the assets hosted
-// on the newer ranges, and the fixtures did not catch it because they all used
-// numbers below the bound.
+// A four-byte ASN is not a port. AS396982 (Google Cloud) and AS132203 (Tencent) are
+// among most numbers allocated in the last decade, above 65535. Reusing the port helper
+// wrote the organization and country but left the number null, so operator filters
+// missed assets on newer ranges; fixtures used numbers below the bound.
 func TestAFourByteOperatorNumberSurvives(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -573,11 +565,10 @@ func (bigASNEnricher) Lookup(netip.Addr) enrich.Result {
 	return enrich.Result{ASN: 396982, ASNOrg: "Google Cloud", Country: "US"}
 }
 
-// A CIDR rule can only match a name through what it resolved to, so a walk
-// without an address re-evaluates every asset a CIDR exclusion decided as
-// though it had none: it falls through to the apex include, comes back in
-// scope, and gets its due dates re-armed. That is a scan outside the
-// authorization, produced by the pass that exists to prevent one.
+// A CIDR rule matches a name only through what it resolved to, so a walk without an
+// address re-evaluates every CIDR-excluded asset as though it had none: it falls to the
+// apex include, comes back in scope and gets its due dates re-armed, a scan outside the
+// authorization produced by the pass meant to prevent one.
 func TestACIDRExclusionSurvivesAReclassification(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

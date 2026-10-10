@@ -117,10 +117,9 @@ func permissive() *fingerprint.Guard {
 	})
 }
 
-// The order is the assertion. A first scan makes thousands of baselines due at
-// the same instant, and a render triggered by a detected change five minutes
-// later carries a later date: ordered on the date alone it would sort behind
-// every one of them.
+// The order is the assertion. A first scan makes thousands of baselines due at the
+// same instant, and a change-triggered render five minutes later has a later date:
+// ordered on date alone it would sort behind all of them.
 func TestPriorityIsServedBeforeTheDueDate(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -165,9 +164,8 @@ func TestPriorityIsServedBeforeTheDueDate(t *testing.T) {
 	}
 }
 
-// A render that happened moves the asset out to its regime's cadence and back
-// down to the low queue. Leaving the priority raised would keep an asset that
-// was urgent once ahead of the queue for every pass afterwards.
+// A render that happened moves the asset to its regime's cadence and back to the low
+// queue; a raised priority would keep a once-urgent asset ahead for every later pass.
 func TestARenderRescheduleItselfAndGivesUpItsPlace(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -217,9 +215,8 @@ func TestARenderRescheduleItselfAndGivesUpItsPlace(t *testing.T) {
 	}
 }
 
-// A 429 is a state of the service, so it must not touch the asset: no
-// observation, no counter, no timestamp, and no due date moved. Nothing is
-// lost, and the reason is structural rather than a retry.
+// A 429 is a state of the service and must not touch the asset: no observation,
+// counter, timestamp or moved due date. Nothing is lost, structurally and not by retry.
 func TestASaturatedServiceLosesNothing(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -293,11 +290,9 @@ func writeRender(w http.ResponseWriter, url string) {
 	})
 }
 
-// A mass tip into unobservable is a different event from one asset going quiet,
-// and it usually says something about the observer rather than about the
-// targets: an address that got banned, an egress that broke, a renderer that
-// stopped clearing challenges. Swallowed by a per asset view it is invisible
-// exactly when it matters.
+// A mass tip into unobservable differs from one asset going quiet and usually says
+// something about the observer (a banned address, a broken egress, a renderer no longer
+// clearing challenges). In a per-asset view it is invisible exactly when it matters.
 func TestAProgrammeTippingWholesaleIsAnAlert(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -389,12 +384,10 @@ func (r *recorder) alerted() bool {
 	return false
 }
 
-// Starvation belongs to a programme, not to a pass.
-//
-// Workers on the same programme all compute the same wait, all sleep, all wake
-// together and exactly one wins the retry. If the losers stop the pass, a
-// deployment holding one programme renders two assets a tick whatever its batch
-// size, forever, and every other programme's work is dropped with it.
+// Starvation belongs to a programme, not a pass. Workers on one programme compute the
+// same wait, wake together, and exactly one wins the retry. If the losers stop the
+// pass, a one-programme deployment renders two assets a tick whatever its batch size,
+// and every other programme's work is dropped.
 func TestOneStarvedProgrammeDoesNotStopThePass(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -422,9 +415,8 @@ func TestOneStarvedProgrammeDoesNotStopThePass(t *testing.T) {
 		 lifecycle, next_fingerprint_at, fingerprint_priority, first_seen, last_seen)
 		VALUES ($1,$2,$3,'service','rich.acme.test:443/tcp','in_scope','rich.acme.test',443,'https',
 		        'active',$4,$5, now(), now())`,
-		// Sorted last on purpose. The question is whether the funded programme
-		// is reached at all once the other one has run dry, and putting it
-		// first would answer a different one.
+		// Sorted last on purpose: the question is whether the funded programme is reached once
+		// the other has run dry, and first would answer another.
 		richID, h.org, rich, due.Add(time.Minute), lifecycle.PriorityBaseline)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -461,9 +453,8 @@ func TestOneStarvedProgrammeDoesNotStopThePass(t *testing.T) {
 	}
 }
 
-// An asset a browser can never be pointed at must leave the queue, or it sits
-// at the head of every batch forever: an error a minute, and enough of them
-// stop the pass reaching anything renderable at all.
+// An asset a browser can never be pointed at must leave the queue, or it heads every
+// batch forever: an error a minute until the pass reaches nothing renderable.
 func TestAnUnrenderableAssetDoesNotLivelock(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -518,24 +509,18 @@ func TestAnUnrenderableAssetDoesNotLivelock(t *testing.T) {
 	}
 }
 
-// A funded programme drains its queue in one pass, and this is the assertion
-// the suite was missing.
-//
-// The test beside it asks whether one programme running dry stops another, and
-// answers yes, correctly. Neither asked the simpler question: does a single
-// programme with budget to spare render more than one asset. It did not. Every
-// worker on a programme computes the same wait, they wake together, the bucket
-// holds exactly one render's worth, so one won and the other seven reported
-// starvation, which marked the whole programme done for the pass. A deployment
-// with one programme rendered two assets a minute with an idle browser and a
-// full queue.
+// A funded programme drains its queue in one pass, the assertion the suite lacked.
+// The test beside it shows one programme running dry stops another, correctly; nothing
+// asked whether a single programme with budget renders more than one asset. It did not:
+// every worker computes the same wait, wakes together, the bucket holds one render, so
+// one won and seven reported starvation, marking the programme done for the pass. One
+// programme rendered two assets a minute with an idle browser and a full queue.
 func TestAFundedProgrammeDrainsItsQueueInOnePass(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
-	// Generous, and deliberately so: the question is what the pass does when
-	// the budget is not the constraint. At this rate a render is affordable
-	// several times a second.
+	// Generous on purpose: the question is the pass's behaviour when budget is not the
+	// constraint. A render is affordable several times a second here.
 	h.exec(t, `UPDATE program SET rate_limit_rps = 1000 WHERE id = $1`, h.program)
 
 	const assets = 12
@@ -576,9 +561,8 @@ func TestAFundedProgrammeDrainsItsQueueInOnePass(t *testing.T) {
 			"rather than the target",
 			summary.Rendered, summary.Selected, summary.Skipped, summary.Starved, summary.Rendered)
 	}
-	// Starvation is the programme's rate being unable to feed a render. At a
-	// thousand requests a second it is not, so claiming it would be the pass
-	// misreporting a race it lost against itself.
+	// Starvation is the rate being unable to feed a render. At a thousand requests a second
+	// it is not, so claiming it would misreport a race lost against itself.
 	if summary.Starved {
 		t.Error("the pass reported starvation on a programme with budget to spare")
 	}

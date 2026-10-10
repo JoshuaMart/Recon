@@ -13,16 +13,10 @@
 	const { evidence, never = [] }: Props = $props();
 
 	/**
-	 * The proof, kept whole and stopped from being the first thing the page says.
-	 *
-	 * The raw payload is folded on a row to preserve density; on this view it was open,
-	 * flat and forty screens long, which is the same mistake at a different scale. Folding
-	 * it per layer and grouping it by the shape of the payload leaves every key reachable
-	 * and lets the panels above carry the reading.
-	 *
-	 * Nothing is filtered by a list of keys worth keeping. What the fold hides is the
-	 * denylist of $lib/evidence, which drops values that are the probe's own settings
-	 * echoed once per row, and their counts are shown by the panels that own them.
+	 * The proof, kept whole but no longer first. Open and flat on this view it was forty screens long;
+	 * folded per layer and grouped by payload shape, every key stays reachable and the panels above
+	 * carry the reading. Nothing is filtered by a keep-list: the fold hides only $lib/evidence's
+	 * denylist (the probe's own settings), whose counts the owning panels show.
 	 */
 	let open = $state<Record<string, boolean>>({});
 	let needle = $state('');
@@ -76,10 +70,8 @@
 							</div>
 
 							{#if section.duplicateOf}
-								<!-- `http-check` writes the answering hop's headers twice, in the chain
-								     and again at the top level. Both are the payload, so the block is
-								     marked rather than dropped: a fold that removed a key would be a
-								     fold nobody could trust. -->
+								<!-- `http-check` writes the answering hop's headers twice, in the chain and at the top level. Both
+								are the payload, so the block is marked, not dropped: a fold removing a key is one nobody trusts. -->
 								<p class="dup">
 									Byte for byte the headers of <b>{section.duplicateOf}</b>, the hop that answered.
 								</p>

@@ -3,30 +3,20 @@ import { apiURL } from '$lib/server/api';
 import type { RequestHandler } from './$types';
 
 /**
- * The live feed, proxied.
+ * The live feed, proxied. On its own path, not beside the page: a `+server.ts` next to a `+page.svelte`
+ * is resolved by the Accept header, so one URL would answer a page to a navigation and a stream to
+ * anything else.
  *
- * On its own path rather than beside the page, and that is not tidiness. A
- * `+server.ts` sitting next to a `+page.svelte` is resolved by the Accept header,
- * so the same URL answers a page to a browser navigation and a stream to anything
- * else. Two things behind one address, chosen by a header nobody set on purpose,
- * is a distinction that holds until the first client that accepts anything.
- *
- * The browser holds no credential, so the EventSource it opens points here and
- * this forwards with the Authorization header. The upstream body is piped through
- * untouched: a proxy that buffered would turn a stream into one long silence
- * followed by everything at once, which is the failure this endpoint exists to
- * avoid.
- *
- * Last-Event-ID is forwarded as it came. It is the cursor, so the resume works
- * without this layer knowing what a cursor is.
+ * The browser holds no credential, so its EventSource points here and this forwards with the
+ * Authorization header, piping the body unbuffered (buffering turns a stream into one long silence).
+ * Last-Event-ID is forwarded as it came: it is the cursor, so resuming needs nothing here.
  */
 export const GET: RequestHandler = async ({ locals, url, fetch, request }) => {
 	const token = locals.token!;
 
 	const query = new URLSearchParams();
-	// The cursor a first connection already knows. Reconnections do not use it:
-	// the browser sends Last-Event-ID by itself, and that is the whole of the
-	// resumption.
+	// The cursor a first connection already knows. Reconnections use Last-Event-ID, which the browser
+	// sends itself: that is the whole of the resumption.
 	const cursor = url.searchParams.get('cursor');
 	if (cursor) query.set('cursor', cursor);
 
@@ -36,9 +26,8 @@ export const GET: RequestHandler = async ({ locals, url, fetch, request }) => {
 
 	const upstream = await fetch(apiURL() + '/feed?' + query.toString(), { headers });
 	if (!upstream.ok || !upstream.body) {
-		// Cancelled before throwing, because EventSource reconnects on its own: a
-		// token revoked upstream turns into one refusal every few seconds, and a
-		// body nobody read is a connection nobody returns.
+		// Cancelled before throwing: EventSource reconnects on its own, so a token revoked upstream becomes
+		// a refusal every few seconds, and an unread body is a connection nobody returns.
 		await upstream.body?.cancel();
 		error(upstream.status === 401 || upstream.status === 403 ? 403 : 502, 'the feed is unavailable');
 	}

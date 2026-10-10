@@ -18,12 +18,9 @@
 	const tone = $derived(days === undefined ? '' : days < 0 ? 'gone' : days < 14 ? 'soon' : '');
 
 	/**
-	 * The public key pivot, with its counter.
-	 *
-	 * The pivot hashes the SubjectPublicKeyInfo and not the certificate, so the value survives
-	 * renewal: a host that reuses its key keeps the same one. That is what makes it the
-	 * pivot for finding an origin behind a CDN, and it is worth the sentence beside the
-	 * badge rather than a number nobody can interpret.
+	 * The public key pivot, with its counter. It hashes the SubjectPublicKeyInfo, not the certificate,
+	 * so the value survives renewal: a host reusing its key keeps it. That makes it the pivot for finding
+	 * an origin behind a CDN, worth a sentence beside the badge over a number nobody can interpret.
 	 */
 	const pivot = $derived(pivotOf(asset, 'cert_spki'));
 

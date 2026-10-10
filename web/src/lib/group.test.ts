@@ -41,18 +41,16 @@ describe('sharedOf', () => {
 		expect(shared.ip).toBe('1.2.3.4');
 	});
 
-	// The case the module exists for. A host with two addresses would otherwise have one
-	// member's operator stated as the host's, and nothing on screen would say which
-	// member it came from.
+	// The case the module exists for: a host with two addresses would have one member's operator stated
+	// as the host's, with nothing saying which member it came from.
 	it('raises nothing the services disagree on', () => {
 		const shared = sharedOf(group([asset({ asn: 51167, ip: '1.2.3.4' }), asset({ asn: 62000, ip: '5.6.7.8' })]));
 		expect(shared.asn).toBeUndefined();
 		expect(shared.ip).toBeUndefined();
 	});
 
-	// A member that carries no value does not vote: an http-only service has no
-	// certificate, and letting its absence veto would hide a certificate that every
-	// service presenting one agrees on.
+	// A member carrying no value does not vote: an http-only service has no certificate, and its absence
+	// vetoing would hide a certificate every presenting service agrees on.
 	it('lets a service with no certificate abstain rather than veto', () => {
 		const shared = sharedOf(
 			group([asset({ pivots: [cert('561d31de')] }), asset({ key: 'a.acme.test:80/tcp', pivots: [] })])
@@ -66,9 +64,8 @@ describe('sharedOf', () => {
 		expect(shared.cert).toBeUndefined();
 	});
 
-	// Lineage is per asset , and on the real inventory two hosts came from two
-	// different modules. Folding it to the host means picking one member's path, so it
-	// only folds when there is nothing to pick between.
+	// Lineage is per asset, and on the real inventory two hosts came from two modules. Folding to the host
+	// picks one member's path, so it folds only when there is nothing to pick between.
 	it('folds the lineage only when every service came the same way', () => {
 		const same = sharedOf(group([asset(), asset()]));
 		expect(same.lineage).toBe('derived');
@@ -140,9 +137,8 @@ describe('splitGroup', () => {
 });
 
 describe('frontDoorFavicon', () => {
-	// A host serving four applications agreed on no favicon and got an empty square,
-	// which reads as a missing image rather than as four different ones. The header may
-	// not *claim* a favicon for the host, and it may still *show* one.
+	// A host serving four applications agreed on no favicon and got an empty square, reading as a missing
+	// image. The header may not claim a favicon for the host, and may still show one.
 	it('takes the https service on 443 when the services differ', () => {
 		const hash = frontDoorFavicon(
 			group([

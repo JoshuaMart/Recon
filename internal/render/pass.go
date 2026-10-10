@@ -22,17 +22,14 @@ import (
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
-// maxRefusals is how many saturations end a pass.
-//
-// A saturated service will refuse the next four hundred targets for the same
-// reason, so knocking is spent effort. Stopping costs nothing: the due dates
-// were never moved, so every refused asset is still due on the next tick, by
-// the same ordering that put it there.
+// maxRefusals is how many saturations end a pass. A saturated service refuses
+// the next four hundred targets too, so knocking is wasted effort. Stopping
+// costs nothing: due dates were never moved, so refused assets are still due.
 const maxRefusals = 3
 
-// censusInterval is how often the unobservable count is taken. The number moves
-// only when observations do, and the query groups over the whole projection, so
-// taking it on every tick would buy nothing for a full scan a minute.
+// censusInterval is how often the unobservable count is taken. It groups over
+// the whole projection and only moves with observations, so every tick would be
+// a full scan for nothing.
 const censusInterval = 5 * time.Minute
 
 // Pass renders what is due.
@@ -42,26 +39,21 @@ type Pass struct {
 	ingestor *ingest.Ingestor
 	budget   *Budget
 	batch    int
-	// concurrency is set above where the budget binds rather than at it, so
-	// the thing throttling a programme is its published rate limit and not a
-	// number nobody calibrated.
+	// concurrency is set above where the budget binds, so a programme is throttled
+	// by its published rate limit and not an uncalibrated number.
 	concurrency int
-	// unobservableAlert is the share of a programme's inventory that turns a
-	// mass tip into an alert rather than a row nobody reads.
+	// unobservableAlert is the share of a programme's inventory that turns a mass
+	// tip into an alert instead of a row nobody reads.
 	unobservableAlert float64
-	// maxWait is how long a render will wait for a programme's budget. Past it
-	// the pass stops: the due dates were never moved, so everything it did not
-	// reach is still due on the next tick.
+	// maxWait is how long a render waits for a programme's budget. Past it the pass
+	// stops; due dates never moved, so the rest is still due next tick.
 	maxWait time.Duration
-	// blind is how long a target nothing could render waits. It is the cadence
-	// of the regime where neither observer gets through, which is the same
-	// question one level down: nothing was learned, and something has to keep
-	// asking without asking often.
+	// blind is how long a target nothing could render waits: the cadence of the
+	// regime where neither observer gets through. Nothing was learned, so something
+	// has to keep asking, not often.
 	blind time.Duration
-	// lastCensus throttles the unobservable count. It groups over the whole
-	// projection, so running it on every tick would put a full scan of the
-	// inventory on a loop that runs every minute for a number that moves when
-	// observations do.
+	// lastCensus throttles the unobservable count, a full-projection grouping that
+	// moves only with observations.
 	censusMu   sync.Mutex
 	lastCensus time.Time
 	sleep      func(context.Context, time.Duration) bool
@@ -136,10 +128,8 @@ type Summary struct {
 	Starved   bool
 }
 
-// Once runs a single pass.
-//
-// It ends in one of three ways and none of them writes anything: the selection
-// comes back empty, a programme's budget refuses to wait, or the service
+// Once runs a single pass. It ends in one of three ways, none writing anything:
+// the selection is empty, a programme's budget refuses to wait, or the service
 // refuses often enough to say it is busy.
 func (p *Pass) Once(ctx context.Context) (Summary, error) {
 	var summary Summary
@@ -161,12 +151,10 @@ func (p *Pass) Once(ctx context.Context) (Summary, error) {
 		mu       sync.Mutex
 		refusals int
 		stop     bool
-		// Starvation belongs to a programme rather than to a pass. Workers on
-		// the same one all compute the same wait, all wake together, and
-		// exactly one wins the retry: if the losers stopped the pass, a
-		// deployment holding one programme would render two assets a tick
-		// whatever its batch size, and every other programme's work would be
-		// dropped with it.
+		// Starvation belongs to a programme, not a pass. Workers on one programme compute
+		// the same wait, wake together, and exactly one wins the retry. If the losers
+		// stopped the pass, a one-programme deployment would render two assets a tick
+		// whatever its batch size, and other programmes' work would be dropped too.
 		starvedPrograms = map[uuid.UUID]struct{}{}
 	)
 	work := make(chan sqlcgen.SelectDueRendersRow)
@@ -210,9 +198,8 @@ func (p *Pass) Once(ctx context.Context) (Summary, error) {
 						stop = true
 					}
 				case starved:
-					// This programme is done for the pass and no other one is
-					// touched. Nothing was written, so everything it did not
-					// reach is still due on the next tick.
+					// This programme is done for the pass; no other is touched. Nothing was
+					// written, so what it did not reach is still due next tick.
 					summary.Starved = true
 					summary.Skipped++
 					starvedPrograms[program] = struct{}{}
@@ -262,36 +249,25 @@ func (p *Pass) render(ctx context.Context, row sqlcgen.SelectDueRendersRow) atte
 
 	target, ok := renderURL(row)
 	if !ok {
-		// Nothing to point a browser at. It is not an error and not a
-		// measurement: the asset simply is not a web surface. It still has to
-		// leave the queue, or it sits at the head of every batch forever.
+		// Nothing to point a browser at: not an error or a measurement, the asset is not
+		// a web surface. It must still leave the queue or it heads every batch forever.
 		p.log.WarnContext(ctx, "no render target", "asset", row.Key)
 		p.backOff(ctx, row)
 		return attempt{kind: skipped}
 	}
 
-	// A render takes seconds and the budget refills while it runs, so a short
-	// wait is the ordinary case rather than a failure. What ends a pass is a
-	// wait long enough to say the programme's rate cannot support one now.
+	// A render takes seconds and the budget refills meanwhile, so a short wait is ordinary; only
+	// a wait long enough to say the programme's rate cannot support a render ends the pass.
 	//
-	// Waited for in a loop, and one retry was not enough. The reason is the
-	// shape of the race rather than the length of any wait: every worker on a
-	// programme computes the same wait, they all wake together, and the bucket
-	// holds one render's worth at most, so exactly one wins and the rest called
-	// that starvation. On a deployment with a single programme that ends the
-	// pass, because per-programme starvation and per-pass starvation are the
-	// same thing there. It ran a full minute apart on real data and said so
-	// every tick: selected=28, rendered=0, skipped=26, starved=true, on a
-	// programme whose own rate limit afforded a render every three tenths of a
-	// second. The service was idle and the queue never drained.
+	// Waited for in a loop, as one retry was not enough: every worker on a programme computes
+	// the same wait and wakes together, and the bucket holds at most one render, so one wins and
+	// the rest reported starvation. With a single programme that ended the pass (selected=28,
+	// rendered=0, skipped=26, starved=true every tick, at a rate affording a render every 0.3 s,
+	// with an idle service and a queue that never drained). Losing a race to a sibling is the
+	// budget working, so it is waited out.
 	//
-	// Starvation is the programme's published rate being unable to feed a
-	// render, which is what the wait measures. Losing a race to a sibling
-	// worker is the budget working, so it is waited out rather than reported.
-	//
-	// Bounded in total rather than per attempt, so a programme that genuinely
-	// cannot feed this worker still ends its share of the pass instead of
-	// holding a slot for as long as rows keep arriving.
+	// Bounded in total, not per attempt: a programme that truly cannot feed this worker still
+	// ends its share instead of holding a slot while rows keep arriving.
 	deadline := p.now().Add(p.maxWait)
 	for {
 		taken, wait := p.budget.Reserve(program, int(row.RateLimitRps))
@@ -311,9 +287,8 @@ func (p *Pass) render(ctx context.Context, row sqlcgen.SelectDueRendersRow) atte
 		var busy *fingerprint.Saturated
 		switch {
 		case errors.As(err, &busy):
-			// A state of the service, so it must not touch the asset. No
-			// observation, no counter, no streak, no timestamp. The charge
-			// comes back because nothing reached the target.
+			// A state of the service, so the asset is untouched: no observation, counter,
+			// streak or timestamp. The charge comes back as nothing reached the target.
 			p.budget.Refund(program)
 			return attempt{kind: saturated, wait: busy.RetryAfter}
 		case errors.Is(err, fingerprint.ErrInternal):
@@ -323,10 +298,9 @@ func (p *Pass) render(ctx context.Context, row sqlcgen.SelectDueRendersRow) atte
 			p.backOff(ctx, row)
 			return attempt{kind: skipped}
 		default:
-			// The service could not address the target at all. Also a probe
-			// error, so no observation and no counter, but the attempt still
-			// has to widen or the asset is retried every minute until somebody
-			// notices the log.
+			// The service could not address the target. Also a probe error (no observation
+			// or counter), but the attempt must still widen or the asset is retried every
+			// minute.
 			p.budget.Refund(program)
 			p.log.WarnContext(ctx, "render failed", "asset", row.Key, "error", err)
 			p.backOff(ctx, row)
@@ -344,13 +318,11 @@ func (p *Pass) render(ctx context.Context, row sqlcgen.SelectDueRendersRow) atte
 
 // backOff moves a render out without writing anything about the target.
 //
-// It is the difference between a probe error and a measurement, kept in both
-// directions. Nothing is observed, no counter moves and no timestamp is
-// touched, because nothing was learned; but the due date has to move, because
-// the due date is the queue and an asset that can never be rendered would
-// otherwise hold the head of it forever. Saturation is the one case that is
-// left alone, and deliberately: it is a state of the service, it clears in
-// seconds, and the pass stops knocking after three refusals anyway.
+// A probe error is not a measurement: nothing is observed and no counter or
+// timestamp moves, because nothing was learned. The due date must move though,
+// since it is the queue and an unrenderable asset would otherwise head it
+// forever. Saturation is left alone on purpose: it is a state of the service that
+// clears in seconds, and the pass stops after three refusals anyway.
 func (p *Pass) backOff(ctx context.Context, row sqlcgen.SelectDueRendersRow) {
 	next := p.now().Add(p.blind)
 	if err := sqlcgen.New(p.pool).RescheduleRender(ctx, sqlcgen.RescheduleRenderParams{
@@ -377,8 +349,8 @@ func (p *Pass) write(ctx context.Context, row sqlcgen.SelectDueRendersRow, targe
 		Key:       row.Key,
 		URL:       target,
 	}
-	// Carried rather than left zero. A field that reads as if it holds the
-	// asset's edge and never does is a lie the next reader has to discover.
+	// Carried, not left zero: a field that looks like the asset's edge and never is
+	// a lie the next reader has to discover.
 	if row.IsCdn != nil {
 		asset.Fronted = *row.IsCdn
 	}
@@ -402,13 +374,10 @@ func (p *Pass) write(ctx context.Context, row sqlcgen.SelectDueRendersRow, targe
 	return nil
 }
 
-// alertUnobservable reports a programme tipping wholesale.
-//
-// A mass tip is a different event from one asset going quiet, and it usually
-// says something about the observer rather than about the targets: an address
-// that got banned, an egress that broke, a renderer that stopped clearing
-// challenges. Until the notification path exists this is a log at error level,
-// which is the ops signal; phase 5 turns it into an event.
+// alertUnobservable reports a programme tipping wholesale. That differs from one
+// asset going quiet and usually says something about the observer: a banned
+// address, a broken egress, a renderer no longer clearing challenges. For now it
+// is an error-level log, the ops signal.
 func (p *Pass) alertUnobservable(ctx context.Context, queries *sqlcgen.Queries) {
 	p.censusMu.Lock()
 	now := p.now()
@@ -421,8 +390,8 @@ func (p *Pass) alertUnobservable(ctx context.Context, queries *sqlcgen.Queries) 
 
 	rows, err := queries.CountUnobservable(ctx)
 	if err != nil {
-		// The window goes back, or a census that keeps failing silences the
-		// alert for as long as it keeps failing.
+		// The window goes back, or a failing census silences the alert for as long as it
+		// keeps failing.
 		p.censusMu.Lock()
 		p.lastCensus = time.Time{}
 		p.censusMu.Unlock()
@@ -444,11 +413,9 @@ func (p *Pass) alertUnobservable(ctx context.Context, queries *sqlcgen.Queries) 
 	}
 }
 
-// renderURL is what a browser is pointed at.
-//
-// A declared URL is rendered as it was written, because somebody named that
-// path. Everything else is rendered at the service root: a path a scan landed
-// on describes a redirect rather than a surface.
+// renderURL is what a browser is pointed at. A declared URL is rendered as
+// written, since someone named that path; anything else at the service root, as
+// a path a scan landed on describes a redirect, not a surface.
 func renderURL(row sqlcgen.SelectDueRendersRow) (string, bool) {
 	if row.Kind == "url" {
 		return row.Key, true
@@ -476,9 +443,8 @@ func renderURL(row sqlcgen.SelectDueRendersRow) (string, bool) {
 	return (&url.URL{Scheme: scheme, Host: authority, Path: "/"}).String(), true
 }
 
-// bounded narrows a batch size to the column that holds it. The setting is
-// already validated as positive; the clamp is here so that one nobody validated
-// cannot turn a batch into a negative limit.
+// bounded narrows a batch size to its column. The setting is validated; the
+// clamp covers unvalidated ones becoming a negative limit.
 func bounded(n int) int32 {
 	if n > math.MaxInt32 {
 		return math.MaxInt32

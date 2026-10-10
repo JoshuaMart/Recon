@@ -9,23 +9,17 @@
 	const { data, form }: { data: PageData; form: ActionData } = $props();
 
 	/**
-	 * The form is open when somebody asked for it, and always when there is nothing
-	 * to list, since there is nothing else to do on this page then.
-	 *
-	 * Derived rather than initialised from `data`: a state seeded from a prop only
-	 * ever reads its first value, so after a client-side navigation the form would
-	 * stay closed on an organisation with no program.
+	 * The form is open when asked for, and always when there is nothing to list. Derived, not
+	 * initialised from `data`: state seeded from a prop reads only its first value, so after
+	 * client-side navigation the form would stay closed on an organisation with no program.
 	 */
 	let adding = $state(false);
 	const open = $derived(adding || data.programs.length === 0);
 
 	/**
-	 * The queue, folded the way this page reads it: one entry per program.
-	 *
-	 * Both folds are pure and tested, and both tolerate an empty answer, which is
-	 * what a row gets when the queue could not be read. The regions then draw
-	 * their own absence rather than a zero, because a queue nobody could reach is
-	 * not a queue at rest.
+	 * The queue, folded as this page reads it: one entry per program. Both folds are pure, tested and
+	 * tolerant of an empty answer (a row gets one when the queue could not be read), so the regions
+	 * draw their own absence, not a zero: an unreachable queue is not a queue at rest.
 	 */
 	const runs = $derived(lastDiscoveryRuns(data.runs));
 	const depths = $derived(depthsByProgram(data.depths));
@@ -68,10 +62,9 @@
 					<input class="field" name="name" placeholder="example.com" spellcheck="false" required />
 				</label>
 
-				<!-- The authorisation reference first among the optional fields, and not
-				     buried at the end. The permission to scan is a first-class
-				     datum: this is where the answer to "who said we could" is recorded,
-				     and a program without it is one nobody can justify later. -->
+				<!-- The authorisation reference first among the optional fields, not buried: the permission to
+				scan is first-class data, where "who said we could" is recorded, and a program without it is one
+				nobody can justify later. -->
 				<label class="wide">
 					<span>Authorisation reference</span>
 					<input
@@ -120,9 +113,8 @@
 			{@const rules = program.rules_in_force ?? 0}
 			<li class:archived={program.state === 'archived'}>
 				<div class="head">
-					<!-- A dot rather than the word, because `active` on every row is a
-					     word that says nothing. The exception keeps the word: a
-					     suspended or archived program is the one worth reading. -->
+					<!-- A dot, not the word: `active` on every row says nothing. The exception keeps the word, since
+					a suspended or archived program is the one worth reading. -->
 					<span class="state-dot {program.state}" title={program.state}></span>
 					<a class="name" href="/programs/{program.id}">{program.name}</a>
 					{#if program.platform_ref}
@@ -141,9 +133,8 @@
 				</div>
 
 				<!--
-					The three questions somebody opens this page to ask, in the width the
-					row used to leave empty: how big is the perimeter, is anything running
-					on it, is anything waiting.
+				The three questions this page is opened to ask, in the width the row left empty: how big is the
+				perimeter, is anything running on it, is anything waiting.
 				-->
 				<div class="regions">
 					<div class="region scope">
@@ -163,11 +154,9 @@
 								<span class="sep">·</span>
 								<span><b>{program.rate_limit_rps}</b> rps</span>
 								<span class="sep">·</span>
-								<!-- The assets of a program are the search with a filter, not a second
-								     list with its own rules . The link carries the filter, which it
-								     did not until program_id became a searchable field: it went to an
-								     unfiltered list, so the label said one thing and the page showed
-								     another. -->
+								<!-- A program's assets are the search with a filter, not a second list with its own rules. The
+								link carries the filter, which it did not until program_id became searchable: it went to an
+								unfiltered list, so the label and the page disagreed. -->
 								<a class="link" href={programHref(program.id)}>Search its assets</a>
 							</div>
 						{/if}
@@ -332,9 +321,8 @@
 		padding: 12px 14px 13px;
 	}
 
-	/* Dim the two things that carry emphasis, never the words: `archived` is what
-	   this row is saying, and an opacity over the subtree takes it below
-	   readable. No tint either, since there is no token for one. */
+	/* Dim the two emphasised things, never the words: `archived` is what this row says, and opacity
+	over the subtree takes it below readable. No tint either, as there is no token for one. */
 	li.archived .name {
 		color: var(--ink-2);
 	}

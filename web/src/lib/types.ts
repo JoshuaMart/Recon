@@ -1,11 +1,8 @@
 /**
- * The shapes internal/search and internal/api return, mirrored field by field.
- *
- * Hand written rather than generated, and the reason to say so is that nothing
- * checks the agreement today: a field renamed in Go would arrive here as
- * `undefined` and render as an empty badge rather than as a failure. The day this
- * drifts, the pattern to copy is the contract test that pins the fingerprinter's
- * response.
+ * The shapes internal/search and internal/api return, mirrored field by field. Hand written,
+ * and nothing checks the agreement: a field renamed in Go arrives here as `undefined` and
+ * renders as an empty badge, not a failure. If it drifts, copy the contract test pinning the
+ * fingerprinter's response.
  */
 
 /** One pivot value, with what it links and whether it earns a badge. */
@@ -15,15 +12,9 @@ export interface Pivot {
 	/** Includes the asset showing it. */
 	count: number;
 	/**
-	 * Display only, and absent entirely on the export.
-	 *
-	 * The server decides it, and the console never re-decides it: a value the
-	 * denylist names or one leading only to itself is not worth a line in a row
-	 * scanned in under a second. It stays fully searchable and fully counted,
-	 * which is the difference between removing a badge and removing data.
-	 *
-	 * Optional rather than boolean, because a file that answered `false` could
-	 * not be told from one that never asked the question.
+	 * Display only, and absent on the export. The server decides it and the console never re-decides: a
+	 * denylisted value, or one leading only to itself, is not worth a line in a row but stays searchable
+	 * and counted. Optional, not boolean: a file answering `false` could not be told from one never asked.
 	 */
 	badge?: boolean;
 }
@@ -88,18 +79,16 @@ export interface Asset {
 	last_checked_at?: string;
 	last_changed_at?: string;
 	/**
-	 * Null means the fingerprinter has never rendered this asset, which is what
-	 * separates "no cookie" from "never rendered" on a row.
+	 * Null means the fingerprinter never rendered this asset, separating "no cookie" from "never
+	 * rendered" on a row.
 	 */
 	last_fingerprint_at?: string;
 }
 
 /**
- * The projected pivots, plus what the http layer contributes.
- *
- * `technologies` here carries the versions, while the promoted column carries the
- * bare names: the column is the index and the facet, the object is the evidence a
- * row shows.
+ * The projected pivots, plus what the http layer contributes. `technologies` here carries
+ * versions while the promoted column holds bare names: the column is the index and facet, the
+ * object is the evidence a row shows.
  */
 export interface Attributes {
 	favicon_hash?: string;
@@ -130,11 +119,8 @@ export interface Group {
 export interface GroupedPage {
 	groups: Group[];
 	/**
-	 * The images of the page's favicons, keyed by hash.
-	 *
-	 * On the page and not on each asset: a shared favicon is the interesting
-	 * case, and repeating two kilobytes per asset would undo the point of storing
-	 * one copy.
+	 * The images of the page's favicons, keyed by hash. On the page, not each asset: a shared
+	 * favicon is the interesting case and repeating two kilobytes per asset undoes storing one copy.
 	 */
 	favicons?: Record<string, string>;
 	/** Empty on the last page. There is deliberately no total. */
@@ -155,13 +141,10 @@ export interface Term {
 export interface Facet {
 	field: string;
 	/**
-	 * Null when the facet has no term, not an empty array.
-	 *
-	 * A nil slice encodes as `null` in Go, and the server returns one facet per
-	 * field whether or not the filtered set has a value for it. Typing this as
-	 * `Term[]` is what took the first render of a real inventory down with
-	 * "cannot read properties of null": the type said one thing and the wire said
-	 * another, and nothing sat between the two.
+	 * Null when the facet has no term, not an empty array. A nil slice encodes as `null` in Go and
+	 * the server returns a facet per field whether or not the filtered set has a value. Typing this
+	 * `Term[]` took the first render of a real inventory down ("cannot read properties of null"):
+	 * the type and the wire disagreed with nothing between them.
 	 */
 	terms: Term[] | null;
 	/** Values were left out. A truncated facet that looks complete makes somebody
@@ -170,11 +153,9 @@ export interface Facet {
 }
 
 /**
- * What GET /assets/fields answers: the searchable vocabulary, and what this
- * deployment can do.
- *
- * `enrichment` is optional so that a console pointed at an older control plane
- * degrades to "not configured" rather than to `undefined.configured`.
+ * What GET /assets/fields answers: the searchable vocabulary and what this deployment can do.
+ * `enrichment` is optional so a console on an older control plane degrades to "not configured"
+ * and not `undefined.configured`.
  */
 export interface Capabilities {
 	/** Field to the operators it accepts, so the sidebar does not guess one. */
@@ -197,9 +178,8 @@ export interface DiffField {
 
 export interface Diff {
 	/**
-	 * The Notifier's reading, not a second one. A revelation is not an alert:
-	 * `detection_improved` means the observer sees better and the target did not
-	 * move.
+	 * The Notifier's reading, not a second one. A revelation is not an alert: `detection_improved`
+	 * means the observer sees better and the target did not move.
 	 */
 	class: 'real_change' | 'detection_improved';
 	previous_producer_version?: string;
@@ -220,11 +200,9 @@ export interface Evidence {
 }
 
 /**
- * One entry of the timeline: a state, how long it held, and what moved on the way
- * in.
- *
- * `diff` absent on the oldest entry read for a layer means "not compared", which
- * is not "nothing changed". The screen has to say which.
+ * One entry of the timeline: a state, how long it held, and what moved on the way in. `diff`
+ * absent on a layer's oldest entry means "not compared", not "nothing changed", and the screen
+ * must say which.
  */
 export interface Change {
 	layer: 'dns' | 'tcp' | 'http' | 'fingerprint';
@@ -321,12 +299,9 @@ export interface Effect {
 }
 
 /**
- * The queue, as the control plane answers it.
- *
- * The three counts are disjoint: a row held by a run is not also due. A pair whose
- * three numbers are zero is dropped, so an entry here is always a queue that
- * exists. Rows with no due date are counted nowhere, because a null is how a row
- * leaves the scheduler.
+ * The queue, as the control plane answers it. The three counts are disjoint (a row held by a
+ * run is not also due). A pair of zeros is dropped, so an entry is always a queue that exists.
+ * Rows with no due date are counted nowhere: null is how a row leaves the scheduler.
  */
 export interface QueueDepth {
 	program_id: string;
@@ -347,20 +322,19 @@ export interface Run {
 	state: 'pending' | 'running' | 'completed' | 'failed' | 'expired';
 	deadline: string;
 	created_at: string;
-	/** Written the first time a scanner reached for the run, or the platform said it
-	 *  was executing it. Absent means nothing
-	 *  claimed it, which calls for the opposite action to a run in flight. */
+	/**
+	 * Written the first time a scanner reached for the run, or the platform said it was executing
+	 * it. Absent means nothing claimed it, calling for the opposite action to a run in flight.
+	 */
 	started_at?: string;
 	finished_at?: string;
 	target_count?: number;
 	observations: number;
 	error?: string;
 	/**
-	 * What the platform called the execution.
-	 *
-	 * Absent means nothing started it, which is not the same as a run no scanner
-	 * has opened yet: the first is a provisioning that failed, the second is a
-	 * run to wait for. It is also the only way to find the execution's logs.
+	 * What the platform called the execution. Absent means nothing started it, which differs from a
+	 * run no scanner has opened yet: the first is a failed provisioning, the second a run to wait
+	 * for. It is also the only way to find the execution's logs.
 	 */
 	external_id?: string;
 }

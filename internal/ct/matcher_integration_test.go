@@ -152,9 +152,8 @@ func TestTheSetHoldsApexIncludesOfAuthorizedProgrammesAlone(t *testing.T) {
 	ctx := context.Background()
 
 	h.rule(t, "include", "apex", "acme.test")
-	// An include naming a host already declared it, so the asset exists and
-	// carries a due date: this stream would find the same name and create
-	// nothing.
+	// An include naming a host already declared it: the asset exists with a due date, and
+	// this stream would find the same name and create nothing.
 	h.rule(t, "include", "fqdn", "www.other.test")
 	// Naming something to take it out of a perimeter is not a reason to watch
 	// the logs for it.
@@ -170,9 +169,8 @@ func TestTheSetHoldsApexIncludesOfAuthorizedProgrammesAlone(t *testing.T) {
 		t.Fatalf("the set holds %d apexes, and only the apex include belongs in it", got)
 	}
 
-	// An expired authorization drops out at the next reload. Left in, it keeps
-	// creating assets with due dates on a perimeter nobody may scan, so the
-	// first thing each one does is have its run refused.
+	// An expired authorization drops out at the next reload. Left in, it keeps creating
+	// assets with due dates on a perimeter nobody may scan, whose runs get refused.
 	h.exec(t, `UPDATE program SET authorized_to = $1 WHERE id = $2`, at.Add(-time.Minute), h.program)
 	if err := m.Reload(ctx); err != nil {
 		t.Fatalf("reload: %v", err)
@@ -250,9 +248,8 @@ func TestASANSeenTenTimesInAMinuteCreatesOneAsset(t *testing.T) {
 		t.Fatalf("%d assets with the cache warm", n)
 	}
 
-	// And with it cold every single time, which is what a restart between two
-	// sightings looks like. If the cache were the guarantee, this is where it
-	// would show.
+	// And cold every time, as a restart between two sightings looks. If the cache were the
+	// guarantee, it would show here.
 	h.exec(t, `DELETE FROM asset_current`)
 	h.exec(t, `DELETE FROM asset`)
 	for range 10 {
@@ -418,9 +415,8 @@ func TestAnApexLeavingTheSetIsForgotten(t *testing.T) {
 	}
 }
 
-// An apex watched from now on and silent has to be distinguishable from an apex
-// nothing is watching at all, or the coverage reading says the same thing about
-// both.
+// An apex watched from now on and silent must differ from one nothing watches, or
+// coverage says the same about both.
 func TestAWatchedApexHasARowBeforeItDeliversAnything(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -483,13 +479,10 @@ func TestACertificateWithNoDNSNameIsHandledAndCountsAsAFrame(t *testing.T) {
 	}
 }
 
-// The corrected milestone assertion, measured from the frame rather than from
-// issuance.
-//
-// The delay between a certificate being signed and reaching a log Recon reads
-// belongs to the CT ecosystem: it is the logs' merge delay plus the aggregator's
-// own lag, and no assertion here can move it or fail on it. What Recon owns is
-// the frame arriving and the row being committed, and that is what this bounds.
+// Measured from the frame, not issuance. The delay between signing a certificate and it
+// reaching a log Recon reads belongs to the CT ecosystem (the logs' merge delay plus the
+// aggregator's lag) and no assertion here can move it. Recon owns the frame arriving and
+// the row committing, and that is what this bounds.
 func TestAMatchingSANBecomesAnAssetWellInsideThirtySeconds(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -521,9 +514,8 @@ func TestAMatchingSANBecomesAnAssetWellInsideThirtySeconds(t *testing.T) {
 	t.Logf("frame to committed row in %s", elapsed.Round(time.Millisecond))
 }
 
-// What the ceiling held back is stored beside what the logs delivered, because
-// the assertion says the dropped count is readable and grepping a control plane
-// is not that.
+// What the ceiling held back is stored beside what the logs delivered: the dropped
+// count must be readable, and grepping a control plane is not that.
 func TestTheCountTheCeilingDroppedIsReadable(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -555,11 +547,10 @@ func TestTheCountTheCeilingDroppedIsReadable(t *testing.T) {
 	}
 }
 
-// The reconciliation deletes what the set does not hold, so the set and the
-// rows have to spell an apex the same way. Written raw, WatchApexes created a
-// row under the pattern as typed while the counters landed under the canonical
-// one, and the next reload deleted the counted row: coverage read zero for that
-// apex for good, once a minute, silently.
+// Reconciliation deletes what the set does not hold, so set and rows must spell an apex
+// alike. Written raw, WatchApexes created a row under the typed pattern while counters
+// landed under the canonical one, and the next reload deleted the counted row: coverage
+// zero for that apex, once a minute, silently.
 func TestAnApexTypedInCapitalsKeepsItsCounters(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -597,9 +588,8 @@ func TestAnApexTypedInCapitalsKeepsItsCounters(t *testing.T) {
 	}
 }
 
-// A programme holding an apex and something under it claims a name through
-// each, and the walk returns both on purpose. The name is still one asset and
-// one unit of ceiling.
+// A programme holding an apex and something under it claims a name through each, and
+// the walk returns both on purpose. It is still one asset and one unit of ceiling.
 func TestANameClaimedTwiceByOneProgrammeIsWrittenOnce(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

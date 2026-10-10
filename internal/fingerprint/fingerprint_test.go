@@ -127,10 +127,8 @@ func TestATargetTheServiceWouldNotAddressIsARefusal(t *testing.T) {
 	}
 }
 
-// Chromium's own list rather than a hand written list of "non web" ports. The
-// difference is the whole point: a hand written one would be wrong about the
-// forgotten application on 9000 that is exactly what this platform exists to
-// find.
+// Chromium's own list, not a hand-written "non web" one: that would be wrong about the
+// forgotten application on 9000 this platform exists to find.
 func TestTheBaselineFilterReadsTheInstrument(t *testing.T) {
 	t.Parallel()
 

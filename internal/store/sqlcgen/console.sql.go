@@ -31,11 +31,9 @@ type CountProgramAssetsRow struct {
 	InScope   int32
 }
 
-// CountProgramAssets is the aggregation the list only runs when asked.
-//
-// One statement over the whole tenant rather than one per program, grouped
-// here. Ten programs would otherwise be ten scans of the projection for a
-// number that sits beside a name.
+// CountProgramAssets is the aggregation the list runs only when asked. One statement over
+// the tenant, grouped here, not one per program: ten programs would be ten scans of the
+// projection for a number beside a name.
 //
 // @tenant: scoped
 func (q *Queries) CountProgramAssets(ctx context.Context, arg CountProgramAssetsParams) ([]CountProgramAssetsRow, error) {
@@ -106,9 +104,7 @@ type CreateProgramRow struct {
 	UpdatedAt         pgtype.Timestamptz
 }
 
-// CreateProgram opens a perimeter.
-//
-// No version travels in, because there is nothing to avoid overwriting.
+// CreateProgram opens a perimeter. No version travels in: there is nothing to overwrite.
 //
 // @tenant: scoped
 func (q *Queries) CreateProgram(ctx context.Context, arg CreateProgramParams) (CreateProgramRow, error) {
@@ -274,11 +270,9 @@ SELECT p.id, p.name, p.platform, p.platform_ref, p.state,
        p.authorized_from, p.authorized_to, p.authorization_ref,
        p.rate_limit_rps, p.discovery_interval, p.last_discovery_at,
        p.version, p.created_at, p.updated_at,
-       -- The rules in force, counted against an instant the caller supplies.
-       -- valid_to is written by the application and now() is the database's
-       -- clock, so comparing the two would make the answer depend on two clocks
-       -- agreeing, and a rule closed a moment ago would read as still in force
-       -- for the width of the gap.
+       -- The rules in force, counted against a caller-supplied instant: valid_to is written by the
+       -- application and now() is the database's clock, so a rule closed a moment ago would read
+       -- as in force for the width of the gap.
        (SELECT count(*) FROM scope_rule r
          WHERE r.program_id = p.id
            AND r.valid_from <= $1::timestamptz
@@ -311,17 +305,13 @@ type ListProgramsRow struct {
 	RulesInForce      int32
 }
 
-// The console's own reads and writes: perimeters, rules, and the queue.
-//
-// Everything the console asks about the inventory itself is the search layer's,
-// which compiles a tree rather than answering a named query. What is left here
-// is the surface that has no filter tree behind it: a program is not a filter,
-// and neither is "why is nothing moving".
-// ListPrograms is the switcher and the programs screen.
-//
-// Without the counters, which is the default shape on purpose: the switcher
-// sits on every page, and an aggregation over asset_current per program is the
-// only thing in this file that costs a scan. They are asked for, not given.
+// The console's own reads and writes: perimeters, rules and the queue. Everything it asks
+// about the inventory itself is the search layer's (a compiled tree, not a named query).
+// What is here has no filter tree behind it: a program is not a filter, nor is "why is
+// nothing moving".
+// ListPrograms is the switcher and the programs screen. Without the counters by default:
+// the switcher is on every page, and the per-program aggregation over asset_current is the
+// only scan in this file. They are asked for, not given.
 //
 // @tenant: scoped
 func (q *Queries) ListPrograms(ctx context.Context, arg ListProgramsParams) ([]ListProgramsRow, error) {
@@ -389,11 +379,9 @@ type ListRulesRow struct {
 	InForce   *bool
 }
 
-// ListRules reads a program's rules, closed ones included.
-//
-// Closed ones included, because a rule has a period of validity rather than an
-// existence: an asset classified out of scope by a rule since closed stays
-// explainable, and a screen that hid them would take the answer away.
+// ListRules reads a program's rules, closed ones included: a rule has a validity period,
+// not an existence, and an asset classified out of scope by a since-closed rule stays
+// explainable.
 //
 // @tenant: scoped
 func (q *Queries) ListRules(ctx context.Context, arg ListRulesParams) ([]ListRulesRow, error) {
@@ -467,16 +455,13 @@ type QueueDepthRow struct {
 	InRun     int32
 }
 
-// QueueDepth answers "why is nothing moving".
+// QueueDepth answers "why is nothing moving". Three numbers per program and queue,
+// disjoint (a row held by a run is not also due). Rows with no due date are counted
+// nowhere, the only honest choice since null is how a row leaves the scheduler; filing
+// them under later would show a queue that never drains.
 //
-// Three numbers per program and per queue, and they are disjoint: a row held by
-// a run is not also due. Rows with no due date are counted nowhere, and that is
-// the only choice that does not lie, since a null is how a row leaves the
-// scheduler. Filing them under later would show a queue that never drains.
-//
-// The queues are the due date columns rather than the observation layers. There
-// are three schedules and four layers, and naming them after the layers would
-// promise a tcp queue that does not exist.
+// The queues are the due-date columns, not the observation layers: three schedules against
+// four layers, and layer names would promise a tcp queue that does not exist.
 //
 // @tenant: scoped
 func (q *Queries) QueueDepth(ctx context.Context, arg QueueDepthParams) ([]QueueDepthRow, error) {
@@ -508,18 +493,15 @@ func (q *Queries) QueueDepth(ctx context.Context, arg QueueDepthParams) ([]Queue
 const recentRuns = `-- name: RecentRuns :many
 SELECT r.id, r.program_id, r.kind, r.scope, r.state, r.deadline,
        r.created_at, r.started_at, r.finished_at, r.target_count, r.error,
-       -- What the platform called the execution, which is the only way to find
-       -- its logs. It survives the request that started the run, so a screen
-       -- that read it out of a form result alone would lose it on the first
-       -- reload, at exactly the moment somebody is looking for it.
+       -- What the platform called the execution, the only way to find its logs. It survives the
+       -- request that started the run: read from a form result alone, it would be lost on the
+       -- first reload, when someone is looking for it.
        r.external_id,
-       -- Two spellings and a zero. The summary gained json tags when the queue
-       -- view started reading it back, so a run recorded before that carries
-       -- the Go identifier instead. Reading only the tagged key would show
-       -- every older run at zero observations, which the COALESCE would then
-       -- make indistinguishable from a run that delivered nothing. And a run
-       -- that has not delivered has no summary at all, where a null would be
-       -- scanned as an error rather than as zero.
+       -- Two spellings and a zero. The summary gained json tags when the queue view began reading
+       -- it back, so older runs carry the Go identifier; reading only the tagged key would show
+       -- them at zero observations, indistinguishable via COALESCE from a run that delivered
+       -- nothing. A run that has not delivered has no summary, where a null would scan as an
+       -- error and not zero.
        COALESCE((r.summary ->> 'observations')::int,
                 (r.summary ->> 'Observations')::int, 0)::int AS observations
   FROM run r
@@ -549,10 +531,8 @@ type RecentRunsRow struct {
 	Observations int32
 }
 
-// RecentRuns is the other half of the answer.
-//
-// Without them an empty queue and a full one look alike: in both cases the
-// screen shows a number and nobody knows whether anything is running.
+// RecentRuns is the other half of the answer. Without it an empty queue and a full one look
+// alike: the screen shows a number and nobody knows whether anything runs.
 //
 // @tenant: scoped
 func (q *Queries) RecentRuns(ctx context.Context, arg RecentRunsParams) ([]RecentRunsRow, error) {
@@ -646,12 +626,10 @@ type UpdateProgramRow struct {
 	UpdatedAt         pgtype.Timestamptz
 }
 
-// UpdateProgram edits one, and refuses a stale version by returning no row.
-//
-// The refusal is the absence of a row rather than a check the caller ran first.
-// A read then a write is two statements a concurrent writer can slip between,
-// and the whole point of the column is that two writes losing each other
-// silently is a lost scope, therefore a scan outside the perimeter.
+// UpdateProgram edits one and refuses a stale version by returning no row. The refusal is
+// the absence of a row, not a check run first: a read then a write lets a concurrent writer
+// slip between, and two writes silently losing each other is a lost scope, hence a scan
+// outside the perimeter.
 //
 // @tenant: scoped
 func (q *Queries) UpdateProgram(ctx context.Context, arg UpdateProgramParams) (UpdateProgramRow, error) {
@@ -693,15 +671,11 @@ func (q *Queries) UpdateProgram(ctx context.Context, arg UpdateProgramParams) (U
 
 const updateRule = `-- name: UpdateRule :one
 UPDATE scope_rule
-   -- COALESCE on both, because closing a rule is not restating it. A caller
-   -- that had to send them back to set valid_to would be one round trip away
-   -- from rewriting a rule it only meant to close, and the note is the half
-   -- that matters: it is the explanation a closed rule exists to preserve, so
-   -- erasing it on the way out takes away exactly what "a rule has a period of
-   -- validity rather than an existence" was for.
+   -- COALESCE on both: closing a rule is not restating it, and a caller forced to send them
+   -- back would be a round trip from rewriting a rule it meant to close. The note matters
+   -- most, being the explanation a closed rule exists to preserve.
    --
-   -- The consequence, said rather than discovered: a note cannot be cleared
-   -- through this statement, only replaced. Nothing asks to today.
+   -- So a note cannot be cleared through this statement, only replaced. Nothing asks to today.
    SET pattern    = COALESCE($1::text, pattern),
        note       = COALESCE($2::text, note),
        valid_to   = $3::timestamptz,
@@ -737,11 +711,9 @@ type UpdateRuleRow struct {
 	CreatedAt pgtype.Timestamptz
 }
 
-// UpdateRule edits or closes one, and refuses a stale version the same way.
-//
-// Closing is setting valid_to, never a DELETE. There is no delete statement in
-// this file at all, which is stronger than a convention: a statement that does
-// not exist cannot be called by a client written in a hurry.
+// UpdateRule edits or closes one, refusing a stale version the same way. Closing sets
+// valid_to, never a DELETE; no delete statement exists in this file at all, stronger than
+// a convention, as one that does not exist cannot be called by a client written in a hurry.
 //
 // @tenant: scoped
 func (q *Queries) UpdateRule(ctx context.Context, arg UpdateRuleParams) (UpdateRuleRow, error) {

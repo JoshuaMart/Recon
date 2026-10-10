@@ -1,19 +1,13 @@
--- ApexSet is what the Certificate Transparency matcher walks.
+-- ApexSet is what the Certificate Transparency matcher walks: apex include rules
+-- alone. An fqdn rule already declared its host, so the asset exists with a due date
+-- and the stream would create nothing; cidr and regex never named a thing.
 --
--- Apex include rules alone. An fqdn rule already declared its host, so the
--- asset exists and carries a due date and this stream would find the same name
--- and create nothing; putting it in the set would buy a lookup per certificate
--- for a row that is already there. cidr and regex never named a thing at all.
+-- The authorization window is checked here, not only p.state, for the discovery
+-- cadence's reason one level earlier: an expired programme left in the set keeps
+-- creating assets on a perimeter nobody may scan, whose runs get refused.
 --
--- The authorization window is here and not only p.state, which is the same two
--- lines the discovery cadence carries and for the same reason one level
--- earlier: an expired programme left in the set keeps creating assets with due
--- dates on a perimeter nobody may scan, so the first thing each one does is
--- have its run refused.
---
--- The instant is a parameter rather than now(), because valid_to and
--- authorized_to are written by the application: comparing them against the
--- database's clock would make the answer depend on two clocks agreeing.
+-- The instant is a parameter, not now(): valid_to and authorized_to are written by the
+-- application, and the database clock would make the answer depend on two clocks.
 --
 -- @tenant: cross-org
 -- @why: the apex set spans every tenant by construction. One socket serves the
@@ -34,14 +28,12 @@ SELECT p.org_id, p.id AS program_id, r.pattern AS apex
 
 -- BumpApexCounters records what the stream delivered under each apex.
 --
--- Parallel arrays for the same reason AddRunTargets uses them: one round trip,
--- and no COPY on a table carrying a policy. A flush covers every tenant at
--- once, so the organization is a column here rather than a scalar.
+-- Parallel arrays, like AddRunTargets: one round trip and no COPY on a table with a
+-- policy. A flush covers every tenant, so the organization is a column.
 --
--- The insert is what creates the row, so watched_since is set the first time an
--- apex is seen rather than by a separate pass. The counters only ever move
--- upwards, and the two timestamps take the greatest rather than the newest
--- write: a flush is not ordered against another flush.
+-- The insert creates the row, so watched_since is set when an apex is first seen. The
+-- counters only rise, and the two timestamps take the greatest, not the newest, write:
+-- flushes are not ordered against each other.
 --
 -- @tenant: cross-org
 -- @why: one flush covers every programme in the set, which is what makes it one
@@ -61,11 +53,9 @@ ON CONFLICT (program_id, apex) DO UPDATE
        last_san_at      = GREATEST(ct_apex.last_san_at, excluded.last_san_at),
        last_wildcard_at = GREATEST(ct_apex.last_wildcard_at, excluded.last_wildcard_at);
 
--- WatchApexes creates a row for every apex in the set, counting nothing.
---
--- Without it an apex that has never produced a SAN has no row, and "watched
--- since, delivered nothing" reads identically to "not watched at all". That is
--- the difference the coverage reading exists to state.
+-- WatchApexes creates a row for every apex in the set, counting nothing. Without it an
+-- apex that never produced a SAN has no row, and "watched, delivered nothing" reads like
+-- "not watched at all", the difference coverage exists to state.
 --
 -- @tenant: cross-org
 -- @why: the set spans every tenant, and so does the row it keeps per apex.
@@ -76,11 +66,9 @@ SELECT (@org_ids::uuid[])[i], (@program_ids::uuid[])[i], (@apexes::text[])[i], @
 ON CONFLICT (program_id, apex) DO NOTHING;
 
 -- ForgetApexesOutsideTheSet drops the counters of an apex nobody watches now.
---
--- watched_since would otherwise span a period during which nothing was
--- watching, so an apex removed and put back would read as continuously covered.
--- The counts go with it, which is acceptable for the same reason the flush may
--- lose a minute: this is a metric and not the journal.
+-- watched_since would otherwise span a period of no watching, so an apex removed and
+-- put back would read as continuously covered. The counts go too, acceptable like the
+-- flush losing a minute: a metric, not the journal.
 --
 -- @tenant: cross-org
 -- @why: it reconciles the whole table against the whole set, in one statement.
@@ -92,12 +80,9 @@ DELETE FROM ct_apex
         WHERE (@program_ids::uuid[])[i] = ct_apex.program_id
           AND (@apexes::text[])[i] = ct_apex.apex);
 
--- RecordFeedMinute says the feed was alive for this minute.
---
--- Presence rather than absence. A process that dies writes no minute, so a gap
--- needs nothing to notice it and no reconciliation after a restart, where
--- inferring an outage from its edges would need the loop to survive the thing
--- it is recording.
+-- RecordFeedMinute says the feed was alive for this minute. Presence, not absence: a
+-- dead process writes no minute, so a gap needs nothing to notice it and no
+-- reconciliation after a restart.
 --
 -- @tenant: none
 -- name: RecordFeedMinute :exec
@@ -106,30 +91,22 @@ VALUES (date_trunc('minute', @at::timestamptz), @frames::bigint)
 ON CONFLICT (minute) DO UPDATE
    SET frames = ct_feed_minute.frames + excluded.frames;
 
--- PurgeFeedMinutes bounds the feed's own record.
---
--- One row a minute is half a million a year, which is small and unbounded, and
--- unbounded is the half that matters: nothing else in this schema grows forever
--- and the coverage reading never looks back further than an apex has been
--- watched. A delete rather than a partition, because the table is one column
--- wide and the window is a comparison.
+-- PurgeFeedMinutes bounds the feed's own record. A row a minute is half a million a
+-- year: small but unbounded, and nothing else in the schema grows forever; coverage
+-- never looks back past an apex's watch. A delete, not a partition drop: the table is
+-- one column wide.
 --
 -- @tenant: none
 -- name: PurgeFeedMinutes :execrows
 DELETE FROM ct_feed_minute WHERE minute < @before::timestamptz;
 
--- ApexCoverage is what a programme's Certificate Transparency panel reads.
+-- ApexCoverage is what a programme's CT panel reads: counters since the apex was first
+-- watched, never a rolling window, since an apex added yesterday and silent differs from
+-- one watched a month and silent.
 --
--- Counters since the apex was first watched, never over a rolling window, which
--- is what watched_since is for: an apex added yesterday and silent is not the
--- same finding as one watched for a month and silent, and a window would report
--- them identically.
---
--- No score. What comes back are the numbers and the span they cover, because a
--- coverage confidence collapsed into one figure is the composite score the
--- console is built without, and the same argument applies: the reader can tell
--- "no certificate in thirty days" from "watched since this morning" and a single
--- number cannot.
+-- No score: the numbers and the span they cover. One confidence figure is the composite
+-- score the console is built without, as "no certificate in thirty days" and "watched
+-- since this morning" differ and one number cannot say so.
 --
 -- @tenant: keyed
 -- name: ApexCoverage :many
@@ -139,12 +116,9 @@ SELECT apex, watched_since, san_count, wildcard_count, dropped,
  WHERE program_id = @program_id::uuid
  ORDER BY apex;
 
--- FeedUptime is how much of a span the feed was actually alive for.
---
--- Without it an apex that delivered nothing and a feed that was down read the
--- same, and the second is this deployment's problem rather than a fact about
--- the logs. Presence is counted rather than absence inferred, so a minute
--- missing from this table is a minute nothing arrived in.
+-- FeedUptime is how much of a span the feed was alive for. Without it a silent apex and
+-- a down feed read alike, and the second is this deployment's problem, not a fact about
+-- the logs. Presence is counted, so a missing minute is one where nothing arrived.
 --
 -- @tenant: none
 -- name: FeedUptime :one

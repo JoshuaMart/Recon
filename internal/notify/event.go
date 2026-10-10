@@ -1,13 +1,8 @@
-// Package notify decides what is worth telling somebody, and sends it.
-//
-// The event is produced inside the ingestion transaction, by ingestion itself.
-// A sweeper would have to re-derive what ingestion just computed, the
-// transition, the failure qualification, the version classification and the
-// comparison of two payloads, and it would miss every transient state on the
-// way: an asset going active, flapping and active again between two passes has
-// changed nothing from a sweeper's point of view, and a flap is itself a
-// signal.
-//
+// Package notify decides what is worth telling somebody, and sends it. The event is produced
+// by ingestion inside its transaction: a sweeper would have to re-derive what ingestion just
+// computed (transition, failure qualification, version classification, payload comparison)
+// and would miss every transient state, since an asset going active, flapping and active
+// again between two passes has changed nothing to a sweeper, and a flap is itself a signal.
 // Only the sending is asynchronous.
 package notify
 
@@ -22,8 +17,7 @@ import (
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
-// Kinds of event. Text with a named check rather than an enum, because the list
-// is still moving.
+// Kinds of event. Text with a named check, not an enum, since the list is moving.
 const (
 	KindTakeover      = "takeover_candidate"
 	KindExternalDead  = "external_host_dead"
@@ -40,7 +34,7 @@ const (
 	KindDigest        = "digest"
 )
 
-// Priorities, and the ordering matters: a channel says which floor it wants.
+// Priorities. Order matters: a channel says which floor it wants.
 const (
 	Critical = "critical"
 	High     = "high"
@@ -71,17 +65,11 @@ var Priorities = map[string]string{
 	KindDigest:        Medium,
 }
 
-// Batch turns the events of one organization and one programme into the
-// parallel arrays the insert takes.
-//
-// One builder rather than one per call site, and the reason is the shape of the
-// statement rather than tidiness: it indexes the arrays together, so a batch
-// assembled from two places with one column missing would write nulls instead
-// of failing. Built in a single loop, there is no way to produce that.
-//
-// The organization and the programme are scalars because every caller has them
-// as constants of the batch, which is also what makes a batch mixing two
-// tenants inexpressible.
+// Batch turns one organization's and programme's events into the parallel arrays
+// the insert takes. One builder because the statement indexes the arrays together:
+// a batch assembled from two places with a column missing would write nulls
+// instead of failing. The organization and programme are scalars, which makes a
+// batch mixing two tenants inexpressible.
 func Batch(org, program uuid.UUID, at time.Time, events []Event) (sqlcgen.WriteEventsParams, error) {
 	params := sqlcgen.WriteEventsParams{
 		OrgID:      pgtype.UUID{Bytes: org, Valid: true},
@@ -100,9 +88,8 @@ func Batch(org, program uuid.UUID, at time.Time, events []Event) (sqlcgen.WriteE
 		if err != nil {
 			return sqlcgen.WriteEventsParams{}, fmt.Errorf("encode %s payload: %w", event.Kind, err)
 		}
-		// Null rather than a zero uuid on a programme event. That nullability
-		// is a rule the database enforces, and a column looking populated while
-		// naming nothing is worse than an empty one.
+		// Null, not a zero uuid, on a programme event: a database-enforced rule, and a
+		// populated-looking column naming nothing is worse than an empty one.
 		asset := pgtype.UUID{}
 		if event.AssetID != nil {
 			asset = pgtype.UUID{Bytes: *event.AssetID, Valid: true}
@@ -117,24 +104,19 @@ func Batch(org, program uuid.UUID, at time.Time, events []Event) (sqlcgen.WriteE
 	return params, nil
 }
 
-// Event is one thing worth telling somebody.
-//
-// The payload is frozen at write time. A notification reflects the state at the
-// moment of the event and not at the moment of sending: a notifier ten minutes
-// behind rereading the projection would describe something other than what it
-// announces.
+// Event is one thing worth telling somebody. The payload is frozen at write time:
+// a notification reflects the moment of the event, and a notifier ten minutes
+// behind rereading the projection would describe something else.
 type Event struct {
 	OrgID     uuid.UUID
 	ProgramID uuid.UUID
-	// AssetID is nil on a program event, and that nullability is a rule the
-	// database enforces rather than a permission.
+	// AssetID is nil on a program event, a nullability the database enforces.
 	AssetID  *uuid.UUID
 	Kind     string
 	Priority string
 	Payload  map[string]any
-	// Suppressed is decided here, at write time, and never at drain time. A
-	// notifier deciding later would send a first run's flood late rather than
-	// never, the grace having ended between the write and the send.
+	// Suppressed is decided at write time, never drain time: a later decision would
+	// send a first run's flood late, the grace having ended between write and send.
 	Suppressed bool
 }
 

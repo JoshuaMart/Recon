@@ -1,10 +1,8 @@
 //go:build integration
 
-// Milestone 1: monthly partitions are created automatically.
-//
-// "Automatically" is the word being tested. The function has existed since the
-// schema migration and a test has called it by hand since then; what this
-// asserts is that something calls it without being asked.
+// Monthly partitions are created automatically. "Automatically" is what is tested: the
+// function has existed since the schema migration and a test called it by hand; this
+// asserts something calls it unasked.
 package maintenance_test
 
 import (

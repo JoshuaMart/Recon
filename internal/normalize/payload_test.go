@@ -28,10 +28,9 @@ func normalized(t *testing.T, layer normalize.Layer, raw string) map[string]any 
 	return result.Data
 }
 
-// The trap this whole package exists around: jsonb already sorts and
-// deduplicates object keys on write, so deduplication appears to work on flat
-// structures and fails exactly on the arrays, which are the fields carrying the
-// volume.
+// The trap this package exists around: jsonb already sorts and deduplicates object keys
+// on write, so deduplication seems to work on flat structures and fails exactly on the
+// arrays, which carry the volume.
 func TestTwoAnswersListingTheSameThingsCompareEqual(t *testing.T) {
 	t.Parallel()
 

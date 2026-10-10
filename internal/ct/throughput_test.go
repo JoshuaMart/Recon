@@ -12,18 +12,14 @@ import (
 	"github.com/JoshuaMart/recon/internal/ct"
 )
 
-// The corrected milestone assertion, and the correction is what makes it
-// testable here.
+// The corrected assertion, made testable. "The service absorbs the full CT stream on a
+// single core" names certstream-server-go, which is deployed and whose throughput is an
+// image's property. Recon owns the matcher: decoding a frame and walking every SAN
+// through the set, on one goroutine.
 //
-// "The service absorbs the full CT stream on a single core" names
-// certstream-server-go, which is deployed rather than written, so its throughput
-// is a property of an image. What Recon owns is the matcher: decoding a frame
-// and walking every SAN of it through the set, on one goroutine.
-//
-// There is no queue between the socket and the walk to measure, and that is the
-// strongest form of the assertion rather than a gap in it: the read loop calls
-// the matcher synchronously, so a matcher that could not keep up would apply
-// backpressure to the socket instead of growing a buffer nobody bounded.
+// There is no queue between socket and walk, the strongest form of the assertion: the
+// read loop calls the matcher synchronously, so one that could not keep up would apply
+// backpressure to the socket instead of growing an unbounded buffer.
 func TestTheMatcherOutrunsTheStreamOnOneGoroutine(t *testing.T) {
 	frames := fixture(t)
 	if len(frames) < 50 {
@@ -56,11 +52,10 @@ func TestTheMatcherOutrunsTheStreamOnOneGoroutine(t *testing.T) {
 	handled := rounds * len(frames)
 	rate := float64(handled) / elapsed.Seconds()
 
-	// The feed delivers about two thousand certificates a second at steady
-	// state and around four thousand while it catches up, both measured. The
-	// floor here is an order of magnitude above that and an order of magnitude
-	// below what was measured on a laptop, so it fails on a regression rather
-	// than on a slow machine.
+	// The feed delivers about two thousand certificates a second at steady state and about
+	// four thousand while catching up, both measured. The floor is an order of magnitude
+	// above that and one below what a laptop measured, failing on a regression and not a
+	// slow machine.
 	const floor = 20_000
 	if rate < floor {
 		t.Errorf("the matcher walks %.0f frames a second, and the feed delivers about 2 000: "+
@@ -79,13 +74,10 @@ func trimWildcard(san string) string {
 	return san
 }
 
-// The walk is read-only and the set is swapped whole rather than mutated, which
-// is what lets the stream read it without a lock.
-//
-// The shared mutable state is exactly one thing, the pointer, because the map
-// behind it is never written after it is built. So that is what this exercises,
-// under the race detector, and the failure it prevents is the silent kind: a map
-// written under a walk produces wrong matches rather than an error.
+// The walk is read-only and the set is swapped whole, which lets the stream read it
+// without a lock. The only shared mutable state is the pointer (the map is never written
+// after construction), which this exercises under the race detector. The failure it
+// prevents is silent: a map written under a walk gives wrong matches, not an error.
 func TestTheSetIsSafeToReadWhileItIsReplaced(t *testing.T) {
 	m := ct.New(nil, nil, nil, ct.DefaultOptions(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 

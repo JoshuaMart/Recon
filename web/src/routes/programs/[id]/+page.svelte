@@ -13,17 +13,10 @@
 	const excludes = $derived(inForce.filter((rule) => rule.kind === 'exclude').length);
 
 	/**
-	 * Whether a discovery run has anything to enumerate.
-	 *
-	 * A run's perimeter is the apex includes and nothing else: the other matchers
-	 * narrow or exclude what enumeration finds, they cannot tell it where to
-	 * start. A programme whose only include is a `url_prefix` or a `cidr`
-	 * therefore has a rule in force, reads as configured, and answers 409 the
-	 * moment somebody presses the button.
-	 *
-	 * Said before the click rather than after it, and not as a refusal: adding an
-	 * apex second is an ordinary way to build a perimeter, so the panel states
-	 * what is missing and leaves the button alone.
+	 * Whether a discovery run has anything to enumerate. A run's perimeter is the apex includes only:
+	 * other matchers narrow or exclude, they cannot say where to start, so a programme whose only include
+	 * is a `url_prefix` or `cidr` reads as configured and answers 409 on the button. Said before the click,
+	 * not as a refusal (adding the apex second is an ordinary way to build a perimeter).
 	 */
 	const apexes = $derived(inForce.filter((rule) => rule.kind === 'include' && rule.matcher === 'apex'));
 	const retired = $derived(rules.filter((rule) => !rule.in_force));
@@ -32,20 +25,12 @@
 	const auth = $derived(authorisation(program.authorized_to));
 
 	/**
-	 * The command that runs the definition the control plane handed back, and it
-	 * exists only where nothing else will run it.
-	 *
-	 * The answer carries the arguments on both paths, because a definition is
-	 * worth showing whether or not it was started, and reading them without
-	 * reading `started` is what put "run this to start it" under a run the
-	 * platform had already launched. The screen then said the opposite of what
-	 * had happened, on the one panel whose job is to say which of the two it was.
-	 *
-	 * Assembled here rather than sent: the control plane knows nothing about how
-	 * the image is invoked on the machine somebody is reading this on. It lives
-	 * for as long as the form result does, since the credential inside is signed
-	 * and never stored, and a reload leaves the run without its command, which the
-	 * panel says rather than hides.
+	 * The command that runs the definition the control plane handed back, only where nothing else will.
+	 * The answer carries the arguments on both paths, and reading them without `started` once put "run
+	 * this to start it" under a run the platform had launched. Assembled here, not sent: the control plane
+	 * does not know how the image is invoked on the reader's machine. It lives as long as the form result
+	 * (the signed credential inside is never stored), and a reload leaves the run without its command,
+	 * which the panel says.
 	 */
 	const answered = $derived(answer?.runs ?? []);
 	const commandFor = (run: (typeof answered)[number]) =>
@@ -59,11 +44,8 @@
 			: '';
 
 	/**
-	 * What the platform called the execution, which is the only way to find its
-	 * logs.
-	 *
-	 * From the run row first and the form result second, in that order, because
-	 * the row survives a reload and the form result does not.
+	 * What the platform called the execution, the only way to find its logs. From the run row
+	 * first, the form result second: the row survives a reload, the result does not.
 	 */
 	const execution = $derived(answered.length === 0 ? data.run?.external_id : undefined);
 
@@ -73,14 +55,10 @@
 	let clearing: ReturnType<typeof setTimeout> | undefined;
 
 	/**
-	 * The clipboard is not always there.
-	 *
-	 * `navigator.clipboard` is undefined outside a secure context, so a console
-	 * served over plain http to anything but localhost throws here. Unguarded the
-	 * button silently stayed on "copy", on the one screen whose whole purpose is
-	 * handing a command over, and the answer to "why is nothing happening" was in
-	 * a console nobody had open. It says so instead, and the command is still on
-	 * screen to select by hand.
+	 * The clipboard is not always there. `navigator.clipboard` is undefined outside a secure
+	 * context, so a console served over plain http to anything but localhost throws here.
+	 * Unguarded, the button stayed on "copy" silently, on the screen whose purpose is handing a
+	 * command over. It says so instead, and the command is still there to select.
 	 */
 	async function copy(text: string, index: number) {
 		clearTimeout(clearing);
@@ -94,11 +72,9 @@
 	}
 
 	/**
-	 * The last discovery run, read the way the list reads it.
-	 *
-	 * Shared rather than restated: both screens make the same claim about the same
-	 * run, and the distinction that matters, a run nothing has claimed against one
-	 * a scanner opened, is exactly the kind that diverges when it is written twice.
+	 * The last discovery run, read as the list reads it. Shared, not restated: both screens make
+	 * the same claim about the same run, and the distinction that matters (a run nothing claimed
+	 * versus one a scanner opened) diverges when written twice.
 	 */
 	const scan = $derived(data.run);
 	const status = $derived(runStatus(scan));
@@ -109,11 +85,9 @@
 	const waiting = $derived(depth ? depth.due + depth.later + depth.in_run : 0);
 
 	/**
-	 * The matchers, with what each one means.
-	 *
-	 * Spelled out on the form because the difference between an apex and an fqdn is
-	 * the difference between covering a domain and covering one host, and a rule
-	 * that covers less than somebody meant is a perimeter that lies quietly.
+	 * The matchers, with what each means. Spelled out on the form because an apex versus an fqdn is
+	 * covering a domain versus one host, and a rule covering less than meant is a perimeter that
+	 * lies quietly.
 	 */
 	const matchers = [
 		{ value: 'apex', label: 'apex · the domain and everything under it' },
@@ -160,9 +134,8 @@
 	{/if}
 
 	<!--
-		The general information block this kind of tool opens with, on the asset
-		view's tile vocabulary. It used to be three sidebar panels of dead text
-		beside a form that took the whole page.
+	The general information block, in the asset view's tile vocabulary. It used to be three sidebar
+	panels of dead text beside a form that took the whole page.
 	-->
 	<div class="facts">
 		<div class="tile">
@@ -172,9 +145,8 @@
 				<span class="unit">of {program.assets ?? 0} known</span>
 			</div>
 			<div class="track"><i style:width="{coverage(program)}%"></i></div>
-			<!-- The gap is not one thing: a rule excludes an asset, or no rule
-			     settles it and it is kept and never probed. The bar draws the gap
-			     and the sentence refuses to name a cause it cannot see. -->
+			<!-- The gap is not one thing: a rule excludes an asset, or no rule settles it and it is kept and
+			never probed. The bar draws the gap and the sentence refuses to name a cause it cannot see. -->
 			<div class="sub">
 				{#if (program.assets ?? 0) === 0}
 					nothing discovered yet
@@ -239,9 +211,8 @@
 
 	<div class="columns">
 		<div class="main">
-			<!-- The scope is the program, so it gets the room. The form that writes
-			     into it is a row at the foot of the table, not a panel larger than
-			     what it edits. -->
+			<!-- The scope is the program, so it gets the room. Its form is a row at the foot of the table,
+			not a panel larger than what it edits. -->
 			<section class="panel">
 				<div class="phead">
 					<h2>Scope</h2>
@@ -393,10 +364,9 @@
 									{ago(scan.finished_at ?? scan.started_at ?? scan.created_at)}
 								</span>
 								{#if status.inFlight}
-									<!-- For what the sweeper does not see: a run started by
-									     mistake, or an execution the platform still calls running
-									     while it does nothing useful. The run closes as failed and
-									     the platform is asked to stop the execution. -->
+									<!-- For what the sweeper does not see: a run started by mistake, or an execution the platform
+									still calls running while doing nothing useful. The run closes as failed and the platform is
+									asked to stop it. -->
 									<form method="POST" action="?/cancelRun" use:enhance>
 										<input type="hidden" name="run" value={scan.id} />
 										<input type="hidden" name="external" value={scan.external_id ?? ''} />
@@ -410,16 +380,12 @@
 							{/if}
 
 							{#if execution}
-								<!-- The platform started it, so the panel says so and hands over
-								     the one identifier that finds the execution's logs. Offering a
-								     command here would invite somebody to run the same perimeter
-								     twice.
+								<!-- The platform started it, so the panel says so and hands over the one identifier that finds
+								the execution's logs. A command here would invite running the same perimeter twice.
 
-								     The sentence about waiting is bounded by the state, because it
-								     is only true while the run is in flight: written under a run
-								     that has finished it describes something that is no longer
-								     happening, which is the same fault as offering a command for a
-								     run the platform already took. -->
+								The waiting sentence is bounded by the state: it is true only while the run is in flight, and
+								under a finished run it describes something no longer happening (the same fault as offering a
+								command for a run the platform already took). -->
 								<p class="dim">
 									Started on the platform as <code class="ext">{execution}</code>.
 									{#if status.stalled}
@@ -428,10 +394,9 @@
 									{/if}
 								</p>
 							{:else if answered.length}
-								<!-- One entry per run, because a perimeter of several apexes is
-								     several runs: the scanner takes one root domain per execution.
-								     Each says what happened to its own, since a platform that
-								     refused the third started the first two. -->
+								<!-- One entry per run: several apexes are several runs, the scanner taking one root domain per
+								execution. Each says what happened to its own, since a platform that refused the third started
+								the first two. -->
 								{#each answered as run, i (run.run_id)}
 									{#if run.started && run.external_id}
 										<p class="dim">
@@ -439,9 +404,8 @@
 											<code class="ext">{run.external_id}</code>.
 										</p>
 									{:else if run.args}
-										<!-- The run is open and nothing has started it. Saying "run
-										     started" would be false: with no platform configured the
-										     definition is rendered and a person runs the image. -->
+										<!-- The run is open and nothing started it. "Run started" would be false: with no platform
+										configured the definition is rendered and a person runs the image. -->
 										<p class="dim">
 											Run this to start {#if run.apex}<code class="ext">{run.apex}</code>{:else}it{/if}. The credential
 											inside expires with the run.
@@ -480,10 +444,8 @@
 				<div class="pbody">
 					<form method="POST" action="?/updateProgram" class="settings" use:enhance>
 						<input type="hidden" name="version" value={program.version} />
-						<!-- The write states the program rather than patching the fields
-						     somebody touched: a partial write against an optimistic lock is
-						     the shape where two edits that never overlapped still lose each
-						     other. -->
+						<!-- The write states the program, not the fields someone touched: a partial write against an
+						optimistic lock is where two edits that never overlapped still lose each other. -->
 						<input type="hidden" name="name" value={program.name} />
 						<input type="hidden" name="discovery_interval" value={program.discovery_interval} />
 						<input type="hidden" name="authorized_from" value={program.authorized_from} />
@@ -494,9 +456,8 @@
 						<label>
 							<span>State</span>
 							<select class="field" name="state">
-								<!-- A suspended program keeps its data and stops being probed,
-								     and its assets do not change lifecycle. They did not become
-								     inactive, they stopped being observed. -->
+								<!-- A suspended program keeps its data and stops being probed; its assets do not change
+								lifecycle. They did not become inactive, they stopped being observed. -->
 								<option value="active" selected={program.state === 'active'}>active</option>
 								<option value="suspended" selected={program.state === 'suspended'}>suspended</option>
 								<option value="archived" selected={program.state === 'archived'}>archived</option>
@@ -1053,9 +1014,8 @@
 	}
 
 	/*
-	 * One line that scrolls sideways, rather than a token wrapped over twenty.
-	 * The panel has the width of the main column now, so the command is readable
-	 * rather than a slot four words wide.
+	 * One line scrolling sideways, not a token wrapped over twenty. The panel has the main column's
+	 * width, so the command reads instead of sitting in a slot four words wide.
 	 */
 	.cmd {
 		display: flex;
@@ -1169,10 +1129,9 @@
 		gap: 10px;
 	}
 
-	/* Its own name, not `count`. That one already means the observation total
-	   under the run status in this component, and a second meaning reached it:
-	   the paragraph took the mono face at 17px, so the word rendered larger than
-	   the number beside it. */
+	/* Its own name, not `count`: that already means the observation total under the run status here,
+	and a second meaning reached it (the paragraph took the 17px mono face, so the word rendered
+	larger than the number beside it). */
 	.qcount {
 		font-family: var(--font-mono);
 		font-size: 17px;

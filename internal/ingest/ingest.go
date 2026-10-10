@@ -24,19 +24,13 @@ import (
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
-// maxDerivedPorts bounds what one host may imply.
-//
-// A host answering on a quarter of the curated list does not have twenty-five
-// services: it is a tarpit, a device accepting every connection, or an edge
-// answering for everything behind it. Creating an asset each would turn an
-// inventory into noise, and a first scan of a perimeter holding ten such hosts
-// would produce a thousand. The observation keeps its full port list either
-// way, so the finding stays readable even when it does not become an asset.
+// maxDerivedPorts bounds what one host may imply. A host answering on a quarter
+// of the curated list is a tarpit, a device accepting everything or an edge,
+// not twenty-five services. The observation keeps the full port list either way.
 const maxDerivedPorts = 24
 
 // ErrOutOfScope is returned when a report names a host the run was not given.
-// Rejected rather than ignored: it is what stops a scanner choosing its own
-// perimeter.
+// It is rejected, not ignored, so a scanner cannot choose its own perimeter.
 var ErrOutOfScope = errors.New("host is outside the run's frozen target list")
 
 // Run is what the caller knows about the execution that produced a report.
@@ -45,30 +39,24 @@ type Run struct {
 	OrgID     uuid.UUID
 	ProgramID uuid.UUID
 	Kind      string
-	// Scope is the rung the run reached, and it decides which due dates its
-	// report moves.
+	// Scope is the rung the run reached; it decides which due dates the report moves.
 	Scope string
-	// Targets is the frozen list, keyed by canonical host. Nil on a discovery
-	// run, which has no list because it is the one allowed to find things.
+	// Targets is the frozen list keyed by canonical host. Nil on a discovery run.
 	Targets map[string]struct{}
-	// Source is what an entered asset records as its origin. Empty means the
-	// assets form, which is what it has always been.
+	// Source is the origin an entered asset records. Empty means the assets form.
 	Source string
-	// Certificate is what revealed the names, when the source is the
-	// Certificate Transparency stream. Nil everywhere else.
+	// Certificate is what revealed the names, for the Certificate Transparency
+	// source. Nil elsewhere.
 	Certificate *Certificate
-	// Revive brings an archived asset back. It is true for the two acts this
-	// platform dates itself, somebody typing and a log publishing, and false
-	// for an import, whose file is dated by whoever ran the scan and can be
-	// older than the archival it would undo.
+	// Revive brings an archived asset back. True for acts this platform dates
+	// itself (typing, a log publishing), false for an import, whose file is dated
+	// by whoever ran the scan and may predate the archival.
 	Revive bool
-	// Due is when a freshly created asset becomes due. The arithmetic lives in
-	// Go, where it is testable, rather than in the statement that stores it.
+	// Due is when a new asset becomes due. The arithmetic is in Go to be testable.
 	Due Schedule
-	// Grace is what this programme's first run is allowed to keep quiet. It is
-	// read by the caller, in the statement that already checks the run, and
-	// frozen here for the whole batch: a notifier deciding at drain time would
-	// send a first run's flood late rather than never.
+	// Grace is what this programme's first run may keep quiet. The caller reads it
+	// with the run and it is frozen for the batch, so a notifier deciding at drain
+	// time cannot send a first run's flood late.
 	Grace notify.Grace
 }
 
@@ -78,12 +66,9 @@ type Schedule struct {
 	Full    *time.Time
 }
 
-// Summary is what one report changed.
-//
-// Every field is tagged, and that is not style. This structure is serialized
-// into run.summary and read back by the queue view, so the field names are a
-// wire contract: without tags they would be Go identifiers, and renaming one
-// would change what a console reads with nothing failing to compile.
+// Summary is what one report changed. Fields are tagged because it is stored in
+// run.summary and read back by the queue view: the names are a wire contract,
+// and a rename would break the console without failing to compile.
 type Summary struct {
 	Hosts        int `json:"hosts"`
 	Assets       int `json:"assets"`
@@ -92,30 +77,24 @@ type Summary struct {
 	Deduplicated int `json:"deduplicated"`
 	Rejected     int `json:"rejected"`
 	Skipped      int `json:"skipped"`
-	// Late marks a report that arrived after its run's deadline. The data is
-	// still valid, so it is recorded rather than refused: the run may simply
-	// have been re-dispatched, and deduplication merges the two.
+	// Late marks a report that arrived after the run's deadline. The data is still
+	// valid (the run may have been re-dispatched), so it is recorded and
+	// deduplication merges the two.
 	Late    bool `json:"late"`
 	Derived int  `json:"derived"`
-	// Takeovers counts the findings this report carried, so a run that found
-	// one says so in its own summary rather than only in a table nobody reads
-	// until an alert fires.
+	// Takeovers counts the findings this report carried.
 	Takeovers int `json:"takeovers"`
-	// Sources is the per source accounting the scanner reported, kept because
-	// the failure it describes does not look like one. Without a credential a
-	// keyed source disables itself, the run starts, finishes correctly, and
-	// simply finds less, and nobody notices while looking at an inventory they
-	// have never seen otherwise.
+	// Sources is the scanner's per-source accounting. A keyed source without its
+	// credential disables itself silently: the run finishes correctly and finds
+	// less, which nothing else shows.
 	Sources []SourceReport `json:"sources,omitempty"`
-	// Notifications is what this report is worth telling somebody, accumulated
-	// and written in one statement at the end of the transaction. Excluded
-	// from the run summary: it is a batch in flight rather than a fact about
-	// the run.
+	// Notifications is accumulated and written in one statement at the end of the
+	// transaction. Excluded from the summary: it is a batch in flight, not a fact
+	// about the run.
 	Notifications []notify.Event `json:"-"`
-	// grace is read once per report rather than once per event, and frozen at
-	// write time with the payload for the same reason.
+	// grace is read once per report and frozen with the payload.
 	grace notify.Grace
-	// suppressedCount is what the summary says about a first run.
+	// Suppressed counts events held back as a first run's flood.
 	Suppressed int            `json:"suppressed"`
 	Unknown    map[string]int `json:"unknown,omitempty"`
 }
@@ -132,20 +111,15 @@ type SourceReport struct {
 type Ingestor struct {
 	enricher enrich.Enricher
 	cadence  lifecycle.Cadence
-	// random draws the jitter every delay is widened by. Without it the
-	// thousands of assets one run wrote share a due date and come back
-	// together forever. It is a field so that a test asserts a date rather
-	// than a range.
+	// random draws the jitter every delay is widened by, so assets written by one
+	// run do not share a due date forever. A field so tests assert a date.
 	random func() float64
 	now    func() time.Time
 	log    *slog.Logger
 }
 
-// Option adjusts an ingestor.
-//
-// Two of the three inputs of a due date are a clock and a random draw, which
-// makes the arithmetic of scheduling untestable unless both can be handed in.
-// Asserting a range instead would pass on a function that returns a constant.
+// Option adjusts an ingestor. The clock and the random draw are inputs of a due
+// date and must be injectable; asserting a range would pass a constant.
 type Option func(*Ingestor)
 
 // WithClock replaces the instant every observation is stamped with.
@@ -189,10 +163,9 @@ func New(enricher enrich.Enricher, cadence lifecycle.Cadence, log *slog.Logger, 
 
 // Report writes a whole report inside one transaction.
 //
-// Everything that concludes something about a target is decided here rather
-// than believed: the scope, the outcome, which assets a finding implies, and
-// what state the asset is now in. A scanner that lied about any of them would
-// be reclassified, requalified and bounded on arrival.
+// Scope, outcome, implied assets and resulting state are decided here, not
+// believed: a scanner that lied about any of them is reclassified, requalified
+// and bounded on arrival.
 func (i *Ingestor) Report(ctx context.Context, q *sqlcgen.Queries, run Run, set *scope.Set, report Report) (Summary, error) {
 	summary := Summary{Unknown: map[string]int{}}
 
@@ -203,8 +176,8 @@ func (i *Ingestor) Report(ctx context.Context, q *sqlcgen.Queries, run Run, set 
 
 		key, err := hostKey(host.Host)
 		if err != nil {
-			// A source can return junk. One unusable name is not a reason to
-			// refuse a report, but it is counted rather than swallowed.
+			// A source can return junk. One unusable name does not refuse the report, but
+			// it is counted.
 			summary.Skipped++
 			i.log.WarnContext(ctx, "host skipped", "host", host.Host, "error", err)
 			continue
@@ -228,9 +201,8 @@ func (i *Ingestor) Report(ctx context.Context, q *sqlcgen.Queries, run Run, set 
 			summary.Created++
 		}
 
-		// Whether an asset sits behind an edge is structural, seen identically
-		// by every observer, so it is decided once for the host and carried to
-		// the services it derives.
+		// Being behind an edge is structural and seen identically by every observer,
+		// so it is decided once per host and carried to derived services.
 		edge := i.edge(host)
 
 		answered, err := i.writeHostObservations(ctx, q, run, report, st, host, edge, &summary)
@@ -241,9 +213,9 @@ func (i *Ingestor) Report(ctx context.Context, q *sqlcgen.Queries, run Run, set 
 			return summary, err
 		}
 
-		// A host the report did not answer for keeps its due date, so the next
-		// tick selects it again. Silence is not a measurement, and turning it
-		// into one is how a truncated run archives live assets.
+		// A host the report did not answer for keeps its due date and is selected again.
+		// Silence is not a measurement; treating it as one archives live assets on a
+		// truncated run.
 		if !answered {
 			continue
 		}
@@ -254,9 +226,8 @@ func (i *Ingestor) Report(ctx context.Context, q *sqlcgen.Queries, run Run, set 
 
 	summary.Sources = accounting(report.Sources)
 
-	// A declared path earns its render once the service it belongs to has
-	// answered. One statement for the whole report rather than one per
-	// service: it reads a state the observations above have already written.
+	// A declared path earns its render once its service has answered. One
+	// statement for the report, since it reads state the observations above wrote.
 	if err := i.writeEvents(ctx, q, run, &summary); err != nil {
 		return summary, err
 	}
@@ -273,7 +244,7 @@ func (i *Ingestor) Report(ctx context.Context, q *sqlcgen.Queries, run Run, set 
 }
 
 // hostKey turns a reported name into an identity. An address literal is an
-// address asset, not a name: the report does not say which it sent.
+// address asset; the report does not say which it sent.
 func hostKey(raw string) (normalize.Key, error) {
 	if key, err := normalize.IP(raw); err == nil {
 		return key, nil
@@ -296,16 +267,11 @@ func (i *Ingestor) edge(host Host) promoted {
 		operator = i.enricher.Lookup(addrs[0]).ASNOrg
 	}
 
-	// A pass that had nothing to look at has no opinion, which is not the same
-	// as an opinion that the asset is not fronted. A resolution that timed out
-	// carries no address, no CNAME and no provider, and writing false from it
-	// would clear the flag and the provider on a fronted asset every time the
-	// name failed to answer.
-	//
-	// A name that resolved is a name this looked at, whatever the enrichment
-	// could add: the scanner's own determination and the terminal CNAME are
-	// both real evidence, and the operator is the third source rather than the
-	// first.
+	// A pass with nothing to look at has no opinion, which differs from "not fronted": a
+	// timed-out resolution carries no address, CNAME or provider, and writing false would clear
+	// the flag on a fronted asset whenever the name failed to answer. A resolved name was looked
+	// at whatever enrichment could add: the scanner's determination and the terminal CNAME are
+	// real evidence, the operator the third source.
 	if provider == "" && len(host.CNAME) == 0 && len(host.Addresses) == 0 {
 		return promoted{}
 	}
@@ -321,11 +287,9 @@ func (i *Ingestor) writeAsset(
 	target := scope.Target{Key: key, Addresses: addresses(host.Addresses)}
 	status := set.Classify(target)
 
-	// A derived service was not returned by an enumeration source: it was
-	// implied by a port its host was found to have open. Copying the host's
-	// step would attribute it to whichever source returned the name, and a
-	// question like "what did this source actually find" would answer with
-	// every service in the inventory.
+	// A derived service was implied by an open port, not returned by a source.
+	// Copying the host's step would attribute it to whichever source returned the
+	// name, so "what did this source find" would count every service.
 	step := derived(run, key)
 	if key.Kind != normalize.KindService {
 		step = lineage(run, host)
@@ -359,9 +323,9 @@ func (i *Ingestor) writeAsset(
 		params.DiscoveryPath = path
 	}
 	i.enrichInto(&params, target.Addresses)
-	// Only in-scope assets are scheduled, and only hosts carry these two. A
-	// service is observed through its host's run, so a resolve date on one
-	// would put it in a queue nothing dispatches from.
+	// Only in-scope hosts and addresses are scheduled. A service is observed
+	// through its host's run, so a resolve date on one would sit in a queue nothing
+	// dispatches from.
 	if status == scope.InScope && (key.Kind == normalize.KindFQDN || key.Kind == normalize.KindIP) {
 		params.NextResolveAt = stampPtr(run.Due.Resolve)
 		params.NextFullAt = stampPtr(run.Due.Full)
@@ -378,8 +342,8 @@ func (i *Ingestor) writeAsset(
 	}
 	st.key = key.Value
 	st.lineage = path
-	// On a first appearance there is no previous source, and the one being
-	// written is the answer to the same question.
+	// On a first appearance there is no previous source; the one being written is
+	// the answer.
 	if st.source == "" {
 		st.source = params.DiscoverySource
 	}
@@ -388,11 +352,10 @@ func (i *Ingestor) writeAsset(
 
 // enrichInto turns the address a run connected to into an operator and a place.
 //
-// It reads the submitted payload rather than the normalized one, which is the
-// only exception of its kind in the write path and is deliberate: a name in
-// round robin answers a different address on every pass, so the field is
-// dropped at normalization and exists only to fill these columns. A payload
-// carrying it would differ on every run for a target nobody touched.
+// It reads the submitted payload, not the normalized one: a round-robin name
+// answers a different address each pass, so normalization drops the field, and
+// keeping it would make the payload differ on every run for an untouched target.
+// This is the only such exception in the write path.
 func (i *Ingestor) enrichInto(params *sqlcgen.UpsertAssetAndProjectionParams, addrs []netip.Addr) {
 	if len(addrs) == 0 {
 		return
@@ -413,15 +376,14 @@ func (i *Ingestor) enrichInto(params *sqlcgen.UpsertAssetAndProjectionParams, ad
 	params.City = text(found.City)
 }
 
-// writeHostObservations writes what a run learned about a name. It reports
+// writeHostObservations writes what a run learned about a name and reports
 // whether the run answered for the host at all.
 func (i *Ingestor) writeHostObservations(
 	ctx context.Context, q *sqlcgen.Queries, run Run, report Report,
 	st *state, host Host, edge promoted, summary *Summary,
 ) (bool, error) {
-	// A host the run never reached produces nothing. Inventing a verdict for
-	// one that was never queried would be worse than admitting the gap, and it
-	// is how a truncated run archives live assets.
+	// A host the run never reached produces nothing. A verdict for a name never
+	// queried is worse than the gap, and archives live assets on a truncated run.
 	if host.Status == StatusDiscovered {
 		return false, nil
 	}
@@ -437,10 +399,9 @@ func (i *Ingestor) writeHostObservations(
 		dns["cname"] = anySlice(host.CNAME)
 	}
 
-	// A name pointing at a name that no longer exists. The dangling pointer
-	// and its proof arrive in one query, because a recursive resolver follows
-	// the chain itself and returns nxdomain with the CNAME still in the answer
-	// section.
+	// A name pointing at a name that no longer exists. The dangling pointer and its
+	// proof arrive in one query: a recursive resolver follows the chain and returns
+	// nxdomain with the CNAME still in the answer.
 	takeover := signals.Dangling(host.Status, host.Reason, host.CNAME)
 	if takeover != nil {
 		dns["takeover_candidate"] = takeover.Map()
@@ -478,10 +439,9 @@ func (i *Ingestor) writeHostObservations(
 		outcome:  outcome,
 		data:     tcp,
 		promoted: edge,
-		// No takeover kind. A finding is cleared only by the layer that could
-		// have produced it, and this one produces none: claiming the orphan
-		// CNAME kind here let a tcp observation delete, in the same report,
-		// the finding the dns observation had just written.
+		// No takeover kind: a finding is cleared only by the layer that could produce
+		// it. Claiming the orphan CNAME kind here let a tcp observation delete the
+		// finding the dns observation had just written.
 	}, summary); err != nil {
 		return true, err
 	}
@@ -489,18 +449,14 @@ func (i *Ingestor) writeHostObservations(
 	return true, nil
 }
 
-// writeServices turns every open port into an asset.
-//
-// Without it the port scan buys nothing: no asset means no due date, no HTTP
-// probe on that port, no service detected, and nothing reaching the renderer.
-// A forgotten application on an unusual port is the reason to scan, and the
-// probe that finds it would have no way to put it in the inventory.
+// writeServices turns every open port into an asset. Without it the port scan
+// buys nothing: no due date, no HTTP probe, no renderer, so a forgotten
+// application on an unusual port could not enter the inventory.
 func (i *Ingestor) writeServices(
 	ctx context.Context, q *sqlcgen.Queries, run Run, set *scope.Set, report Report,
 	hostKey normalize.Key, host *state, reported Host, edge promoted, summary *Summary,
 ) error {
-	// Only a host derives services. A service makes its own port scanned and
-	// nothing else, so deriving from one would recreate itself.
+	// Only a host derives services; deriving from a service would recreate itself.
 	if hostKey.Kind != normalize.KindFQDN && hostKey.Kind != normalize.KindIP {
 		return nil
 	}
@@ -511,21 +467,17 @@ func (i *Ingestor) writeServices(
 	}
 
 	for _, port := range reported.Ports {
-		// The host of the derived key is the host of the observed asset, never
-		// a field of the payload. A scanner given one target cannot manufacture
-		// services on another.
+		// The derived key's host is the observed asset's host, never a payload field,
+		// so a scanner given one target cannot create services on another.
 		key, err := normalize.Service(hostKey.Host, port.Port, port.Protocol)
 		if err != nil {
 			summary.Skipped++
 			continue
 		}
 
-		// The scheme is what answered on the port, and it is what a render is
-		// pointed at later. Deriving it from the port number would be a guess
-		// about every application that speaks TLS somewhere unusual, and taking
-		// it from the report as written would let "HTTPS" through: the scheme
-		// decides whether a port belongs in an authority, so a case nobody
-		// lowered points a browser at a different service on the same host.
+		// The scheme is what answered, and it is where a render is later pointed. The
+		// port number would be a guess for TLS on unusual ports, and an unlowered
+		// "HTTPS" would point a browser at a different service on the same host.
 		if port.HTTP != nil {
 			if scheme, err := normalize.Scheme(port.HTTP.Scheme); err == nil {
 				key.Scheme = scheme
@@ -541,27 +493,20 @@ func (i *Ingestor) writeServices(
 			summary.Created++
 		}
 
-		// A service earns its first render on transport reachability and
-		// nothing else. It is deliberately not a filter on the outcome: an
-		// origin error behind a CDN is an informative failure counted as proof
-		// of death, and it still deserves a baseline, because an edge
-		// answering for a dead origin is a page with something to read.
-		//
-		// What it does read is the instrument. Chrome answers ERR_UNSAFE_PORT
-		// on its own restricted list, so the failure is certain before the
-		// call, and a certain failure is not a measurement. The protocol is
-		// part of that: a browser speaks no UDP, and the render queue carries
-		// no protocol to notice with later.
+		// A service earns its first render on transport reachability alone, not the outcome: an
+		// origin error behind a CDN counts as death yet is a page worth a baseline. It does read the
+		// instrument: Chrome answers ERR_UNSAFE_PORT on its restricted list, a certain failure and
+		// not a measurement. UDP is excluded since a browser speaks none and the render queue
+		// carries no protocol to notice later.
 		if key.Kind == normalize.KindService && port.Protocol != "udp" && fingerprint.Renderable(port.Port) {
 			if err := i.earnBaseline(ctx, q, service); err != nil {
 				return err
 			}
 		}
 
-		// A derived service stays a candidate until something addresses the
-		// service itself. The port scan is an observation about the host, and
-		// reading it as one about the service would report every open port as
-		// a verified application.
+		// A derived service stays a candidate until something addresses the service
+		// itself. The port scan is about the host; reading it as about the service
+		// would report every open port as a verified application.
 		if port.HTTP == nil {
 			continue
 		}
@@ -592,9 +537,8 @@ func (i *Ingestor) writeService(
 		Provider:   derefString(edge.CDNProvider),
 	})
 
-	// The presence of a response is not liveness. On a fronted target the edge
-	// always answers, with no refusal and no nxdomain, so an asset whose origin
-	// is dead would stay active forever. Death there is readable only in the
+	// A response is not liveness: behind a CDN the edge always answers, so a dead
+	// origin would stay active forever. Death there is only readable in the
 	// semantics of the response.
 	outcome := OutcomeOK
 	if verdict.Dead != "" {
@@ -602,8 +546,8 @@ func (i *Ingestor) writeService(
 		payload["origin_dead"] = verdict.Dead
 	}
 
-	// Orthogonal to the outcome. A 403 carrying a mitigation signature is a
-	// target that answered and is there, and a probe that learned nothing.
+	// Orthogonal to the outcome: a 403 with a mitigation signature is a target that
+	// answered and is there, and a probe that learned nothing.
 	usable := verdict.Usable()
 	if verdict.Challenge != "" {
 		payload["waf_detected"] = true
@@ -649,15 +593,11 @@ func (i *Ingestor) writeService(
 	}, summary)
 }
 
-// earnBaseline gives a service its first render date.
+// earnBaseline gives a service its first render date, only where there is
+// none, so a queued service keeps its place.
 //
-// It applies only where there is none, so a service already queued keeps its
-// place and a baseline is not re-armed on every pass over the same port.
-//
-// A baseline is due when it is earned. It does not inherit the discovery
-// jitter: that spread exists for the first probe of a freshly discovered asset,
-// and this line is created later, once an observation has proved the target
-// worth rendering. The herd has already been spread once.
+// It is due when earned and does not inherit the discovery jitter: that spread
+// is for the first probe of a fresh asset, and this line is created later.
 func (i *Ingestor) earnBaseline(ctx context.Context, q *sqlcgen.Queries, service *state) error {
 	if err := q.EarnBaseline(ctx, sqlcgen.EarnBaselineParams{
 		AssetID:  uuidTo(service.id),
@@ -669,13 +609,11 @@ func (i *Ingestor) earnBaseline(ctx context.Context, q *sqlcgen.Queries, service
 	return nil
 }
 
-// tcpOutcome reads what the port sweep proved, and it is empty when the sweep
-// proved nothing.
+// tcpOutcome reads what the port sweep proved; empty when it proved nothing.
 //
-// A report that lists only open ports cannot conclude a death: an empty list is
-// "nothing was open" and "nothing was tried" at once, and those are opposite
-// findings. The counts are what separate them, and until a report carries them
-// this layer writes nothing rather than a verdict it cannot support.
+// A report listing only open ports cannot conclude a death: an empty list means
+// both "nothing was open" and "nothing was tried". Until reports carry counts,
+// this layer writes nothing rather than an unsupported verdict.
 func tcpOutcome(host Host) string {
 	if len(host.Ports) > 0 {
 		return OutcomeOK
@@ -683,12 +621,10 @@ func tcpOutcome(host Host) string {
 	if host.Scan == nil || !host.Scan.Accounted() {
 		return ""
 	}
-	// The host answers and nothing listens. Four things break it. Three are a
-	// different way of not having tried: a filtered port is indistinguishable
-	// from a banned one and could be hiding a service, and an unknown one was
-	// never measured at all. The fourth is the counts contradicting the port
-	// list, which the walk above already returned on, and which a report this
-	// does not trust must not be able to turn into a death anyway.
+	// The host answers and nothing listens. Filtered is indistinguishable from
+	// banned and may hide a service, and unknown was never measured; counts that
+	// contradict the port list were already handled above and must not become a
+	// death either.
 	if host.Scan.Open == 0 && host.Scan.Refused > 0 &&
 		host.Scan.Filtered == 0 && host.Scan.Unknown == 0 {
 		return OutcomeFail
@@ -703,9 +639,8 @@ func derefString(s *string) string {
 	return *s
 }
 
-// Outcomes, which are not "succeeded, failed, crashed" but what was learned
-// about the target: it answered and it is there, it answered and it is not, or
-// nothing conclusive was obtained.
+// Outcomes describe what was learned about the target, not whether the probe
+// ran.
 const (
 	OutcomeOK    = "ok"
 	OutcomeFail  = "fail"
@@ -720,12 +655,11 @@ func dnsOutcome(host Host) string {
 	case StatusDead:
 		switch host.Reason {
 		case ReasonNXDomain:
-			// The only clean death signal there is.
+			// The only clean death signal.
 			return OutcomeFail
 		case ReasonNoAnswer:
-			// A name that exists without an address, an MX-only host or a TXT
-			// validation record, is not a name that does not exist. Confusing
-			// the two would delete every mail host from an inventory.
+			// A name with no address (MX-only, TXT validation) exists. Confusing the two
+			// would delete every mail host.
 			return OutcomeOK
 		default:
 			// A timeout is indistinguishable from a filter or a ban.
@@ -736,10 +670,8 @@ func dnsOutcome(host Host) string {
 }
 
 // qualify downgrades a death claimed by a run that could not vouch for itself.
-//
-// The observation is still written, because it happened, but a resolver pool
-// that failed validation turns every dead host into a live one or every live
-// host into a timeout. A degraded observer is an observer, not a verdict.
+// The observation is still written, but a resolver pool that failed validation
+// turns dead hosts into live ones or live ones into timeouts.
 func qualify(outcome string, report Report) string {
 	if outcome == OutcomeFail && report.RanDegraded() {
 		return OutcomeError
@@ -747,11 +679,9 @@ func qualify(outcome string, report Report) string {
 	return outcome
 }
 
-// writeEvents inserts a whole batch in one statement.
-//
-// Ingestion has a round trip budget per observation and a test fails past it.
-// One insert per changed observation would blow it on a first run, where
-// everything changes, which is exactly the scenario the milestone measures.
+// writeEvents inserts a whole batch in one statement. Ingestion has a round
+// trip budget per observation, enforced by a test; one insert per change would
+// blow it on a first run, where everything changes.
 func (i *Ingestor) writeEvents(ctx context.Context, q *sqlcgen.Queries, run Run, summary *Summary) error {
 	if len(summary.Notifications) == 0 {
 		return nil
@@ -775,10 +705,8 @@ func (i *Ingestor) writeEvents(ctx context.Context, q *sqlcgen.Queries, run Run,
 
 // accounting carries the scanner's source report into the run's summary.
 //
-// Every source appears whether it succeeded or not, and a keyed one with no key
-// says so rather than being silently dropped. That distinction is the whole
-// point: a run that queried two sources out of five is a run that found less,
-// and the only place that is visible is here.
+// Every source appears, and a keyed one without its key says so: a run that
+// queried two sources of five finds less, and this is the only place it shows.
 func accounting(sources []Source) []SourceReport {
 	if len(sources) == 0 {
 		return nil
@@ -795,11 +723,8 @@ func accounting(sources []Source) []SourceReport {
 	return out
 }
 
-// Queried summarises the accounting in one line.
-//
-// It is a sentence rather than a table because the question it answers is asked
-// while looking at a disappointing inventory: how much of what could have been
-// queried actually was.
+// Queried summarises the accounting in one line: how much of what could have
+// been queried was.
 func (s Summary) Queried() string {
 	if len(s.Sources) == 0 {
 		return ""
@@ -833,8 +758,7 @@ func discoverySource(run Run, host Host) string {
 	return "verification"
 }
 
-// lineage records why an asset is in the inventory, which matters for
-// debugging, for trust, and for justifying a scan to whoever owns the target.
+// lineage records why an asset is in the inventory.
 func lineage(run Run, host Host) map[string]any {
 	step := map[string]any{"step": "enumerated", "run": run.ID.String()}
 	if len(host.Sources) > 0 {
@@ -846,7 +770,7 @@ func lineage(run Run, host Host) map[string]any {
 	return step
 }
 
-// derived records the port that implied a service, and the run that found it.
+// derived records the port that implied a service and the run that found it.
 func derived(run Run, key normalize.Key) map[string]any {
 	return map[string]any{
 		"step": "derived",
@@ -915,9 +839,8 @@ func text(s string) *string {
 	return &s
 }
 
-// portPtr narrows a port, which the caller has already bounded. The check is
-// here anyway: a conversion that silently wraps turns a port into a negative
-// number nobody can search for.
+// portPtr narrows an already-bounded port. The check stays: a silently wrapping
+// conversion yields a negative port nobody can search for.
 func portPtr(n int) *int32 {
 	if n < 1 || n > 65535 {
 		return nil
@@ -926,15 +849,11 @@ func portPtr(n int) *int32 {
 	return &v
 }
 
-// asnPtr narrows an operator number, and it is deliberately not the function
-// above.
-//
-// Reusing the port helper here dropped every four-byte ASN in silence: AS396982
-// is Google Cloud, AS132203 is Tencent, and most numbers allocated in the last
-// decade are above 65535. The organization and the country were written while
-// the number was left null, so every filter on an operator missed exactly the
-// assets hosted on the newer ranges. Nothing caught it because the fixtures
-// used AS15169 and AS13335.
+// asnPtr narrows an operator number. It is not portPtr: reusing that dropped
+// every four-byte ASN (AS396982, AS132203, most numbers allocated in the last
+// decade exceed 65535), leaving the organization set and the number null, so
+// operator filters missed assets on newer ranges. Fixtures used AS15169 and
+// AS13335 and hid it.
 func asnPtr(n int) *int32 {
 	if n <= 0 || n > math.MaxInt32 {
 		return nil

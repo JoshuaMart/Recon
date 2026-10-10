@@ -1,8 +1,7 @@
-// Package fingerprint talks to the rendering service.
-//
-// The service executes JavaScript controlled by the target, so it sits alone on
-// its own network and holds no credential: everything it needs arrives in the
-// request. This package is the only thing that speaks to it.
+// Package fingerprint talks to the rendering service. The service executes
+// JavaScript controlled by the target, so it sits alone on its own network and
+// holds no credential: everything arrives in the request. This package is the
+// only thing that speaks to it.
 package fingerprint
 
 import (
@@ -17,20 +16,16 @@ import (
 	"time"
 )
 
-// ErrInternal is a target the control plane refuses to ask for.
-//
-// The rendering service refuses these itself, which is where the property
-// belongs: a check on the caller is a convention and a check on the service is
-// a property, and the service is not only ever called by this. Refusing here
-// as well means the guard is exercised by two processes that fail differently,
-// and it keeps a bug in the inventory from becoming a request to a metadata
-// endpoint.
+// ErrInternal is a target the control plane refuses to ask for. The rendering
+// service refuses these itself, where the property belongs (a caller check is a
+// convention, a service check a property, and others may call it). Refusing here
+// too means two processes failing differently exercise the guard, and an inventory
+// bug cannot become a request to a metadata endpoint.
 var ErrInternal = errors.New("the target resolves inside a range that is never rendered")
 
-// blocked are the ranges a browser must never be pointed at.
-//
-// Link local is first because it is the one that costs a compromise rather than
-// an embarrassment: cloud instance credentials live at 169.254.169.254.
+// blocked are the ranges a browser must never be pointed at. Link local is first:
+// it costs a compromise, not an embarrassment, as cloud instance credentials live
+// at 169.254.169.254.
 var blocked = []netip.Prefix{
 	netip.MustParsePrefix("169.254.0.0/16"), // link local, instance credentials
 	netip.MustParsePrefix("fe80::/10"),
@@ -45,11 +40,9 @@ var blocked = []netip.Prefix{
 	netip.MustParsePrefix("100.64.0.0/10"), // carrier grade NAT, a private range in more than one cloud
 }
 
-// Internal reports whether an address is one this never renders.
-//
-// The IPv4-mapped form is unwrapped first. Without that, every rule above is
-// walked around by writing the same address the other way, and the check that
-// looks the most obviously correct is the one that does nothing.
+// Internal reports whether an address is one this never renders. The IPv4-mapped
+// form is unwrapped first, or every rule is bypassed by writing the same address
+// the other way.
 func Internal(addr netip.Addr) bool {
 	if addr.Is4In6() {
 		addr = addr.Unmap()
@@ -62,13 +55,10 @@ func Internal(addr netip.Addr) bool {
 	return false
 }
 
-// literal reads a host as an address, in every spelling a browser accepts.
-//
-// The canonical form is the one nobody writes by accident. Chrome still parses
-// the legacy inet_aton spellings, so http://2130706433/ and http://0177.0.0.1/
-// are loopback, and a check that only knows the dotted-quad lets both past to a
-// resolver that will fail on them and to a guard that reads a failed resolution
-// as "not my problem".
+// literal reads a host as an address in every spelling a browser accepts. Chrome
+// still parses legacy inet_aton forms, so http://2130706433/ and
+// http://0177.0.0.1/ are loopback; a dotted-quad-only check lets both through to a
+// resolver that fails and a guard that reads a failed resolution as "not my problem".
 func literal(host string) (netip.Addr, bool) {
 	if addr, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil {
 		return addr, true
@@ -76,9 +66,8 @@ func literal(host string) (netip.Addr, bool) {
 	return inetAton(host)
 }
 
-// inetAton parses the legacy forms: one to four parts, each decimal, octal with
-// a leading zero, or hexadecimal with a leading 0x. The last part absorbs
-// whatever the earlier ones did not.
+// inetAton parses the legacy forms: one to four parts, each decimal, octal
+// (leading zero) or hex (0x). The last part absorbs what earlier ones did not.
 func inetAton(host string) (netip.Addr, bool) {
 	parts := strings.Split(host, ".")
 	if len(parts) == 0 || len(parts) > 4 {
@@ -159,15 +148,12 @@ func NewGuard(resolve Resolver) *Guard {
 	return &Guard{resolve: resolve}
 }
 
-// Check refuses a target that resolves inside a blocked range.
+// Check refuses a target that resolves inside a blocked range. A name is resolved,
+// not trusted: a name pointing at an internal address is the case worth catching.
 //
-// A name is resolved rather than trusted. An inventory holds names, and a name
-// pointing at an internal address is exactly the case worth catching: the
-// literal forms are the ones nobody writes by accident.
-//
-// A resolution that fails is not a refusal. The browser will do its own, and
-// turning a DNS failure here into a refusal would silently drop every render on
-// a host whose resolver is having a bad minute.
+// A failed resolution is not a refusal: the browser resolves on its own, and
+// refusing here would silently drop every render on a host whose resolver is
+// having a bad minute.
 func (g *Guard) Check(ctx context.Context, raw string) error {
 	parsed, err := url.Parse(raw)
 	if err != nil {

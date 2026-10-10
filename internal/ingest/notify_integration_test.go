@@ -294,10 +294,9 @@ func TestAFirstRunIsHeldBackAndStaysReadable(t *testing.T) {
 // that is about events.
 func contains(haystack, needle string) bool { return strings.Contains(haystack, needle) }
 
-// The comparison runs on the normalized structure on both sides. Comparing the
-// payload as it arrived against the stored one reports every field
-// normalization touches as a change, which is the false change the whole
-// approach exists to remove.
+// The comparison runs normalized against normalized. The payload as it arrived against
+// the stored one would report everything normalization touches as a change, the false
+// change this approach removes.
 func TestTheDiffComparesNormalizedAgainstNormalized(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -333,10 +332,9 @@ func TestTheDiffComparesNormalizedAgainstNormalized(t *testing.T) {
 			t.Errorf("a field the normalizer owns was compared: %s", raw)
 		}
 	}
-	// The real change is still seen. On this layer the title lives inside the
-	// chain, so it reads as a chain change, which is what that layer can
-	// honestly say: the raw probe is the detector for a title and it carries
-	// one at the top level.
+	// The real change is still seen. On this layer the title lives in the chain, so it reads
+	// as a chain change, which is what the layer can honestly say: the raw probe detects a
+	// title and carries one at the top level.
 	if len(h.kinds(t, notify.KindChainChanged)) != 1 {
 		t.Fatalf("the real change produced %d events: %+v",
 			len(h.kinds(t, notify.KindChainChanged)), h.events(t))

@@ -9,21 +9,15 @@ import (
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
-// referenceCap bounds how many referencing assets one death reports.
-//
-// A widely referenced internal host is exactly the case that matters and
-// exactly the one that would produce a thousand critical alerts. The cap is
-// stated in the payload rather than applied in silence.
+// referenceCap bounds how many referencing assets one death reports. A widely
+// referenced internal host is the case that matters and would give a thousand
+// critical alerts; the cap is stated in the payload, not applied silently.
 const referenceCap = 25
 
 // externalReferences is the internal half of external_host_dead, read from the
-// referencing side.
-//
-// On the insert path only, which is the same reasoning that puts the takeover
-// finding there: a render that reports the same page again says nothing, so a
-// script pointing at a host that has been dead for a month does not re-alert on
-// every pass. The other direction, the host dying after the render, is caught
-// by the transition rather than by this.
+// referencing side. Insert path only, like the takeover finding: a repeated render
+// says nothing, so a script pointing at a host dead for a month does not re-alert
+// each pass. The host dying after the render is caught by the transition.
 func (i *Ingestor) externalReferences(
 	ctx context.Context, q *sqlcgen.Queries, run Run, st *state, obs observation,
 	discoverySource string, summary *Summary,
@@ -52,17 +46,15 @@ func (i *Ingestor) externalReferences(
 	return nil
 }
 
-// externalReferrers is the same finding read from the dying side.
-//
-// It runs on the transition into inactive, which is the only moment the fact
-// exists: nothing in a payload comparison says that somebody else's page points
-// at this name.
+// externalReferrers is the same finding read from the dying side. It runs on the
+// transition into inactive, the only moment the fact exists: no payload comparison
+// says someone else's page points at this name.
 func (i *Ingestor) externalReferrers(
 	ctx context.Context, q *sqlcgen.Queries, run Run, st *state,
 	discoverySource string, summary *Summary,
 ) error {
-	// Only a name can be pointed at by a script. A service is a name and a
-	// port, and nothing writes "cdn.example.test:443/tcp" into a src attribute.
+	// Only a name can be pointed at by a script; nothing writes
+	// "cdn.example.test:443/tcp" into a src attribute.
 	if st.kind != normalize.KindFQDN {
 		return nil
 	}
@@ -92,11 +84,9 @@ func (i *Ingestor) externalReferrers(
 	return nil
 }
 
-// emitExternalDead writes the event both directions produce.
-//
-// One shape whichever side noticed, because the finding is the same one and a
-// console that had to tell two apart would be reading the mechanism rather than
-// the fact.
+// emitExternalDead writes the event both directions produce. One shape whichever
+// side noticed, since it is one finding and a console telling two apart would read
+// the mechanism, not the fact.
 func (i *Ingestor) emitExternalDead(
 	run Run, st *state, host string, referrers []string, cut bool,
 	discoverySource string, summary *Summary,
@@ -109,8 +99,7 @@ func (i *Ingestor) emitExternalDead(
 		"summary":       fmt.Sprintf("%s is dead and %d asset(s) still point at it", host, len(referrers)),
 	}
 	if cut {
-		// A cap is said rather than applied in silence, which is the same rule
-		// the export and the timeline follow.
+		// A cap is said, not applied silently, like the export and the timeline.
 		payload["truncated"] = true
 	}
 

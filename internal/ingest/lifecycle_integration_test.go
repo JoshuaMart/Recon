@@ -1,11 +1,9 @@
 //go:build integration
 
-// Milestone 2, in the assertions a database can answer.
-//
-// Every transition here is asserted on a controlled clock. The thresholds are
-// "three failures over at least twenty four hours", and a test that lets real
-// time pass measures nothing: three failures inside ninety minutes is the case
-// that separates a disappearance from an outage, and it cannot be written
+// The lifecycle transitions, in the assertions a database can answer. Every
+// transition is asserted on a controlled clock: the thresholds are "three failures
+// over at least twenty-four hours", and real time measures nothing. Three failures
+// in ninety minutes separates a disappearance from an outage and cannot be written
 // without owning the clock.
 package ingest_test
 
@@ -117,9 +115,8 @@ func TestAnNXDomainConfirmedOverADayIsADeath(t *testing.T) {
 	}
 }
 
-// The floor is the assertion, not the count. Without it the threshold is not a
-// threshold: the backoff curve can deliver three failures inside ninety
-// minutes, which is not long enough to tell an outage from a disappearance.
+// The floor is the assertion, not the count: the backoff curve can deliver three
+// failures inside ninety minutes, too short to tell an outage from a disappearance.
 func TestAnNXDomainConfirmedInNinetyMinutesIsNot(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -133,9 +130,8 @@ func TestAnNXDomainConfirmedInNinetyMinutesIsNot(t *testing.T) {
 	}
 }
 
-// A timeout is indistinguishable from a filter or a ban. An inventory that
-// reads it as a death archives every host behind a firewall that started
-// dropping.
+// A timeout is indistinguishable from a filter or ban; reading it as a death would
+// archive every host behind a firewall that started dropping.
 func TestARepeatedTimeoutNeverProducesAnInactive(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -153,9 +149,9 @@ func TestARepeatedTimeoutNeverProducesAnInactive(t *testing.T) {
 	}
 }
 
-// A resolver pool that failed validation turns every dead host into a live one
-// or every live host into a timeout, and those are the two signals a death is
-// read from. A degraded observer is an observer, not a verdict.
+// A resolver pool that failed validation turns dead hosts live or live hosts into
+// timeouts, the two signals a death is read from. A degraded observer is not a
+// verdict.
 func TestADegradedRunCannotConcludeADeath(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -194,9 +190,8 @@ func TestAnAssetComesBackOnASingleSuccess(t *testing.T) {
 	}
 }
 
-// A name that exists without an address, an MX-only host or a TXT validation
-// record, is not a name that does not exist. Confusing the two would delete
-// every mail host from an inventory.
+// A name with no address (MX-only, TXT validation) exists; confusing the two would
+// delete every mail host.
 func TestNoDataIsNotNXDomain(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -253,9 +248,9 @@ func (h *harness) dueOf(t *testing.T, key string) time.Time {
 	return due
 }
 
-// A run's scope decides which dates its report moves. An asset due for full
-// does not need a resolve run, because full runs every rung below it, and the
-// reverse is not true: a resolve run learns nothing about a port.
+// A run's scope decides which dates its report moves. Full covers every rung below,
+// so an asset due for full needs no resolve run; a resolve run learns nothing about
+// a port.
 func TestAResolveRunDoesNotSatisfyAFullOne(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -297,10 +292,10 @@ func (h *harness) fullDueOf(t *testing.T, key string) time.Time {
 	return due
 }
 
-// A bare counter would have forced rewriting the probe the day the alert needs
-// to carry what is vulnerable and on what evidence. The timestamp is added at
-// ingestion, because a date inside the payload would differ on every pass and
-// defeat deduplication on exactly the assets worth following.
+// A bare counter would force rewriting the probe when an alert must carry what is
+// vulnerable and on what evidence. The timestamp is added at ingestion: one in the
+// payload would differ every pass and defeat deduplication on the assets worth
+// following.
 func TestADanglingCNAMEIsRecordedWithItsEvidence(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -325,9 +320,8 @@ func TestADanglingCNAMEIsRecordedWithItsEvidence(t *testing.T) {
 		t.Fatalf("detected_at is %v, and it is what phase 5 alerts on", finding["detected_at"])
 	}
 
-	// Confirmed hourly, the finding must keep the instant it was first seen.
-	// A date that moved would rewrite the row on every pass and take
-	// deduplication to zero on the assets worth following.
+	// Confirmed hourly, the finding keeps the instant it was first seen; a moving date
+	// would rewrite the row each pass and zero deduplication.
 	h.walk(t, c, ing, set, time.Hour, orphan, orphan)
 	again := h.takeoverOf(t, "old.acme.test")
 	if again["detected_at"] != detected {
@@ -372,9 +366,8 @@ func (h *harness) hasTakeover(t *testing.T, key string) bool {
 	return present
 }
 
-// The presence of a response is not liveness. On a fronted target the edge
-// always answers, so an asset whose origin is dead would stay active forever
-// under any rule that reads the transport.
+// A response is not liveness: behind a fronted target the edge always answers, so a
+// dead-origin asset would stay active forever under any rule reading the transport.
 func TestADeadOriginBehindALiveEdgeStillDies(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -410,9 +403,9 @@ func TestADeadOriginBehindALiveEdgeStillDies(t *testing.T) {
 	}
 }
 
-// A derived service is a candidate until something addresses the service
-// itself. The port scan is an observation about the host, and reading it as one
-// about the service would report every open port as a verified application.
+// A derived service is a candidate until something addresses it. The port scan is
+// about the host; reading it as about the service would report every open port as a
+// verified application.
 func TestAnOpenPortBecomesACandidateAndAnAnsweringOneBecomesActive(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -460,9 +453,8 @@ func TestAnOpenPortBecomesACandidateAndAnAnsweringOneBecomesActive(t *testing.T)
 	}
 }
 
-// A host answering on a quarter of the curated list does not have twenty-five
-// services: it is a tarpit, a device accepting every connection, or an edge
-// answering for everything behind it.
+// A host answering on a quarter of the curated list is a tarpit, an
+// accept-everything device or an edge, not twenty-five services.
 func TestTwentyFiveOpenPortsDeriveNothing(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -493,9 +485,8 @@ func TestTwentyFiveOpenPortsDeriveNothing(t *testing.T) {
 	}
 }
 
-// A report that lists only open ports cannot conclude a death: an empty list is
-// "nothing was open" and "nothing was tried" at once, and those are opposite
-// findings.
+// A report listing only open ports cannot conclude a death: an empty list means
+// both "nothing was open" and "nothing was tried".
 func TestTheTCPLayerConcludesOnlyWhatTheSweepCounted(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -530,10 +521,9 @@ func TestTheTCPLayerConcludesOnlyWhatTheSweepCounted(t *testing.T) {
 			state, informative, nonInformative)
 	}
 
-	// And a sweep whose buckets do not cover what it says it tried is one this
-	// cannot read at all. Reading it anyway would conclude a death over ports
-	// nobody can account for, which is the same mistake as reading an empty
-	// list of open ports.
+	// A sweep whose buckets do not cover what it says it tried is unreadable; reading it
+	// would conclude a death over unaccounted ports, the same mistake as reading an
+	// empty open-port list.
 	short := liveHost("short.acme.test")
 	short.Hosts[0].Scan = &ingest.Scan{Scanned: 32, Open: 0, Refused: 30}
 	h.walk(t, c, ing, set, 12*time.Hour, short, short, short)
@@ -561,9 +551,8 @@ func TestAHandEnteredHostIsDueForFullOnItsFirstRun(t *testing.T) {
 		t.Fatalf("%d accepted and %d refused", len(entered.Accepted), len(entered.Refused))
 	}
 
-	// Somebody typed it in to find out what it exposes. A resolution would
-	// only report that the name answers, and the ladder makes the expensive
-	// rung free to ask for: full runs every rung below it.
+	// Typed in to learn what it exposes. A resolution only says the name answers, and
+	// the ladder makes the expensive rung free to ask for: full runs every rung below.
 	full := h.fullDueOf(t, "typed.acme.test")
 	if !full.Equal(c.now) {
 		t.Fatalf("the full due date is %s, want %s", full, c.now)
@@ -612,10 +601,9 @@ func TestAHundredHandEnteredNamesProduceAnInventory(t *testing.T) {
 	}
 }
 
-// This is the one case where a path is an identity rather than the place a
-// redirect landed. A URL has no liveness of its own: what answers is the
-// service, so the URL earns its render once the service has answered, and the
-// renderer is given the URL as declared rather than the service root.
+// The one case where a path is an identity, not where a redirect landed. A URL has
+// no liveness of its own: the service answers, so the URL earns its render once its
+// service has, and the renderer gets the URL as declared.
 func TestAHandEnteredURLEarnsItsRenderOnlyOnceItsServiceAnswered(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -679,10 +667,9 @@ func (h *harness) renderDueOf(t *testing.T, key string) *time.Time {
 	return due
 }
 
-// The backoff tier has to survive a round trip through the database, and the
-// curve has to start at its first rung. Both are wiring, and wiring is exactly
-// what a unit test on the arithmetic cannot see: the tier is read back from the
-// projection and written by a different statement.
+// The tier survives a database round trip and the curve starts at its first rung.
+// Both are wiring, which an arithmetic unit test cannot see: the tier is read from
+// the projection and written by another statement.
 func TestTheBackoffCurveWalksAndResets(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -691,9 +678,9 @@ func TestTheBackoffCurveWalksAndResets(t *testing.T) {
 
 	gone := deadHost("wobble.acme.test", ingest.ReasonNXDomain)
 
-	// The first failure waits the first rung. Starting at the second would be
-	// invisible here and expensive on the candidate curve, where the first
-	// rung is one minute and is the whole of the freshness advantage.
+	// The first failure waits the first rung. Starting at the second is invisible here
+	// and costly on the candidate curve, whose one-minute first rung is the whole
+	// freshness advantage.
 	at := c.now
 	h.walk(t, c, ing, set, time.Hour, gone)
 	h.expectDue(t, "wobble.acme.test", at.Add(15*time.Minute), 1)
@@ -739,10 +726,9 @@ func (h *harness) expectDue(t *testing.T, key string, want time.Time, tier int) 
 	}
 }
 
-// Whether a target is measurable is a relation between an observer and a
-// target, not a property of either, and it is orthogonal to whether the target
-// is alive. A 403 carrying a mitigation signature is a target that answered and
-// is there, and a probe that learned nothing.
+// Measurability is a relation between observer and target, orthogonal to whether
+// the target is alive. A 403 with a mitigation signature is a target that answered
+// and is there, and a probe that learned nothing.
 func TestAChallengeMovesTheObserverAndNotTheTarget(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -781,9 +767,8 @@ func TestAChallengeMovesTheObserverAndNotTheTarget(t *testing.T) {
 	no := false
 	h.expectReach(t, service, -3, &no)
 
-	// And through all of it the target is alive. A challenge must never drift
-	// an asset toward a death: without the distinction every protected route
-	// in an inventory ends up somewhere it does not belong.
+	// And the target is alive throughout. A challenge must never drift an asset toward
+	// death, or every protected route ends up somewhere it does not belong.
 	if state := h.lifecycleOf(t, service); state != lifecycle.Active {
 		t.Fatalf("a service answering a challenge is %q", state)
 	}
@@ -826,9 +811,9 @@ func (h *harness) expectReach(t *testing.T, key string, streak int, reachable *b
 	}
 }
 
-// A discovery run walks the whole ladder, so a host it found is eligible for a
-// later sweep. Without the full date nothing ever port scans that host again,
-// and a port opened next week is never seen: the one thing scanning is for.
+// A discovery run walks the whole ladder, so its hosts stay eligible for a later
+// sweep. Without the full date nothing port-scans the host again and a port opened
+// next week is never seen.
 func TestADiscoveryRunLeavesItsHostsEligibleForASweep(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -856,9 +841,9 @@ func TestADiscoveryRunLeavesItsHostsEligibleForASweep(t *testing.T) {
 	}
 }
 
-// Archived is out of the scheduler, and the design says it comes back by hand
-// or on rediscovery. Neither worked: the projection kept the state, and every
-// selection filters it out, so the API reported a schedule nothing would read.
+// Archived is out of the scheduler and returns by hand or on rediscovery. Neither
+// worked: the projection kept the state and every selection filters it out, so the
+// API reported a schedule nothing read.
 func TestAnArchivedAssetComesBack(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -883,9 +868,8 @@ func TestAnArchivedAssetComesBack(t *testing.T) {
 		t.Fatal("a hand entered asset stayed archived, so no selection will ever return it")
 	}
 
-	// On rediscovery. An archived asset has no due date, so the only thing
-	// that can reach it is an enumeration finding it again, which is exactly
-	// what rediscovery means here.
+	// On rediscovery: an archived asset has no due date, so only an enumeration finding
+	// it again can reach it.
 	exec(t, h.pool, `UPDATE asset_current SET lifecycle = 'archived',
 	              next_resolve_at = NULL, next_full_at = NULL
 	            WHERE program_id = $1 AND key = 'lost.acme.test'`, h.program)
@@ -904,20 +888,18 @@ func TestAnArchivedAssetComesBack(t *testing.T) {
 	}
 }
 
-// A finding is cleared only by the layer that could have produced it, and the
-// tcp layer produces none. Claiming the orphan CNAME kind there let a tcp
-// observation delete, in the same report, the finding the dns observation had
-// just written.
+// A finding is cleared only by the layer that could produce it, and tcp produces
+// none. Claiming the orphan CNAME kind there let a tcp observation delete, in the
+// same report, the finding the dns observation had just written.
 func TestATCPObservationDoesNotEraseADanglingCNAME(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
 	c := &clock{now: time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)}
 
 	orphan := deadHost("orphan.acme.test", ingest.ReasonNXDomain, "bucket.s3.example.net.")
-	// A sweep that reports counts for a name that does not resolve. The
-	// scanner does not do this today, and a scanner is untrusted by
-	// assumption: a report that could delete a finding by adding a block to it
-	// is a door left open.
+	// A sweep reporting counts for a name that does not resolve. The scanner does not do
+	// this today, but it is untrusted: a report deleting a finding by adding a block to
+	// it is an open door.
 	orphan.Hosts[0].Scan = &ingest.Scan{Scanned: 32, Unknown: 32}
 
 	h.walk(t, c, h.dated(c), set, time.Hour, orphan)

@@ -25,9 +25,9 @@ function observation(layer: Evidence['layer'], data: unknown): Evidence {
 }
 
 describe('hopsOf', () => {
-	// The case that decides the module: `http-check` writes `code` on a hop and the
-	// fingerprinter writes `status_code` for the same thing. A reader of one spelling
-	// renders one producer and blanks on the other, which is a blank nobody explains.
+	// The case deciding the module: `http-check` writes `code` on a hop and the fingerprinter
+	// `status_code` for the same thing. A reader of one spelling blanks the other producer, a blank
+	// nobody explains.
 	it('reads both spellings of a hop status', () => {
 		const probe = hopsOf(observation('http', { chain: [{ code: 301, url: 'http://a.example' }] }));
 		const render = hopsOf(observation('fingerprint', { chain: [{ status_code: 200, url: 'https://a.example' }] }));
@@ -96,9 +96,8 @@ describe('certificateOf', () => {
 });
 
 describe('scriptsOf', () => {
-	// Internal scripts only: a bundle served from a public CDN is shared by
-	// thousands of sites that have nothing to do with each other, so it groups without
-	// discriminating, which is the test JARM failed.
+	// Internal scripts only: a bundle from a public CDN is shared by thousands of unrelated sites, so
+	// it groups without discriminating, the test JARM failed.
 	it('drops the external ones', () => {
 		const out = scriptsOf(
 			observation('fingerprint', {
@@ -128,9 +127,9 @@ describe('renderFacts', () => {
 });
 
 describe('portsOf', () => {
-	// The count and never the list: `evidence.ts` hides `scanned_ports` because a hundred
-	// numbers identical on every asset are the probe's settings echoed once per row. The
-	// count is what separates "nothing else is open" from "nothing else was tried".
+	// The count, never the list: `evidence.ts` hides `scanned_ports` (a hundred numbers identical on
+	// every asset, the probe's settings per row). The count separates "nothing else is open" from
+	// "nothing else was tried".
 	it('counts what was scanned without carrying it', () => {
 		const ports = portsOf(observation('tcp', { open_ports: [80], scanned_ports: [80, 443, 8080] }));
 		expect(ports.open).toEqual([80]);
@@ -156,10 +155,9 @@ describe('layerOf and cookieNamesOf', () => {
 });
 
 describe('the lists a keyed each block renders', () => {
-	// Neither list is deduplicated by the producer or by normalization, and a
-	// repeated key throws in Svelte rather than drawing a line twice, so the
-	// whole asset view fails to render. Deduplicating is also the right answer
-	// for a counted list: the same bundle loaded from two tags is one script.
+	// Neither list is deduplicated by the producer or normalization, and a repeated key throws in
+	// Svelte instead of drawing a line twice, failing the whole asset view. Deduplicating also suits a
+	// counted list: one bundle loaded from two tags is one script.
 	it('collapses a script the page loaded twice', () => {
 		const evidence = observation('fingerprint', {
 			scripts: [

@@ -10,11 +10,9 @@
 	const { programs }: Props = $props();
 
 	/**
-	 * The perimeter the list is showing, read from the URL rather than held in state.
-	 *
-	 * The filter lives in the query string so that a filtered list is a shareable
-	 * link, and a switcher holding its own selection would be a second source of
-	 * truth: the two would disagree the first time somebody used the back button.
+	 * The perimeter the list shows, read from the URL, not held in state. The filter lives in the query
+	 * string so a filtered list is a shareable link, and a switcher holding its own selection would be a
+	 * second source of truth, disagreeing the first time someone used the back button.
 	 */
 	const filters = $derived(parseFilters(page.url.searchParams));
 	const selected = $derived(filters.find((filter) => filter.field === 'program_id')?.value ?? '');

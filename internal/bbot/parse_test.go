@@ -25,9 +25,8 @@ func parseFile(t *testing.T, name string) bbot.Scan {
 	return scan
 }
 
-// TestTheSliceOfARealScanDecodes reads events written by the tool rather than
-// by this test. Every field shape below was a guess until a real file
-// contradicted one of them.
+// Reads events written by the tool, not this test: every field shape below was a guess
+// until a real file contradicted one.
 func TestTheSliceOfARealScanDecodes(t *testing.T) {
 	scan := parseFile(t, "scan.ndjson")
 
@@ -59,9 +58,8 @@ func TestTheSliceOfARealScanDecodes(t *testing.T) {
 	}
 }
 
-// TestNoURLEventBecomesAnAsset is the rule of 4.3 seen from the producer side.
-// The sample carries URL events with paths, and the only thing they may leave
-// behind is the service under them.
+// The rule of "no url asset" from the producer's side. The sample has URL events with
+// paths, and only the service under them may remain.
 func TestNoURLEventBecomesAnAsset(t *testing.T) {
 	scan := parseFile(t, "scan.ndjson")
 
@@ -117,9 +115,8 @@ func TestWhatIsReadForLineageCreatesNothing(t *testing.T) {
 	}
 }
 
-// TestABadLineCostsItselfAndNotTheFile is the discriminating case: the fixture
-// puts a malformed line between two good ones, so a decoder that stops on the
-// first error loses the third line and this test says which.
+// The discriminating case: a malformed line between two good ones, so a decoder
+// stopping on the first error loses the third and this says which.
 func TestABadLineCostsItselfAndNotTheFile(t *testing.T) {
 	scan := parseFile(t, "edge.ndjson")
 
@@ -143,9 +140,8 @@ func TestABadLineCostsItselfAndNotTheFile(t *testing.T) {
 	}
 }
 
-// TestAnUnknownTypeIsCountedNeverRefused is the property the missing schema
-// version forces. A release of the tool emitting something new must not be an
-// outage here.
+// The property the missing schema version forces: a release emitting something new must
+// not be an outage here.
 func TestAnUnknownTypeIsCountedNeverRefused(t *testing.T) {
 	scan := parseFile(t, "edge.ndjson")
 
@@ -190,9 +186,8 @@ func TestAnEmptyBodyIsNotAnEmptyScan(t *testing.T) {
 	}
 }
 
-// TestTheEarliestSightingIsTheOneKept is what makes the import back-date
-// correctly. The file is not sorted by time, so a decoder taking the last
-// sighting passes on sorted input and fails on a real one.
+// What makes the import back-date correctly. The file is not time-sorted, so a decoder
+// taking the last sighting passes on sorted input and fails on a real one.
 func TestTheEarliestSightingIsTheOneKept(t *testing.T) {
 	stream := strings.Join([]string{
 		`{"type":"DNS_NAME","id":"1","data":"a.example.com","timestamp":1785346500.0,"module":"late"}`,
@@ -231,9 +226,8 @@ func TestANameIsLoweredAndItsTrailingDotRemoved(t *testing.T) {
 	}
 }
 
-// TestAPortEventCreatesItsHost covers the file that carries a service whose
-// DNS_NAME never reached the output. A service with no host is a service
-// nothing schedules.
+// The file that carries a service whose DNS_NAME never reached the output. A service
+// with no host is one nothing schedules.
 func TestAPortEventCreatesItsHost(t *testing.T) {
 	scan := parseFile(t, "edge.ndjson")
 
@@ -251,10 +245,8 @@ func TestAPortEventCreatesItsHost(t *testing.T) {
 	}
 }
 
-// TestAnImpossiblePortCostsThePortAndNotTheHost. A port of zero is what a field
-// absent from an event decodes to, and it must not become host:0/tcp. The host
-// it named is still a host, and dropping it would lose a real name over a field
-// that was missing.
+// A port of zero is what an absent field decodes to and must not become host:0/tcp. The
+// host it named is still a host; dropping it would lose a real name over a missing field.
 func TestAnImpossiblePortCostsThePortAndNotTheHost(t *testing.T) {
 	stream := strings.Join([]string{
 		`{"type":"OPEN_TCP_PORT","id":"1","host":"a.example.com","port":0,"timestamp":1785346100.0}`,
@@ -301,9 +293,8 @@ func TestTheRefusalListIsBounded(t *testing.T) {
 	}
 }
 
-// TestAURLWithNoPortStillNamesItsService. The producer usually computes the
-// port and puts it at the top level, and an event where it did not would
-// otherwise contribute nothing at all, silently.
+// The producer usually computes the port at the top level, and an event where it did
+// not would contribute nothing, silently.
 func TestAURLWithNoPortStillNamesItsService(t *testing.T) {
 	stream := strings.Join([]string{
 		`{"type":"URL","id":"1","host":"a.example.com","data_json":{"url":"https://a.example.com/login"},"timestamp":1785346100.0}`,
@@ -332,9 +323,8 @@ func TestAURLWithNoPortStillNamesItsService(t *testing.T) {
 	}
 }
 
-// The top level port wins over the scheme's default, because the producer
-// computed it and a redirect to a non standard port is exactly the case a
-// scheme default gets wrong.
+// The top-level port beats the scheme default: the producer computed it, and a redirect
+// to a non-standard port is what a default gets wrong.
 func TestTheTopLevelPortWinsOverTheSchemesDefault(t *testing.T) {
 	scan, err := bbot.Parse(strings.NewReader(
 		`{"type":"URL","id":"1","host":"a.example.com","port":8080,` +
@@ -347,11 +337,10 @@ func TestTheTopLevelPortWinsOverTheSchemesDefault(t *testing.T) {
 	}
 }
 
-// A payload shape this decoder did not expect costs the payload and not the
-// event. Typed as a string, one object under data fails the whole line with an
-// UnmarshalTypeError and every other field goes with it, under a reason that
-// blames the shape of the line. A producer moving one payload from data_json to
-// data would then shrink every import in silence.
+// An unexpected payload shape costs the payload, not the event. As a string, one object
+// under data fails the whole line with an UnmarshalTypeError and loses every other
+// field, blaming the line's shape; a producer moving one payload from data_json to data
+// would silently shrink every import.
 func TestAnUnexpectedPayloadShapeCostsThePayloadAndNotTheEvent(t *testing.T) {
 	scan, err := bbot.Parse(strings.NewReader(
 		`{"type":"OPEN_TCP_PORT","id":"1","host":"a.example.com","port":443,` +
@@ -371,9 +360,8 @@ func TestAnUnexpectedPayloadShapeCostsThePayloadAndNotTheEvent(t *testing.T) {
 	}
 }
 
-// A TECHNOLOGY event names its own host in the payload, and that is the only
-// place it appears when the producer omits the top level one: these events
-// carry no data field to fall back on.
+// A TECHNOLOGY event names its host in the payload, the only place when the producer
+// omits the top-level one: these events have no data field to fall back on.
 func TestATechnologyFindsItsHostInItsOwnPayload(t *testing.T) {
 	scan, err := bbot.Parse(strings.NewReader(
 		`{"type":"TECHNOLOGY","id":"1","data_json":{"host":"a.example.com",` +
@@ -389,9 +377,8 @@ func TestATechnologyFindsItsHostInItsOwnPayload(t *testing.T) {
 	}
 }
 
-// TypesBeyond counts types, which is what it is called and what a reader does
-// with it. Counting events reports a number an order of magnitude out on
-// exactly the malformed body the bound exists for.
+// TypesBeyond counts types, as named. Counting events would be an order of magnitude
+// out on exactly the malformed body the bound exists for.
 func TestTypesBeyondCountsTypesAndNotTheirEvents(t *testing.T) {
 	var lines []string
 	for i := range 250 {
@@ -410,9 +397,8 @@ func TestTypesBeyondCountsTypesAndNotTheirEvents(t *testing.T) {
 	}
 }
 
-// One lineage object describes one sighting, so the module, the sentence and
-// the tool's verdict all come from the same event. The file is not sorted by
-// time, which is what makes the mismatch reachable rather than theoretical.
+// One lineage object describes one sighting: module, sentence and the tool's verdict
+// come from the same event. The file is not time-sorted, so a mixture is reachable.
 func TestTheKeptSightingIsOneEventAndNotAMixture(t *testing.T) {
 	stream := strings.Join([]string{
 		`{"type":"DNS_NAME","id":"1","data":"x.example.com","timestamp":1785346500.0,` +

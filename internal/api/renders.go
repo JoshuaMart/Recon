@@ -16,11 +16,9 @@ import (
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
-// Renders are the two triggers that are API entry points.
-//
-// Both require manage_jobs rather than ingest, and the distinction is not
-// tidiness: something holding ingest could otherwise schedule renders of its
-// choosing and spend a programme's budget on targets it picked.
+// Renders are the two API entry-point triggers. Both require manage_jobs, not
+// ingest: ingest could otherwise schedule renders of its choosing and spend a
+// programme's budget on targets it picked.
 type Renders struct {
 	db     *store.Scoped
 	spread time.Duration
@@ -42,10 +40,9 @@ func (h *Renders) Request(w http.ResponseWriter, r *http.Request, principal auth
 		return
 	}
 
-	// A transaction rather than a bare query, because that is the only shape
-	// that can carry an organization: the policies read a variable that is
-	// transaction scoped. The two reads and the write below then see one
-	// consistent state as a side effect, which they did not before.
+	// A transaction, the only shape that can carry an organization (the policies read
+	// a transaction-scoped variable). The two reads and the write then also see one
+	// consistent state.
 	tx, err := h.db.Begin(ctx, principal.OrgID)
 	if err != nil {
 		h.log.ErrorContext(ctx, "begin failed", "error", err)
@@ -57,9 +54,8 @@ func (h *Renders) Request(w http.ResponseWriter, r *http.Request, principal auth
 	queries := sqlcgen.New(tx)
 	row, err := queries.AssetForRender(ctx, sqlcgen.AssetForRenderParams{AssetID: uuidTo(assetID)})
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && uuid.UUID(row.OrgID.Bytes) != principal.OrgID) {
-		// A caller learning that an identifier exists in another organization
-		// is a cross-tenant leak of exactly one bit, and one bit is enough to
-		// enumerate.
+		// An identifier existing in another organization is a one-bit cross-tenant leak,
+		// and one bit is enough to enumerate.
 		fail(w, http.StatusNotFound, "not_found", "no such asset")
 		return
 	}
@@ -69,10 +65,9 @@ func (h *Renders) Request(w http.ResponseWriter, r *http.Request, principal auth
 		return
 	}
 
-	// The same filter the baseline reads. A browser will not open some ports at
-	// all, so promoting one puts an asset at the head of a queue that can never
-	// serve it, and answering 200 tells the caller to wait for a render nobody
-	// will make.
+	// The baseline's filter: a browser will not open some ports, so promoting one puts
+	// an asset at the head of a queue that can never serve it, and a 200 would tell the
+	// caller to wait for a render nobody will make.
 	if row.Port != nil && !fingerprint.Renderable(int(*row.Port)) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"asset_id": assetID,
@@ -94,9 +89,8 @@ func (h *Renders) Request(w http.ResponseWriter, r *http.Request, principal auth
 		return
 	}
 
-	// The statement refuses an asset that has left the scheduler, so the
-	// answer says whether anything is actually queued rather than claiming a
-	// render that will never be selected.
+	// The statement refuses an asset that left the scheduler, so the answer says
+	// whether anything is queued instead of claiming a render never selected.
 	after, err := queries.AssetForRender(ctx, sqlcgen.AssetForRenderParams{AssetID: uuidTo(assetID)})
 	if err != nil {
 		h.log.ErrorContext(ctx, "read asset failed", "asset", assetID, "error", err)
@@ -104,10 +98,9 @@ func (h *Renders) Request(w http.ResponseWriter, r *http.Request, principal auth
 		return
 	}
 
-	// Read from the statement's own conditions rather than from one of them.
-	// It refuses an asset that has left the scheduler and one outside the
-	// perimeter alike, and answering on the lifecycle alone told a caller to
-	// wait for a render nothing would ever select.
+	// Read from the statement's own conditions, not one of them: it refuses assets
+	// that left the scheduler and ones outside the perimeter alike, and answering on
+	// the lifecycle alone told callers to wait for a render nothing would select.
 	if err := tx.Commit(ctx); err != nil {
 		h.log.ErrorContext(ctx, "commit failed", "asset", assetID, "error", err)
 		fail(w, http.StatusInternalServerError, "unavailable", "the request could not be served")
@@ -122,11 +115,9 @@ func (h *Renders) Request(w http.ResponseWriter, r *http.Request, principal auth
 	})
 }
 
-// Replan is the forced refresh after a major update of the rendering service.
-//
-// The whole inventory goes back into the low queue, spread over several days.
-// That restores baseline consistency without a mass alert, and doing it in an
-// hour would be the mass alert.
+// Replan is the forced refresh after a major update of the rendering service. The
+// whole inventory returns to the low queue, spread over days: baselines are
+// restored without a mass alert, which an hour would be.
 func (h *Renders) Replan(w http.ResponseWriter, r *http.Request, principal auth.Principal) {
 	ctx := r.Context()
 

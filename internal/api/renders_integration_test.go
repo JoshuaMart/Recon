@@ -1,9 +1,7 @@
 //go:build integration
 
-// The two render triggers that are API entry points. They hold manage_jobs
-// rather than ingest, and the distinction is not tidiness: something holding
-// ingest could otherwise schedule renders of its choosing and spend a
-// programme's budget on targets it picked.
+// The two API render triggers hold manage_jobs, not ingest: ingest could otherwise
+// schedule renders of its choosing and spend a programme's budget on targets it picked.
 package api_test
 
 import (
@@ -156,10 +154,9 @@ func TestAReplanBringsRendersForwardAndNeverDelaysOne(t *testing.T) {
 	}
 }
 
-// The answer is read from the statement's own conditions rather than from one
-// of them. It refuses an asset that has left the scheduler and one outside the
-// perimeter alike, and answering on the lifecycle alone told a caller to wait
-// for a render nothing would ever select.
+// The answer is read from the statement's own conditions: it refuses an asset that left
+// the scheduler and one outside the perimeter alike, and the lifecycle alone told a
+// caller to wait for a render nothing would select.
 func TestAManualRequestOnAnOutOfScopeAssetClaimsNothing(t *testing.T) {
 	h := newHarness(t)
 	id := h.renderable(t, "app.target.test:443/tcp", time.Now().Add(time.Hour), lifecycle.PriorityBaseline)

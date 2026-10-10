@@ -87,10 +87,9 @@ func TestAnExcludeBeatsAnInclude(t *testing.T) {
 	}
 }
 
-// The defect this reading exists to prevent: a rule names a host, and a service
-// key is host:port/proto. Matching the rule against the key would put the host
-// in scope and leave every service on it out, which is the same perimeter
-// described twice with only one of them acted on.
+// The defect this reading prevents: a rule names a host and a service key is
+// host:port/proto, so matching the key would put the host in scope and leave its services
+// out, one perimeter described twice with one acted on.
 func TestAServiceInheritsItsHost(t *testing.T) {
 	t.Parallel()
 
@@ -243,14 +242,13 @@ func TestMatchedNamesTheRuleThatDecided(t *testing.T) {
 	}
 }
 
-// A rule that compiles and can never match is worse than one that will not
-// compile, because it announces nothing.
+// A rule that compiles and can never match is worse than one that will not compile: it
+// announces nothing.
 //
-// The case this exists for cost a full inventory: an apex rule written as
-// "*.jomar.ovh" was stored, read as in force, matched none of a hundred and
-// seven assets, and left every one of them unknown and unscheduled. The queue
-// then showed three zeroes under a discovery run that had just delivered a
-// hundred and twenty-three observations, which reads as a broken scanner.
+// This cost a full inventory: an apex rule written "*.jomar.ovh" was stored, read as in
+// force, matched none of a hundred and seven assets and left all unknown and
+// unscheduled. The queue then showed three zeroes under a discovery run that had just
+// delivered 123 observations, reading as a broken scanner.
 func TestAPatternThatCanNeverMatchIsRefused(t *testing.T) {
 	t.Parallel()
 
@@ -279,9 +277,8 @@ func TestAPatternThatCanNeverMatchIsRefused(t *testing.T) {
 		t.Errorf("the refusal does not name the pattern to write instead: %v", err)
 	}
 
-	// The positive control, without which the above passes on a check that
-	// refuses everything. A matcher meant to carry metacharacters keeps them,
-	// and an ordinary name is untouched.
+	// The positive control, without which the above passes on a check refusing everything. A
+	// matcher meant to carry metacharacters keeps them, and an ordinary name is untouched.
 	for _, accepted := range []struct{ matcher, pattern string }{
 		{scope.MatchApex, "target.test"},
 		{scope.MatchFQDN, "app.target.test"},
@@ -327,17 +324,15 @@ func TestAnApexCoversTheDomainAndEverythingUnderIt(t *testing.T) {
 	}
 }
 
-// A url_prefix rule is not symmetric, and that is the whole of what it is for.
+// A url_prefix rule is not symmetric, which is its purpose.
 //
-// As an exclusion it reads the key alone: a path is taken out while the service
-// carrying it stays in, which is a child being stricter than its parent.
+// As an exclusion it reads the key alone: a path is taken out while its service stays
+// in, a child stricter than its parent.
 //
-// As an inclusion it also reaches the host, and that is not the same rule read
-// backwards. A path is not reachable without the name it is served from. An
-// include that matched the URL alone would put in scope a thing that can only
-// exist once its host has been probed, and the host would never be probed
-// because nothing put it in scope: the loop closes on itself and the perimeter
-// reads as configured while covering nothing.
+// As an inclusion it also reaches the host, not the same rule reversed: a path is
+// unreachable without its host. An include matching the URL alone would put in scope
+// something that exists only once its host is probed, and the host would never be
+// probed, so the perimeter reads as configured while covering nothing.
 func TestAURLPrefixIncludeReachesItsHostAndAnExclusionDoesNot(t *testing.T) {
 	t.Parallel()
 

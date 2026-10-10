@@ -1,26 +1,21 @@
--- Row-level security, and the third role that is allowed past it.
+-- Row-level security, and the third role allowed past it.
 --
--- What is rejected is relying on a session variable alone, read by uniform
--- policies. A forgotten SET LOCAL then produces not an error but zero rows,
--- which is the silent failure the tenant guard was rewritten to remove. And a
--- component that legitimately serves every tenant would have no way to say so
--- except by not setting the variable, which is an omission and therefore
--- indistinguishable from forgetting one.
+-- Relying on a session variable alone, read by uniform policies, is rejected: a forgotten
+-- SET LOCAL then gives zero rows, not an error, the silent failure the tenant guard was
+-- rewritten to remove. And a component legitimately serving every tenant could only say so
+-- by not setting the variable, an omission indistinguishable from forgetting.
 --
--- With two roles the property is structural: a component crosses tenants
--- because it connected with the role that allows it, which reads in the
--- deployment configuration rather than in the body of each query.
+-- With two roles the property is structural: a component crosses tenants because it
+-- connected with the role that allows it, readable in the deployment configuration and not
+-- in each query body.
 
 -- +goose Up
 
--- The organization of the current transaction, in one place.
---
--- NULLIF is the whole reason this is a function. SET LOCAL restores whatever
--- the session held before the transaction, and a custom variable never set at
--- session level holds '' rather than nothing, so current_setting(...)::uuid
--- returns zero rows on a connection's first transaction and raises "invalid
--- input syntax for type uuid" on its second. Copied into thirty policies, that
--- trap would be fixed in some of them.
+-- The organization of the current transaction, in one place. NULLIF is the reason this is
+-- a function: SET LOCAL restores what the session held before the transaction, and a custom
+-- variable never set at session level holds '' not nothing, so current_setting(...)::uuid
+-- gives zero rows on a connection's first transaction and raises "invalid input syntax for
+-- type uuid" on its second. Copied into thirty policies, the trap would be fixed in some.
 --
 -- +goose StatementBegin
 CREATE FUNCTION tenant_org() RETURNS uuid
@@ -37,14 +32,11 @@ COMMENT ON FUNCTION tenant_org() IS
     'The organization set for this transaction, or null when none is. Null is what makes an '
     'unset connection return zero rows rather than raise, and rather than return everything.';
 
--- Which tables carry a policy is read from the catalog, never from a list.
---
--- A list kept by hand is exactly what forgets the table added last week, and
--- the doc says so about this mechanism specifically: the fallback moves the
--- property from the role to the policy, therefore to something a migration can
--- forget to carry onto a new table. So this is a function rather than a
--- sequence of statements, a later migration that adds a tenant table calls it
--- again, and a test walks the same catalog and fails on any table it missed.
+-- Which tables carry a policy is read from the catalog, never a list: a hand-kept list
+-- forgets the table added last week, and the fallback moves the property from role to
+-- policy, which a migration can forget to carry onto a new table. So this is a function a
+-- later migration adding a tenant table calls again, and a test walks the same catalog and
+-- fails on any table missed.
 --
 -- +goose StatementBegin
 CREATE FUNCTION apply_tenant_policy(target text) RETURNS void
@@ -58,12 +50,10 @@ BEGIN
         -- The tenant carries its identity in id, so the policy that keeps an
         -- organization from reading another's name reads that column.
         WHEN 'org' THEN 'id = tenant_org()'
-        -- A person belongs to several organizations, which is the whole point
-        -- of the join table, so the only honest predicate goes through it. The
-        -- consequence is worth naming: a role subject to this cannot insert a
-        -- person, because the membership that would authorize the row does not
-        -- exist yet. Creating people is bootstrap's job and bootstrap runs as
-        -- the owner.
+        -- A person belongs to several organizations (the point of the join table), so the only
+        -- honest predicate goes through it. Consequently a role under this cannot insert a person:
+        -- the membership authorizing the row does not exist yet. Creating people is bootstrap's
+        -- job, run as the owner.
         WHEN 'app_user' THEN
             'EXISTS (SELECT 1 FROM membership m WHERE m.user_id = app_user.id '
             'AND m.org_id = tenant_org())'
@@ -75,16 +65,13 @@ BEGIN
         'CREATE POLICY tenant_isolation ON %I FOR ALL TO asm_app USING (%s) WITH CHECK (%s)',
         target, predicate, predicate);
 
-    -- The fallback for a cluster that will not grant BYPASSRLS, installed
-    -- whether or not this one does. Installing only the path that happens to be
-    -- available would make the other a code path no deployment ever runs, and
-    -- the day it is needed is the day nobody can say whether it works. With
-    -- both in place, taking the attribute away exercises this one for real,
-    -- which is what the suite does.
+    -- The fallback for a cluster that will not grant BYPASSRLS, installed whether or not this
+    -- one does: installing only the available path would leave the other one no deployment
+    -- ever runs, needed on the day nobody can say if it works. With both in place, removing the
+    -- attribute exercises this one for real, as the suite does.
     --
-    -- WITH CHECK repeats USING, which is also what PostgreSQL infers when it is
-    -- omitted. Written out because the write half is the one a reader forgets
-    -- exists.
+    -- WITH CHECK repeats USING (what PostgreSQL infers if omitted), written out because the
+    -- write half is the one readers forget exists.
     EXECUTE format('DROP POLICY IF EXISTS system_crosses ON %I', target);
     EXECUTE format(
         'CREATE POLICY system_crosses ON %I FOR ALL TO asm_sys USING (true) WITH CHECK (true)',
@@ -107,9 +94,8 @@ DECLARE
     entry   record;
     covered int := 0;
 BEGIN
-    -- DROP POLICY IF EXISTS raises a notice per policy it did not find, which
-    -- on a first application is two per table and buries the one line worth
-    -- reading. Local to this transaction, so nothing else is quietened.
+    -- DROP POLICY IF EXISTS raises a notice per policy not found, two per table on a first
+    -- application, burying the line worth reading. Local to this transaction.
     PERFORM set_config('client_min_messages', 'warning', true);
 
     FOR entry IN
@@ -118,13 +104,11 @@ BEGIN
           JOIN pg_namespace n ON n.oid = c.relnamespace
          WHERE n.nspname = 'public'
            AND c.relkind IN ('r', 'p')
-           -- Partitions included, and it is not tidiness. A policy on the
-           -- parent is applied to a partition reached through the parent and
-           -- to nothing else: SELECT count(*) FROM observation_2026_08 as
-           -- asm_app returns every tenant's rows while the same count through
-           -- observation returns one tenant's. Nothing in this repository
-           -- names a partition, which is exactly the sort of statement RLS is
-           -- the last line for.
+           -- Partitions included, not for tidiness: a parent's policy applies to a partition reached
+           -- through the parent and nothing else, so SELECT count(*) FROM observation_2026_08 as
+           -- asm_app returns every tenant's rows while the same count through observation returns one
+           -- tenant's. Nothing here names a partition, which is the sort of statement RLS is the last
+           -- line for.
            AND (c.relname IN ('org', 'app_user')
                 OR EXISTS (SELECT 1 FROM pg_attribute a
                             WHERE a.attrelid = c.oid AND a.attname = 'org_id'
@@ -144,18 +128,15 @@ COMMENT ON FUNCTION apply_tenant_policies() IS
     'Applies the tenant policy to every table carrying org_id, partitions included. '
     'A migration adding a tenant table calls this again.';
 
--- It creates policies, which is DDL, so it stays with the owner. PostgreSQL
--- grants EXECUTE to PUBLIC on a new function, so "not granted" is not a state
--- one starts in.
+-- It creates policies, which is DDL, so it stays with the owner. PostgreSQL grants EXECUTE
+-- to PUBLIC on a new function, so "not granted" is not a starting state.
 REVOKE EXECUTE ON FUNCTION apply_tenant_policies() FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION apply_tenant_policy(text) FROM PUBLIC;
 
--- A partition created next month has to carry the policy too, and the only
--- thing that will be running then is the housekeeping loop. So the door that
--- creates partitions is the door that covers them: this is a replacement of
--- the function from 00002, identical but for the last three lines, because a
--- partition created without a policy is a table that reads every tenant and
--- nothing would say so.
+-- A partition created next month must carry the policy too, and only the housekeeping loop
+-- will be running then. So the door creating partitions covers them: this replaces the
+-- function from 00002, identical but for the last three lines, because a partition made
+-- without a policy reads every tenant and nothing would say so.
 --
 -- +goose StatementBegin
 CREATE OR REPLACE FUNCTION ensure_monthly_partitions(target regclass, months_ahead int DEFAULT 2)
@@ -189,15 +170,11 @@ BEGIN
             EXECUTE format(
                 'CREATE TABLE %I.%I PARTITION OF %I.%I FOR VALUES FROM (%L) TO (%L)',
                 schema, part, schema, parent, month, month + interval '1 month');
-            -- The partition it just made, and no other table.
-            --
-            -- Re-applying to everything would be five ACCESS EXCLUSIVE locks
-            -- per table held until this transaction commits, so the first tick
-            -- of each month would block the whole application on asset_current
-            -- and on asset. And the partition set only grows: after a couple of
-            -- years the same tick holds several hundred of those locks and
-            -- starts failing on max_locks_per_transaction, monthly, at
-            -- whatever hour the loop happens to run.
+            -- The partition it just made, and no other table. Re-applying to everything would be five
+            -- ACCESS EXCLUSIVE locks per table held until this transaction commits, blocking the whole
+            -- application on asset_current and asset at each month's first tick. The partition set only
+            -- grows: after a couple of years that tick holds several hundred locks and starts failing
+            -- on max_locks_per_transaction, monthly, whenever the loop runs.
             PERFORM apply_tenant_policy(part);
             created := created + 1;
         END IF;
@@ -219,10 +196,9 @@ END
 $$;
 -- +goose StatementEnd
 
--- BYPASSRLS needs a superuser to grant, which a managed database generally
--- does not give. This is therefore an attempt rather than a statement: a
--- cluster that refuses keeps the policy above and loses nothing, and the
--- refusal is said out loud rather than discovered on the day of a move.
+-- BYPASSRLS needs a superuser to grant, which a managed database generally withholds. So
+-- this is an attempt: a cluster that refuses keeps the policy above and loses nothing, and
+-- the refusal is said out loud, not discovered on the day of a move.
 --
 -- +goose StatementBegin
 DO $$

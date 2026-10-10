@@ -1,21 +1,17 @@
--- What the projection has to be able to say about itself.
---
--- Three functions, and each exists because the alternative is an expression
--- copied into several callers. Copied, it gets fixed in one of them.
+-- What the projection has to be able to say about itself. Three functions, each existing
+-- because the alternative is an expression copied into several callers and fixed in one.
 
 -- +goose Up
 
 -- The counted keys of a projection, as rows.
 --
--- This *is* the invariant: pivot_count is a function of the counted keys of
--- asset_current and of nothing else. Written once, it is what the ingestion
--- statement diffs to move the counters, and what a recount reads to rebuild
--- them from scratch the day anybody doubts them. Two expressions saying the
--- same thing would let a counter drift from the only place the truth lives.
+-- This is the invariant: pivot_count is a function of asset_current's counted keys and
+-- nothing else. Written once, the ingestion statement diffs it to move the counters and a
+-- recount reads it to rebuild them; two expressions would let a counter drift from the
+-- only place the truth lives.
 --
--- technologies and external_hosts are absent on purpose. They carry no counter:
--- they are a filter and an aggregation, and the invariant speaks only about
--- what is counted.
+-- technologies and external_hosts are absent on purpose: they carry no counter (a filter
+-- and an aggregation), and the invariant speaks only of what is counted.
 --
 -- +goose StatementBegin
 CREATE FUNCTION pivot_values(attributes jsonb)
@@ -24,10 +20,9 @@ LANGUAGE sql
 IMMUTABLE
 PARALLEL SAFE
 AS $$
-    -- DISTINCT because a page loading the same bundle twice is one asset
-    -- carrying that hash, not two. The counter answers "how many assets share
-    -- this value", so counting a repetition would inflate it by exactly the
-    -- kind of amount nobody would question.
+    -- DISTINCT: a page loading one bundle twice is one asset carrying that hash. The counter
+    -- answers "how many assets share this value", and a repetition would inflate it
+    -- unquestioned.
     SELECT DISTINCT * FROM (
         SELECT 'favicon'::text, attributes ->> 'favicon_hash'
          WHERE attributes ->> 'favicon_hash' IS NOT NULL
@@ -51,13 +46,10 @@ $$;
 COMMENT ON FUNCTION pivot_values(jsonb) IS
     'The counted keys of a projection. pivot_count is a function of this and of nothing else.';
 
--- The daily buckets, shifted to a given day.
---
--- The shift is lazy, which is what handles a dormant asset with no code of its
--- own: an asset that has not moved in three weeks shows a gap wider than the
--- array and is simply zeroed, which is the right answer rather than a special
--- case. No total is stored, so nothing has to be decremented as a change
--- expires and no sweep of the inventory is needed for a display value.
+-- The daily buckets, shifted to a given day. The shift is lazy, which handles a dormant
+-- asset with no code of its own: one unmoved for three weeks shows a gap wider than the
+-- array and is zeroed, the right answer with no special case. No total is stored, so
+-- nothing is decremented as a change expires and no sweep is needed for a display value.
 --
 -- +goose StatementBegin
 CREATE FUNCTION shift_buckets(buckets int[], day date, today date)
@@ -71,9 +63,8 @@ AS $$
         -- array with nothing left in it.
         WHEN day IS NULL OR buckets IS NULL OR today - day >= 8
             THEN '{0,0,0,0,0,0,0,0}'::int[]
-        -- A date ahead of today is a clock that went backwards. Keeping the
-        -- array is the only answer that loses nothing: shifting by a negative
-        -- number would pad the wrong end.
+        -- A date ahead of today is a clock that went backwards. Keeping the array loses nothing;
+        -- shifting by a negative number would pad the wrong end.
         WHEN today <= day THEN buckets
         ELSE array_fill(0, ARRAY[today - day]) || buckets[1:8 - (today - day)]
     END
@@ -83,18 +74,12 @@ $$;
 COMMENT ON FUNCTION shift_buckets(int[], date, date) IS
     'The daily change buckets brought forward to a day. Lazy: an asset that has not moved is not rewritten.';
 
--- The technology column, derived from the two keys that feed it.
---
--- Two producers is the one place the "one producer per value" rule bends, and
--- it bends where it has to: coverage says the probe must contribute, because it
--- sees every service on every pass while a render happens on five triggers that
--- can be three weeks apart; depth says the render must, because a rendered page
--- shows what a raw fetch cannot. They write different keys, so neither erases
--- the other, and the column is their union.
---
--- The union is here rather than in the ingestion statement because a rebuild
--- has to produce exactly the same array, and two expressions computing a column
--- is how a column stops meaning one thing.
+-- The technology column, derived from the two keys feeding it. Two producers is where "one
+-- producer per value" bends, where it must: the probe contributes coverage (every service on
+-- every pass; a render comes on five triggers weeks apart), the render depth (it shows what a
+-- raw fetch cannot). They write different keys, so neither erases the other, and the column
+-- is their union. It lives here, not in the ingestion statement, so a rebuild produces the
+-- same array.
 --
 -- +goose StatementBegin
 CREATE FUNCTION technology_names(attributes jsonb)
@@ -109,10 +94,9 @@ AS $$
                    CASE WHEN jsonb_typeof(attributes -> 'tech_http') = 'array'
                         THEN attributes -> 'tech_http' ELSE '[]'::jsonb END) AS name
         UNION ALL
-        -- The render reports objects, because it is the only one that knows a
-        -- version. The column holds names and the object stays as the evidence:
-        -- the column is queried by exact element, so "nginx 1.24" would not
-        -- answer a filter on "nginx".
+        -- The render reports objects, being the only one that knows a version. The column holds
+        -- names and the object stays as evidence: it is queried by exact element, so "nginx 1.24"
+        -- would not answer a filter on "nginx".
         SELECT jsonb_array_elements(
                    CASE WHEN jsonb_typeof(attributes -> 'tech_render') = 'array'
                         THEN attributes -> 'tech_render' ELSE '[]'::jsonb END) ->> 'name'
@@ -124,20 +108,13 @@ $$;
 COMMENT ON FUNCTION technology_names(jsonb) IS
     'The technology column, as the union of what the probe and the render each reported.';
 
--- Volatility is the sum of the last seven days, read relative to the day the
--- array was last shifted.
---
--- That reference frame is the whole trap. The array of an asset unchanged for
--- five days has not been shifted, because nothing rewrote it, so summing its
--- first seven buckets naively counts changes twelve days old as if they were
--- yesterday's. STABLE rather than IMMUTABLE because it reads the calendar, and
--- a function rather than an expression because an expression copied into the
--- filter, the facet and the row would be right in one of the three.
---
--- The day is UTC and never the server's local one. observed_at is stored in
--- UTC and buckets_day is written from it, so comparing against a local calendar
--- day would move every bucket boundary by the offset and be invisible in any
--- test that does not cross midnight.
+-- Volatility is the sum of the last seven days, relative to the day the array was last
+-- shifted. That frame is the trap: an asset unchanged for five days has not been shifted, so
+-- summing its first seven buckets naively counts twelve-day-old changes as yesterday's.
+-- STABLE, not IMMUTABLE, as it reads the calendar; a function, as an expression copied into
+-- the filter, facet and row would be right in one of three. The day is UTC, never the
+-- server's local one, or every boundary shifts by the offset, invisibly to tests not crossing
+-- midnight.
 --
 -- +goose StatementBegin
 CREATE FUNCTION volatility(buckets int[], day date)
@@ -146,9 +123,8 @@ LANGUAGE sql
 STABLE
 PARALLEL SAFE
 AS $$
-    -- The slice needs the parentheses: a subscript straight onto a function
-    -- call is a syntax error rather than a slice, and the message names the
-    -- bracket rather than the cause.
+    -- The slice needs the parentheses: a subscript straight onto a function call is a syntax
+    -- error whose message names the bracket, not the cause.
     SELECT COALESCE(
         (SELECT sum(value)::int
            FROM unnest((shift_buckets(buckets, day, (now() AT TIME ZONE 'UTC')::date))[1:7]) AS value),
@@ -159,18 +135,11 @@ $$;
 COMMENT ON FUNCTION volatility(int[], date) IS
     'Changes over the last seven days. The eighth bucket is margin and is deliberately not summed.';
 
--- The column, carried into the key it is now derived from.
---
--- Before this migration `technologies` was written by the http layer and by
--- nothing else, so attributing all of it to the probe is exact rather than a
--- guess. Without this, a render landing on a row written earlier computes the
--- union from its own key alone, because the probe's does not exist yet, and
--- everything the probe had reported vanishes from the column until the next
--- full pass. Nothing fails, the facet just goes quiet.
---
--- A function rather than a bare UPDATE so that the assertion can call it
--- against a row it wrote itself, which is the only way to test a backfill that
--- has already run.
+-- The column, carried into the key it is now derived from. `technologies` was written by the
+-- http layer alone before this migration, so attributing all of it to the probe is exact;
+-- without it a render landing on an earlier row computes the union from its own key alone and
+-- the probe's findings vanish until the next full pass, the facet going quiet with nothing
+-- failing. A function, not a bare UPDATE, so a test can call it on a row it wrote itself.
 --
 -- +goose StatementBegin
 CREATE FUNCTION backfill_promoted_technologies()
@@ -204,12 +173,10 @@ END
 $$;
 -- +goose StatementEnd
 
--- One change, recorded in today's bucket.
---
--- The shift and the increment are one operation, and separating them is how the
--- increment lands in a bucket belonging to another day. The array is brought
--- forward first, then the first bucket takes the change, and buckets_day is
--- written from the same instant by the caller.
+-- One change, recorded in today's bucket. Shift and increment are one operation, as
+-- separating them lets the increment land in another day's bucket: the array is brought
+-- forward, then the first bucket takes the change, and the caller writes buckets_day from
+-- the same instant.
 --
 -- +goose StatementBegin
 CREATE FUNCTION record_change(buckets int[], day date, today date)
@@ -226,17 +193,11 @@ $$;
 COMMENT ON FUNCTION record_change(int[], date, date) IS
     'The buckets after one change on a given day. Shift and increment together, never separately.';
 
--- Whether a value is too generic to be worth a badge.
---
--- A display rule and never a collection one. Every name is indexed without
--- exception; this only removes the badge from a row, so a misclassified entry
--- loses no data and the explicit search still works. The export does not call
--- it at all, because a file does not say what it does not contain.
---
--- The list is a static one, versioned in the repository, because the relevant
--- frequency is on the internet rather than inside one organization: PHPSESSID
--- is noise because it is universal, not because it is locally frequent, and on
--- a small perimeter the variance dominates any local threshold.
+-- Whether a value is too generic to be worth a badge. A display rule, never a collection one:
+-- every name is indexed, so a misclassified entry loses no data and explicit search still
+-- works. The export never calls it, as a file does not say what it omits. The list is static
+-- and versioned in the repository because the relevant frequency is the internet's, not one
+-- organization's (PHPSESSID is noise because it is universal).
 --
 -- +goose StatementBegin
 CREATE FUNCTION generic_pivot(kind text, value text)
@@ -249,12 +210,10 @@ AS $$
         SELECT 1
           FROM generic_pivot_value g
          WHERE g.pivot_type = kind
-           -- The file writes globs, "_ga_*" and "ASPSESSIONID*", and LIKE is
-           -- not a glob. Converting one into the other means escaping what LIKE
-           -- treats as special *before* turning the star into a percent:
-           -- "_ga" left alone is a LIKE pattern matching any three characters
-           -- ending in "ga", which would silence a real application cookie and
-           -- do it invisibly.
+           -- The file writes globs ("_ga_*", "ASPSESSIONID*") and LIKE is not a glob. Convert by
+           -- escaping what LIKE treats as special before turning the star into a percent: "_ga" left
+           -- alone matches any three characters ending in "ga", silencing a real application cookie
+           -- invisibly.
            AND value LIKE replace(
                    replace(replace(replace(g.pattern, '\', '\\'), '%', '\%'), '_', '\_'),
                    '*', '%')

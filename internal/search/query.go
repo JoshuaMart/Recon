@@ -16,20 +16,15 @@ import (
 // DefaultLimit is a page.
 const DefaultLimit = 50
 
-// MaxLimit bounds what a caller may ask for in one page.
-//
-// The export walks rather than accumulating, so nobody needs a large page to
-// read a large inventory, and a page of ten thousand rows is a request that
-// holds a connection for as long as it takes to serialize them.
+// MaxLimit bounds a page. The export walks instead of accumulating, and a page
+// of ten thousand rows holds a connection while it serializes.
 const MaxLimit = 500
 
 // Querier is what the search runs on: a transaction already scoped to an
-// organization.
-//
-// A transaction rather than a pool, because the policies read a variable that
-// is transaction scoped. The compiler emits the organization clause as well,
-// and the two are not redundant: one is structural and testable here, the other
-// is the guarantee the compiler cannot remove from itself.
+// organization. A transaction, not a pool, because the policies read a
+// transaction-scoped variable. The compiler also emits the organization clause;
+// the two are not redundant (one is testable here, the other the guarantee the
+// compiler cannot remove from itself).
 type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
@@ -39,18 +34,15 @@ type Request struct {
 	Filter Node
 	Limit  int
 	Cursor Cursor
-	// Display asks for the two badge filters to be evaluated. The list wants
-	// them and the export must not have them: a file does not say what it does
-	// not contain, so an export applying a display filter would do exactly what
-	// the denylist rule forbids while making it invisible.
+	// Display asks for the two badge filters to be evaluated. The list wants them;
+	// the export must not, since a file does not say what it omits and a display
+	// filter there would hide the denylist rule's effect.
 	Display bool
 }
 
-// Cursor is where a walk left off.
-//
-// The list orders on (last_seen DESC, asset_id), which is the index it
-// paginates on. An offset would cost a scan of everything before the page on
-// every page, which is what makes an export of a million rows quadratic.
+// Cursor is where a walk left off. The list orders on (last_seen DESC,
+// asset_id), the index it paginates on; an offset would rescan everything
+// before the page and make a million-row export quadratic.
 type Cursor struct {
 	LastSeen time.Time
 	AssetID  uuid.UUID
@@ -59,11 +51,9 @@ type Cursor struct {
 // Zero reports whether a walk is starting.
 func (c Cursor) Zero() bool { return c.AssetID == uuid.Nil }
 
-// String encodes a cursor for a client to hand back.
-//
-// Opaque rather than readable, and that is not obfuscation: a cursor a client
-// can build is a cursor a client will build by hand, and then the ordering key
-// cannot change without breaking it.
+// String encodes a cursor for a client to hand back. It is opaque on purpose: a
+// cursor a client can build gets built by hand, and then the ordering key
+// cannot change.
 func (c Cursor) String() string {
 	if c.Zero() {
 		return ""
@@ -101,15 +91,13 @@ type Pivot struct {
 	Type  string `json:"type"`
 	Value string `json:"value"`
 	Count int    `json:"count"`
-	// Badge is display only, and absent entirely when nobody asked for a
-	// display. A value the denylist names, or one leading only to itself, is
-	// not worth a line in a row scanned in under a second; it stays fully
-	// searchable and fully counted, which is the difference between removing a
-	// badge and removing data.
+	// Badge is display only, and absent unless a display was asked for. A
+	// denylisted value, or one leading only to itself, is not worth a line in a row
+	// scanned in a second; it stays searchable and counted, so this removes a badge,
+	// not data.
 	//
-	// A pointer so that the export can leave the question unanswered rather
-	// than answering it false, which a file has no way to distinguish from "not
-	// worth a badge".
+	// A pointer so the export can leave it unanswered; a file cannot tell that from
+	// "not worth a badge".
 	Badge *bool `json:"badge,omitempty"`
 }
 
@@ -124,10 +112,9 @@ type Row struct {
 	Scheme      *string   `json:"scheme,omitempty"`
 	Lifecycle   string    `json:"lifecycle"`
 	ScopeStatus string    `json:"scope_status"`
-	// The three layer verdicts, because death is a property of a layer rather
-	// than of an asset and the row has to say which. "The name no longer
-	// resolves" and "every probe failed" are two different sentences, and a row
-	// carrying only the lifecycle can write neither.
+	// The three layer verdicts: death belongs to a layer, and "the name no longer
+	// resolves" and "every probe failed" are different sentences that a lifecycle
+	// alone cannot write.
 	DNSState    *string        `json:"dns_state,omitempty"`
 	TCPState    *string        `json:"tcp_state,omitempty"`
 	HTTPState   *string        `json:"http_state,omitempty"`
@@ -149,17 +136,15 @@ type Row struct {
 	Attributes  map[string]any `json:"attributes"`
 	Volatility  int            `json:"volatility"`
 	Pivots      []Pivot        `json:"pivots"`
-	// Source and Lineage are why the asset is in the inventory at all. The
-	// source is the one from its first appearance rather than the last, which
-	// is exactly the question lineage asks.
+	// Source and Lineage are why the asset is in the inventory. The source is the
+	// one from its first appearance, which is what lineage asks.
 	Source    string          `json:"discovery_source"`
 	Lineage   json.RawMessage `json:"lineage,omitempty"`
 	FirstSeen time.Time       `json:"first_seen"`
 	LastSeen  time.Time       `json:"last_seen"`
-	// LastFingerprintAt is why the fingerprinter's values carry their own date.
-	// The service runs on five triggers, so a technology or a cookie can be
-	// weeks older than the last probe, and a row that showed one timestamp
-	// would be claiming the browser saw what the probe saw.
+	// LastFingerprintAt dates the fingerprinter's values. The service runs on five
+	// triggers, so a technology can be weeks older than the last probe, and one
+	// timestamp would claim the browser saw what the probe saw.
 	LastFingerprintAt *time.Time `json:"last_fingerprint_at,omitempty"`
 	LastCheckedAt     *time.Time `json:"last_checked_at,omitempty"`
 	LastChangedAt     *time.Time `json:"last_changed_at,omitempty"`
@@ -168,23 +153,16 @@ type Row struct {
 // Page is one answer.
 type Page struct {
 	Rows []Row `json:"assets"`
-	// Favicons are the images of the page, keyed by hash, exactly as on the
-	// grouped list. The same sidebar renders beside both shapes, so a facet that
-	// draws icons under one and blank squares under the other is the same list
-	// disagreeing with itself.
-	//
-	// Only when a display was asked for. The export walks this function with it
-	// off and would otherwise pay for images it never writes.
+	// Favicons are the page's images keyed by hash, as on the grouped list; the
+	// same sidebar renders beside both shapes and must not draw blanks under one.
+	// Only when a display was asked for, since the export walks this with it off.
 	Favicons map[string]string `json:"favicons,omitempty"`
 	Next     string            `json:"next_cursor,omitempty"`
 }
 
-// selectColumns is what a row reads.
-//
-// Every one of them is evidence or a pivot, and there is no composite score, no
-// severity and no environment label: those cannot be determined from the
-// outside anyway, and a field that is neither evidence nor a pivot does not earn
-// its place.
+// selectColumns is what a row reads. All of it is evidence or a pivot: no
+// composite score, severity or environment label, which cannot be determined
+// from outside.
 const selectColumns = `
     c.asset_id, c.program_id, c.kind, c.key, c.host, c.port, c.scheme,
     c.lifecycle, c.scope_status, c.dns_state, c.tcp_state, c.http_state,
@@ -197,18 +175,13 @@ const selectColumns = `
     a.discovery_source, a.discovery_path,
     c.first_seen, c.last_seen, c.last_fingerprint_at, c.last_checked_at, c.last_changed_at`
 
-// lineageJoin brings the asset's own identity beside its projection.
-//
-// By primary key, so it costs a lookup per row of a page. Lineage answers "why
-// is this here", which is the question a row raises as soon as somebody does not
-// recognize a name, and it is the one thing the projection does not carry.
+// lineageJoin brings the asset's own identity beside its projection. By primary
+// key, so a lookup per page row. Lineage answers "why is this here", the one
+// thing the projection lacks.
 const lineageJoin = " JOIN asset a ON a.id = c.asset_id"
 
-// pivotJoin attaches each row's pivots and their counters.
-//
-// One lateral over a page rather than one COUNT per displayed value, which is
-// unworkable as soon as a page shows dozens. The counter itself is maintained
-// on write; this only reads it.
+// pivotJoin attaches each row's pivots and counters in one lateral over the
+// page, not a COUNT per displayed value. The counter is maintained on write.
 const pivotJoin = `
     LEFT JOIN LATERAL (
         SELECT jsonb_agg(jsonb_build_object(
@@ -247,14 +220,13 @@ func List(ctx context.Context, q Querier, org uuid.UUID, req Request) (Page, err
 
 	where := compiled.SQL
 	args := compiled.Args
-	// Bound rather than interpolated, like every other value: the flag decides
-	// what the statement computes, not what it says.
+	// Bound like every other value: the flag decides what the statement computes,
+	// not what it says.
 	args = append(args, req.Display)
 	join := fmt.Sprintf(pivotJoin, len(args))
 	if !req.Cursor.Zero() {
-		// Written out rather than as a row comparison, because the two keys
-		// travel in opposite directions: the index is (last_seen DESC,
-		// asset_id), and "(a, b) < (x, y)" cannot express that.
+		// Written out, not as a row comparison: the keys run in opposite directions
+		// (last_seen DESC, asset_id), which "(a, b) < (x, y)" cannot express.
 		args = append(args, req.Cursor.LastSeen, req.Cursor.AssetID)
 		where += fmt.Sprintf(
 			" AND (%[1]s.last_seen < $%[2]d OR (%[1]s.last_seen = $%[2]d AND %[1]s.asset_id > $%[3]d))",
@@ -285,8 +257,7 @@ func List(ctx context.Context, q Querier, org uuid.UUID, req Request) (Page, err
 		return Page{}, fmt.Errorf("read the list: %w", err)
 	}
 
-	// One row beyond the page is how the walk knows there is a next one,
-	// without a second count over the same predicate.
+	// One row beyond the page says there is a next one, without a second count.
 	if len(page.Rows) > limit {
 		page.Rows = page.Rows[:limit]
 		last := page.Rows[limit-1]
@@ -332,9 +303,8 @@ func scanRow(rows pgx.Rows) (Row, error) {
 type Facet struct {
 	Field string      `json:"field"`
 	Terms []FacetTerm `json:"terms"`
-	// Cut says values were left out. A truncated facet that looks complete
-	// makes somebody believe the inventory holds nine ports, which is the same
-	// failure the export refuses and the timeline refuses.
+	// Cut says values were left out. A truncated facet that looks complete makes
+	// someone believe the inventory holds nine ports.
 	Cut bool `json:"truncated"`
 }
 
@@ -347,36 +317,22 @@ type FacetTerm struct {
 // FacetLimit is how many values one facet returns.
 const FacetLimit = 20
 
-// FacetValuesLimit is how many one facet returns when it is asked for on its
-// own, which is what the sidebar does when somebody opens a cut facet.
-//
-// Ten times the sidebar's cap and not the whole set, because the cut has to
-// stay expressible: a list that ends without saying it ended is the failure
-// this cap exists to avoid, and a technologies facet over a large perimeter
-// runs into the hundreds. It costs no more of the expensive half than the
-// sidebar does, since both aggregate over the same filtered set.
+// FacetValuesLimit is how many values one facet returns when asked for alone,
+// which the sidebar does when someone opens a cut facet. Ten times the sidebar
+// cap, not the whole set: the cut must stay expressible, and technologies over
+// a large perimeter reach the hundreds. It costs no more than the sidebar, as
+// both aggregate the same filtered set.
 const FacetValuesLimit = 200
 
-// technologies is the one facet over an array, and it is named because two
-// places build its branch.
+// technologiesFacet is the one facet over an array; two places build its branch.
 const technologiesFacet = "technologies"
 
-// facets are the ones offered, in the order a sidebar is read.
-//
-// Almost all of them are promoted columns, and the exception is the one worth
-// explaining. The first version of this list refused a facet over attributes on
-// the grounds that it would have to aggregate through a GIN index that answers
-// containment and cannot group. That describes an implementation this query
-// never had: the filter runs once into a CTE and every facet groups over that,
-// so no facet is served by its own index and a key of the object costs exactly
-// what a column costs. The index serves the filter; a facet is an aggregation
-// over what the filter already produced.
-//
-// The favicon is the one pivot a reader wants as a list rather than one badge at
-// a time. It answers "which icons does this perimeter share, and how many assets
-// each", which is the fastest identity signal an inventory has, and clicking a
-// single badge was the only way to ask it. Last, because it draws as a grid of
-// images and the counted rows above it read in one column.
+// facets are the ones offered, in sidebar order. Nearly all are promoted columns. A facet over
+// attributes was once refused on the belief it needed a GIN index that cannot group; the
+// filter runs once into a CTE and every facet groups over that, so a key of the object costs
+// what a column does. The favicon is the one pivot wanted as a list ("which icons does this
+// perimeter share, and how many assets each" is the fastest identity signal); last, as it
+// draws as a grid while the rows above read in one column.
 var facets = []struct{ field, expr string }{
 	{"lifecycle", "c.lifecycle"},
 	{"kind", "c.kind"},
@@ -393,23 +349,16 @@ var facets = []struct{ field, expr string }{
 // FacetPage is the sidebar's answer.
 type FacetPage struct {
 	Facets []Facet `json:"facets"`
-	// Favicons are the images the favicon facet refers to.
-	//
-	// They travel with it rather than being taken from the page's rows, because
-	// the two sets are not the same: a facet ranks the whole filtered result and
-	// a page shows fifty of it, so the most shared icon in a perimeter is
-	// routinely one no row on screen carries. Without them that entry draws as a
-	// blank square with a count beside it, which reads as a broken image rather
-	// than as the answer.
+	// Favicons are the images the favicon facet refers to. They travel with it, not
+	// from the page's rows: a facet ranks the whole filtered result while a page
+	// shows fifty, so the most shared icon is routinely absent from the rows and
+	// would draw as a blank square.
 	Favicons map[string]string `json:"favicons,omitempty"`
 }
 
-// Facets aggregates over the filtered result rather than over the inventory.
-//
-// That is what the side counters of an ASM interface are, and it is what
-// usually pushes a project toward a search engine. One statement rather than
-// one per facet: the expensive half is the filter, and running it ten times is
-// paying for it ten times.
+// Facets aggregates over the filtered result, not the inventory: these are the
+// side counters of an ASM interface. One statement, not one per facet, since the
+// expensive half is the filter.
 func Facets(ctx context.Context, q Querier, org uuid.UUID, filter Node) (FacetPage, error) {
 	compiled, err := Compile(org, filter)
 	if err != nil {
@@ -431,17 +380,10 @@ func Facets(ctx context.Context, q Querier, org uuid.UUID, filter Node) (FacetPa
 	return aggregate(ctx, q, org, compiled, parts, args, FacetLimit)
 }
 
-// FacetValues answers one facet, deeper than the sidebar asks for.
-//
-// The sidebar is capped at twenty values per field and says so, which leaves
-// everything below the cut unreachable: a technology carried by twelve assets
-// is in the inventory, is filterable, and cannot be clicked. This is what the
-// cut facet's own control asks for, and it is one field rather than all of
-// them because that is the one somebody opened.
-//
-// Same filtered set as the sidebar, so the counts beside the values are the
-// same counts, and the field is looked up in the same table: a name that is not
-// a facet is a refusal rather than an expression reaching the statement.
+// FacetValues answers one facet, deeper than the sidebar, which caps at twenty values and
+// leaves everything below unreachable (a technology on twelve assets is filterable but not
+// clickable). Same filtered set and field table as the sidebar: a name that is not a facet is
+// refused, and never an expression reaching the statement.
 func FacetValues(ctx context.Context, q Querier, org uuid.UUID, filter Node, field string) (FacetPage, error) {
 	compiled, err := Compile(org, filter)
 	if err != nil {
@@ -458,17 +400,14 @@ func FacetValues(ctx context.Context, q Querier, org uuid.UUID, filter Node, fie
 	return aggregate(ctx, q, org, compiled, []string{branch}, args, FacetValuesLimit)
 }
 
-// facetBranch is one field's aggregation over the filtered set.
+// facetBranch is one field's aggregation over the filtered set. Parenthesised,
+// because a LIMIT cannot sit between a branch and the following UNION (the
+// error would name the UNION).
 //
-// Parenthesised, because a LIMIT cannot sit between a branch and the UNION that
-// follows it: without them the statement is a syntax error naming the UNION
-// rather than the limit.
-//
-// The field is never the caller's string. It is matched against the table
-// above, and what reaches the statement is the expression written there.
+// The field is never the caller's string: it is matched against the table above
+// and the expression written there reaches the statement.
 func facetBranch(field, cap string) (string, bool) {
-	// The one facet over an array. It counts assets rather than elements, which
-	// is what the question asks: "how many of my assets run nginx".
+	// Counts assets, not elements: "how many of my assets run nginx".
 	if field == technologiesFacet {
 		return fmt.Sprintf(
 			`(SELECT '%s' AS field, t AS value, count(*) AS total
@@ -524,8 +463,7 @@ func aggregate(
 	hashes := make([]string, 0, limit)
 	for _, field := range order {
 		facet := byField[field]
-		// The extra value is how the cut is known, and it is said rather than
-		// swallowed.
+		// The extra value tells the cut, and it is said.
 		if len(facet.Terms) > limit {
 			facet.Terms = facet.Terms[:limit]
 			facet.Cut = true

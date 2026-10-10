@@ -7,14 +7,10 @@
 		/** Programme names, keyed by identifier. Empty unless a filter carries one. */
 		programNames?: Record<string, string>;
 		/**
-		 * Which shape the list is in, so a link out of it does not silently change
-		 * it.
-		 *
-		 * `href` defaults to grouped, which is right for a link arriving from
-		 * somewhere else and wrong for every link on this page: from the flat list,
-		 * clicking a facet or removing a chip folded the list back without anybody
-		 * asking. The shape lives in the URL, so it has to travel with every link
-		 * built from it.
+		 * Which shape the list is in, so a link out of it does not silently change it. `href` defaults to
+		 * grouped, right for an inbound link and wrong for every link on this page: from the flat list,
+		 * clicking a facet or removing a chip folded it back unasked. The shape lives in the URL, so it
+		 * travels with every link built from it.
 		 */
 		grouped?: boolean;
 	}
@@ -22,9 +18,8 @@
 	const { filters, programNames = {}, grouped = true }: Props = $props();
 
 	/**
-	 * The export carries the current filters, and it is the same query as the list
-	 * by construction rather than by discipline: there is no "export
-	 * query", so the link comes from the same array the cards were rendered from.
+	 * The export carries the current filters and is the list's query by construction, not discipline:
+	 * there is no "export query", so the link comes from the array the cards were rendered from.
 	 */
 	const exports = [
 		{

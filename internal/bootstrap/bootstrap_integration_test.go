@@ -1,11 +1,9 @@
 //go:build integration
 
-// The milestone 7 assertion behind `recon bootstrap`: it creates a usable
-// organization without a line of SQL, and replayed it creates no second one.
-//
-// "Usable" is the half worth a container. A command that writes four rows nobody
-// can authenticate against has not bootstrapped anything, so the token it prints
-// is resolved here through the same statement the guard resolves a request with.
+// `recon bootstrap` creates a usable organization without a line of SQL, and a replay
+// creates no second one. "Usable" is the half worth a container: a command writing four
+// rows nobody can authenticate against has bootstrapped nothing, so the printed token is
+// resolved through the statement the guard uses.
 package bootstrap_test
 
 import (
@@ -174,10 +172,9 @@ func TestAReplayCreatesNoSecondOrganization(t *testing.T) {
 		t.Fatalf("first bootstrap: %v", err)
 	}
 
-	// Replayed with a different organization name and a differently cased
-	// address, which is the shape a second invocation actually takes. Neither
-	// is allowed to produce a second tenant: the email is the key, and renaming
-	// is not this command's job.
+	// Replayed with a different organization name and a differently cased address, the shape
+	// a second invocation takes. Neither may produce a second tenant: the email is the key,
+	// and renaming is not this command's job.
 	second, err := bootstrap.Run(ctx, connect(t, url), bootstrap.Request{
 		Org: "A Different Name", Email: "PERSON@example.test",
 	})

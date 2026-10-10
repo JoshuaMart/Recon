@@ -4,12 +4,9 @@ import type { Capabilities, Detail } from '$lib/types';
 import type { PageServerLoad } from './$types';
 
 /**
- * The asset view.
- *
- * The one screen whose data comes from `observation`. The list and the facets
- * never touch the journal, and that boundary is asserted from both sides in the
- * search layer's own tests: a timeline of changes is history, and the projection
- * keeps a current state by construction.
+ * The asset view, the one screen whose data comes from `observation`. The list and facets never touch
+ * the journal, a boundary asserted from both sides in the search layer's tests: a timeline of changes
+ * is history, and the projection keeps a current state by construction.
  */
 export const load: PageServerLoad = async ({ locals, params, fetch }) => {
 	const token = locals.token!;
@@ -21,9 +18,8 @@ export const load: PageServerLoad = async ({ locals, params, fetch }) => {
 		]);
 		return { detail, enriched: capabilities.enrichment?.configured ?? false };
 	} catch (err) {
-		// A 404 stays a 404. The server answers absence rather than refusal on an
-		// asset of another organization, and repeating that here keeps the
-		// distinction from leaking through a different status.
+		// A 404 stays a 404. The server answers absence, not refusal, for another organization's asset, and
+		// repeating that keeps the distinction from leaking through another status.
 		if (err instanceof APIError && err.status === 404) {
 			error(404, 'no such asset');
 		}

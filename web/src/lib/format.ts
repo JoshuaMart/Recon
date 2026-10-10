@@ -1,17 +1,10 @@
 import type { Asset, Facet, Pivot, Term } from './types';
 
 /**
- * shownFacets drops the facets that have nothing to show.
- *
- * The server answers with one facet per field whether or not the filtered set has
- * a value for it, and an empty one arrives as `null` because a nil slice encodes
- * that way in Go. This is a function rather than an expression in a component
- * because it is what took the first render of a real inventory down: the type
- * said `Term[]`, the wire said `null`, and nothing sat between the two.
- *
- * `truncated` travels with it. A facet that was cut has to say so, for the reason
- * the export refuses to truncate silently: a list of nine ports that looks
- * complete is a statement about the inventory, and it is false.
+ * shownFacets drops the facets that have nothing to show. The server sends one per field, and an
+ * empty one arrives as `null` (a nil slice in Go); a function, not a template expression, because
+ * this took the first render of a real inventory down. `truncated` travels with it: a cut facet must
+ * say so, as nine ports that look complete would be a false statement.
  */
 export function shownFacets(facets: Facet[]): { field: string; terms: Term[]; truncated: boolean }[] {
 	return facets
@@ -24,28 +17,18 @@ export function shownFacets(facets: Facet[]): { field: string; terms: Term[]; tr
 }
 
 /**
- * badgesOf is the pivots the server decided are worth a line.
- *
- * The decision is the server's and this never re-makes it. A counter of one is a
- * pivot leading only to itself and a value on the denylist groups without
- * discriminating, and both filters live in the search layer: a second copy here
- * would be a second list to keep in step, and the divergence would read as a badge
- * appearing on one screen and not the other.
- *
- * `badge` absent rather than false is the export's shape, which never reaches a
- * screen. Treating it as "not worth one" is the safe reading either way.
+ * badgesOf is the pivots the server decided are worth a line. The decision is the server's and never
+ * re-made here: a second copy of the filter would be a second list to keep in step. `badge` absent
+ * (not false) is the export's shape, which never reaches a screen; "not worth one" is safe either way.
  */
 export function badgesOf(asset: Asset): Pivot[] {
 	return (asset.pivots ?? []).filter((pivot) => pivot.badge === true);
 }
 
 /**
- * Relative time, in words, for the identity line and the temporal band.
- *
- * "An asset that appeared two hours ago is more interesting than one
- * stable for three years", which is a comparison a reader makes at a glance and
- * an absolute timestamp does not support. The exact instant belongs in the title
- * attribute, where it is one hover away.
+ * Relative time in words, for the identity line and the temporal band: "appeared two hours
+ * ago" beats "stable for three years" at a glance, which an absolute timestamp does not
+ * support. The exact instant belongs in the title attribute.
  */
 export function ago(when: string | undefined, now: number = Date.now()): string {
 	if (!when) return 'never';
@@ -57,9 +40,8 @@ export function ago(when: string | undefined, now: number = Date.now()): string 
 	if (seconds < 90) return 'just now';
 	if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`;
 	if (seconds < day) return `${Math.floor(seconds / 3600)} h ago`;
-	// Days up to six weeks rather than up to a month. "45 d ago" reads better
-	// than "1 month ago" at the point where the two meet, and the temporal band
-	// is where somebody judges whether an asset is worth opening.
+	// Days up to six weeks, not a month: "45 d ago" reads better than "1 month ago" where the two
+	// meet, and the temporal band is where someone judges whether to open an asset.
 	if (seconds < 45 * day) return `${Math.floor(seconds / day)} d ago`;
 	if (seconds < 365 * day) return plural(Math.floor(seconds / (30 * day)), 'month');
 	return plural(Math.floor(seconds / (365 * day)), 'year');
@@ -70,16 +52,10 @@ function plural(count: number, unit: string): string {
 }
 
 /**
- * The sentence a state carries, and the tone it carries it in.
- *
- * An `unobservable` asset needs an explicit mention rather than a colour alone, and
- * the three absences says why the two sentences differ in kind: "no observer gets through" is an
- * absence of measurement, "the name no longer resolves" is a measurement. The first
- * licenses no conclusion about the asset.
- *
- * Here rather than in the card because the asset view says the same thing about the
- * same asset, and two copies of a rule this specific diverge on the day somebody edits
- * one of them.
+ * The sentence a state carries, and its tone. An `unobservable` asset needs an explicit mention, not
+ * colour alone, and the two sentences differ in kind: "no observer gets through" is an absence of
+ * measurement and licenses no conclusion, "the name no longer resolves" is a measurement. Here, not
+ * in the card, as the asset view says the same and two copies would diverge.
  */
 export function verdictOf(asset: Asset): { tone: 'unobs' | 'dead'; text: string } | null {
 	if (asset.lifecycle === 'unobservable') {
@@ -89,9 +65,8 @@ export function verdictOf(asset: Asset): { tone: 'unobs' | 'dead'; text: string 
 		};
 	}
 	if (asset.lifecycle === 'inactive') {
-		// The layer verdict rather than the lifecycle, because the two sentences
-		// are different findings: a name that no longer resolves and a host whose
-		// ports all time out are not the same, and one of the two proves nothing.
+		// The layer verdict, not the lifecycle: a name that no longer resolves and a host whose ports
+		// all time out are different findings, and one of the two proves nothing.
 		const cause = asset.dns_state === 'dead' ? 'The name no longer resolves' : 'Every probe failed';
 		return { tone: 'dead', text: `${cause}, confirmed over more than 24 hours.` };
 	}
@@ -105,11 +80,9 @@ export function verdictOf(asset: Asset): { tone: 'unobs' | 'dead'; text: string 
 }
 
 /**
- * A body size, grouped rather than abbreviated.
- *
- * `4 637 B` and not `4.6 kB`: the exact number is what somebody compares against the
- * next observation of the same asset, and a rounded one hides a body that grew by
- * eighty bytes. Above a megabyte the exactness stops being readable, so it rounds.
+ * A body size, grouped not abbreviated: `4 637 B`, not `4.6 kB`. The exact number is what is
+ * compared against the next observation, and a rounded one hides a body that grew by eighty
+ * bytes. Above a megabyte exactness is unreadable, so it rounds.
  */
 export function bytes(size: number | undefined): string {
 	if (size === undefined || !Number.isFinite(size) || size < 0) return '';
@@ -126,11 +99,9 @@ export function daysUntil(when: string | undefined, now: number = Date.now()): n
 }
 
 /**
- * How far through a validity window the present moment sits, as a percentage.
- *
- * Clamped at both ends rather than left to overflow: a certificate whose window has
- * passed draws a full bar, one issued in the future draws an empty one, and neither
- * draws a bar longer than its track.
+ * How far through a validity window the present sits, as a percentage. Clamped at both ends:
+ * an expired certificate draws a full bar, a future one an empty bar, and neither overflows
+ * its track.
  */
 export function elapsed(from: string | undefined, to: string | undefined, now: number = Date.now()): number {
 	if (!from || !to) return 0;
@@ -155,16 +126,10 @@ export function codeFamily(code: number | undefined): string {
 const defaultPorts: Record<string, number> = { https: 443, http: 80 };
 
 /**
- * identity splits the key into the part that carries the meaning and the path.
- *
- * The unit on a card is the service , in the database as well as on the
- * screen since the identity rule. A service whose port determines a scheme is written as the
- * URL somebody would open — `https://qui.jomar.ovh` rather than
- * `qui.jomar.ovh:443/tcp` — and one that has never answered over http keeps the
- * `host:port` form, because nothing has established that a browser belongs there.
- *
- * The path branch survives for the url kind, which the identity rule keeps legal for what a
- * human declares.
+ * identity splits the key into the part carrying the meaning and the path. The unit on a card is the
+ * service: one whose port determines a scheme is written as the URL someone would open
+ * (`https://qui.jomar.ovh`, not `qui.jomar.ovh:443/tcp`); one that never answered over http keeps
+ * `host:port`. The path branch survives for the url kind a human declares.
  */
 export function identity(asset: Asset): { head: string; path: string } {
 	if (asset.kind === 'service') return { head: serviceName(asset), path: '' };
@@ -180,17 +145,10 @@ export function identity(asset: Asset): { head: string; path: string } {
 }
 
 /**
- * The URL a service is reached at, or an empty string when nothing established one.
- *
- * The scheme is the one the probe **measured** (the projection), never one inferred from
- * the port: a TLS listener on 8080 and a plain one on 8443 both exist, so the number
- * says nothing and the request says everything. Before the column existed, thirty
- * services on a real inventory answered while the card refused to say how to reach
- * them — and there was no filter for "what can I open", because the distinction was
- * drawn in the interface and nowhere else.
- *
- * It is also what the open link uses, which is why it returns a URL rather than a
- * label: a card must never build a second spelling of the same address.
+ * The URL a service is reached at, or "" when nothing established one. The scheme is the one the
+ * probe measured (the projection), never inferred from the port: a TLS listener on 8080 and a plain
+ * one on 8443 both exist. The open link uses it too, so a card never builds a second spelling of an
+ * address.
  */
 export function serviceURL(asset: Asset): string {
 	if (!asset.scheme || !asset.host) return '';
@@ -200,13 +158,10 @@ export function serviceURL(asset: Asset): string {
 }
 
 /**
- * How a service is written: the URL it answers at, or `host:port` when no probe made
- * it answer.
- *
- * `/tcp` is dropped and any other protocol is kept. The canonical key spells the
- * protocol out because it has to be unambiguous; a reader looking at a list of web
- * services does not need to be told a hundred times that they are TCP, and the day
- * a udp service appears the suffix is what says so.
+ * How a service is written: the URL it answers at, or `host:port` when no probe made it
+ * answer. `/tcp` is dropped and other protocols kept: the canonical key spells it out for
+ * unambiguity, but a list of web services need not say "TCP" a hundred times, and a udp
+ * service is told apart by its suffix.
  */
 function serviceName(asset: Asset): string {
 	const url = serviceURL(asset);
@@ -219,17 +174,10 @@ function serviceName(asset: Asset): string {
 }
 
 /**
- * Where a service landed, or an empty string when it landed on itself (the projection).
- *
- * The path alone when the host did not change, which is the ordinary redirect to a
- * login page: repeating the host a reader has just read two centimetres to the left
- * one zone echoing another. The whole URL when the host did change,
- * because a service that sends somewhere else is a different fact and the host is
- * the half of it that matters.
- *
- * A function here rather than an expression in the card, for the reason shownFacets
- * is one: the cases that break it — no final URL, a final URL equal to the base, a
- * URL that will not parse — are cases a test can hold and a template cannot.
+ * Where a service landed, or "" when it landed on itself. The path alone when the host did not change
+ * (the ordinary redirect to a login page); the whole URL when it did, as a service sending elsewhere is
+ * a different fact. A function so its breaking cases (no final URL, one equal to the base, one that will
+ * not parse) can be held by a test.
  */
 export function landingOf(asset: Asset, head: string): string {
 	const target = asset.final_url;
@@ -248,11 +196,9 @@ export function landingOf(asset: Asset, head: string): string {
 }
 
 /**
- * The last step of the lineage, which is the one that produced this asset.
- *
- * The chain is written by whatever discovered it, and each entry is an object
- * carrying a step name beside whatever else that producer recorded. Only the name
- * is read here; the rest belongs on the asset view, which has room for it.
+ * The last step of the lineage, the one that produced this asset. The chain is written by
+ * whatever discovered it, each entry an object with a step name beside whatever else that
+ * producer recorded. Only the name is read; the rest belongs on the asset view.
  */
 export function lineage(asset: Asset): string {
 	const path = asset.lineage;
@@ -265,12 +211,9 @@ export function lineage(asset: Asset): string {
 }
 
 /**
- * The right-hand label of a row, which is not always a status code (the fold).
- *
- * It was inline in the card until the card became a row and the asset view started
- * needing the same answer. The cases are what it exists for: nothing probes a name
- * over http, so "no answer" would answer a question nobody asked, and its dns state is
- * what a name is measured on.
+ * The right-hand label of a row, not always a status code. Inline in the card until the card
+ * became a row and the asset view needed the same answer. Nothing probes a name over http, so
+ * "no answer" would answer a question nobody asked; a name is measured on its dns state.
  */
 export function statusLabel(asset: Asset): { code: string; family: string } {
 	if (asset.status_code) return { code: String(asset.status_code), family: codeFamily(asset.status_code) };
@@ -282,25 +225,19 @@ export function statusLabel(asset: Asset): { code: string; family: string } {
 }
 
 /**
- * webSurface says whether this kind is probed over http at all .
- *
- * A name and an address are not web surfaces: their services are, and since the probe stopped asking them
- * they carry the dns and tcp layers and nothing else. Everything a card writes about
- * a response — a status code, a render, a cookie — is a sentence about a question
- * that is never asked of them, and "no answer" to a question nobody asked is the
- * kind of false statement this interface exists to avoid.
+ * webSurface says whether this kind is probed over http at all. A name and an address are
+ * not: their services are, and they carry only dns and tcp layers. Anything a card writes
+ * about a response (status code, render, cookie) is about a question never asked of them,
+ * and "no answer" to it is the kind of false statement this interface exists to avoid.
  */
 export function webSurface(asset: Asset): boolean {
 	return asset.kind === 'service' || asset.kind === 'url';
 }
 
 /**
- * cookieState says which of the three cases a card is in (the three absences).
- *
- * The third one is why this function exists rather than a check on the badges:
- * an asset that only sets PHPSESSID has been rendered and does set cookies, and
- * showing it as "no cookies" would state something false. A missing badge has to
- * say which of the three it is.
+ * cookieState says which of the three cases a card is in. The third is why this is not a
+ * check on the badges: an asset setting only PHPSESSID has been rendered and does set
+ * cookies, so "no cookies" would be false. A missing badge must say which of the three it is.
  */
 export type CookieState = 'never-rendered' | 'none' | 'all-filtered' | 'shown';
 
@@ -313,44 +250,30 @@ export function cookieState(asset: Asset): CookieState {
 }
 
 /**
- * pivotOf finds one pivot on an asset, whatever the row decided about it.
- *
- * All of them and not only the ones worth a badge, and that is the difference
- * between this and `badgesOf`. A denylisted cookie name and a script hash are
- * still pivots with their counters: the badge went because a line read in under a
- * second cannot hold twelve of them, and this view shows one asset, where twelve
- * counted rows are exactly the right granularity.
+ * pivotOf finds one pivot on an asset, whatever the row decided about it. All of them, not
+ * only the badge-worthy, unlike `badgesOf`: a denylisted cookie name or a script hash is
+ * still a pivot with a counter. The badge went because a line read in under a second cannot
+ * hold twelve, but this view shows one asset, where twelve counted rows are the right grain.
  */
 export function pivotOf(asset: Asset, type: Pivot['type'], value?: string): Pivot | undefined {
 	return (asset.pivots ?? []).find((pivot) => pivot.type === type && (value === undefined || pivot.value === value));
 }
 
 /**
- * cardHashes is the hash family a row may show, and it is deliberately two
- * entries.
- *
- * Script hashes are not badges. A real inventory produced 464 hash badges across
- * 50 rows, and that is a granularity error rather than a missing cap: a badge has
- * to fit in a line somebody reads in under a second. A counter threshold does no
- * better, because the counter of one case is already filtered and what remains is
- * real sharing, so the threshold would have to be a function of program size.
- *
- * Nothing is removed from collection or from search: the same hash is still
- * filterable through `script_hash`, still counted, and still on the asset view as
- * a counted list, where twelve lines are readable.
+ * cardHashes is the hash family a row may show, deliberately two entries. Script hashes are not
+ * badges: a real inventory produced 464 across 50 rows, a granularity error, since a badge must fit a
+ * line read in under a second. Nothing leaves collection or search: the hash stays filterable through
+ * `script_hash`, counted, and listed on the asset view where twelve lines are readable.
  */
 export function cardHashes(asset: Asset): Pivot[] {
 	return badgesOf(asset).filter((pivot) => pivot.type === 'favicon' || pivot.type === 'cert_spki');
 }
 
 /**
- * infraState is the three absences's three-way answer for the infrastructure family.
- *
- * The case that matters is the first one. A deployment with no MaxMind database
- * is a normal deployment , and showing an empty family there reads as a
- * broken interface. The console cannot work this out from the data — "not
- * configured" and "configured, no match" both give zero ASN — so the server says
- * which, on GET /assets/fields.
+ * infraState is the three-way answer for the infrastructure family. The first case matters:
+ * a deployment without a MaxMind database is normal, and an empty family there reads as a
+ * broken interface. The console cannot tell "not configured" from "configured, no match"
+ * (both give zero ASN), so the server says which, on GET /assets/fields.
  */
 export type InfraState = 'unconfigured' | 'cdn' | 'no-match' | 'shown';
 
@@ -362,11 +285,9 @@ export function infraState(asset: Asset, enrichmentConfigured: boolean): InfraSt
 }
 
 /**
- * geoVisible is the geolocation rule, written as a rule rather than as a comment.
- *
- * On a fronted target the address is that of a point of presence, so the city
- * says where the CDN is and not where the asset is. The ASN stays, because it
- * remains the most actionable line of the infrastructure family.
+ * geoVisible is the geolocation rule, written as a rule and not a comment. On a fronted target
+ * the address is a point of presence, so the city says where the CDN is, not the asset. The
+ * ASN stays: it remains the most actionable line of the infrastructure family.
  */
 export function geoVisible(asset: Asset): boolean {
 	return asset.is_cdn !== true && Boolean(asset.country);
@@ -378,15 +299,10 @@ export function versionOf(asset: Asset, name: string): string | undefined {
 }
 
 /**
- * The flag of a two-letter country code.
- *
- * Built from the regional indicator letters rather than shipped as images: it is two
- * code points, it needs no asset and no request, and it renders in the font the page
- * already has. A country nobody can render still reads as its code.
- *
- * It is only ever called where the country may be shown at all, never on a
- * fronted asset, where the address is a point of presence and the flag would name the
- * wrong country with more confidence than the code did.
+ * The flag of a two-letter country code, built from regional indicator letters (two code points, no
+ * asset or request); a country nobody can render still reads as its code. Only called where the
+ * country may be shown, never on a fronted asset, where the address is a point of presence and the
+ * flag would name the wrong country.
  */
 export function flag(country: string | undefined): string {
 	if (!country || country.length !== 2 || !/^[a-z]{2}$/i.test(country)) return '';

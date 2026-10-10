@@ -6,29 +6,18 @@ import (
 	"github.com/google/uuid"
 )
 
-// cache is the short term deduplication of names already written.
+// cache is the short-term deduplication of names already written, a cost control and never
+// the correctness one: a SAN being one asset is UNIQUE (program_id, kind, key) in the
+// database whether this cache is warm, cold or deleted.
 //
-// It is a cost control and never the correctness one. What makes a SAN one
-// asset is UNIQUE (program_id, kind, key) in the database, and that holds with
-// this cache warm, cold or deleted. Saying which of the two carries the
-// guarantee is worth the paragraph, because a cache that is load bearing on
-// correctness is one nobody may ever resize.
+// Only a SAN matching an apex reaches the database, so the baseline is a handful of names
+// an hour; the cache earns its place on bursts (an ACME loop reissuing across a large
+// perimeter, a wildcard-heavy apex, an aggregator restart replaying). Keyed per programme,
+// as one name under two is two assets.
 //
-// What it buys was measured rather than assumed, and the measurement narrowed
-// it: only a SAN that matched an apex ever reaches the database, so the
-// baseline is a handful of names an hour rather than the stream. It earns its
-// place on the burst instead, which is the case that exists: an ACME loop
-// reissuing across a large perimeter, a wildcard heavy apex, and the replay an
-// aggregator restart produces if its recovery option is ever turned on.
-//
-// Keyed per programme, because the same name under two programmes is two
-// assets.
-//
-// Two generations rather than a heap or a timestamp per entry. Rotating drops a
-// whole generation at once, which bounds the memory at twice the capacity and
-// costs nothing per lookup. The price is that an entry lives somewhere between
-// one and two TTLs, and that is the right thing to be imprecise about: the
-// consequence of an early eviction is one insert that changes nothing.
+// Two generations rather than a heap: rotating drops one at once, bounds memory at twice the
+// capacity and costs nothing per lookup. An entry lives one to two TTLs, and an early
+// eviction costs one insert that changes nothing.
 type cache struct {
 	ttl      time.Duration
 	capacity int
@@ -56,8 +45,8 @@ func newCache(ttl time.Duration, capacity int) *cache {
 }
 
 // seen reports whether this name was written recently. It records nothing: the
-// entry is added once the write succeeded, so a failed write is retried by the
-// next certificate rather than swallowed for a TTL.
+// entry is added after the write succeeds, so a failed write is retried by the
+// next certificate, not swallowed for a TTL.
 func (c *cache) seen(program uuid.UUID, name string, at time.Time) bool {
 	c.rotateIfDue(at)
 
@@ -88,21 +77,17 @@ func (c *cache) rotateIfDue(at time.Time) {
 	c.rotated = at
 }
 
-// cacheKey keeps the programme and the name apart with a byte no hostname can
-// carry, so two keys cannot be built from different pairs.
+// cacheKey separates programme and name with a byte no hostname can carry.
 func cacheKey(program uuid.UUID, name string) string {
 	return program.String() + "\x00" + name
 }
 
-// budget is one programme's ceiling on candidate creation for one window.
+// budget is one programme's ceiling on candidate creation per window. An apex
+// under which the stream carries thousands of names is one wrong rule away, and
+// without a bound a public feed decides the size of a customer's inventory.
 //
-// A perimeter can be pointed at an apex under which the stream carries thousands
-// of names, and that is one wrong apex rule away rather than hypothetical.
-// Without a bound, a public feed decides the size of a customer's inventory.
-//
-// It says what it dropped when the window rolls. A silent cap reads as "CT found
-// forty names under this apex" where the truth is "CT found four thousand and
-// these are the first forty".
+// It says what it dropped when the window rolls: a silent cap reads "CT found
+// forty names" when the truth is "four thousand, and these are the first forty".
 type budget struct {
 	ceiling int
 	window  time.Duration
@@ -129,12 +114,9 @@ func (m *Matcher) budgetFor(program uuid.UUID, at time.Time) *budget {
 	return b
 }
 
-// take spends one candidate of the window, or counts a refusal.
-//
-// The second return says this is the first refusal of the window. The roll is
-// where the total is known, but an hour is a long time to say nothing: a
-// programme that hits its ceiling at minute two is a perimeter somebody wants to
-// look at now, and the summary alone would report it after the fact.
+// take spends one candidate of the window, or counts a refusal. The second return
+// flags the window's first refusal: the roll knows the total but an hour is long to
+// stay quiet, and a programme hitting its ceiling at minute two deserves a look now.
 func (b *budget) take() (bool, bool) {
 	if b.ceiling > 0 && b.created >= b.ceiling {
 		b.dropped++

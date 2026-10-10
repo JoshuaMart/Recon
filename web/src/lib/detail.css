@@ -1,13 +1,7 @@
 /*
- * The shared vocabulary of the asset view.
- *
- * Global rather than scoped, and prefixed `dv-` because the panels are six components
- * that must not each keep their own copy of a badge. The prefix also keeps them clear of
- * the list's own row vocabulary, which is scoped to its components: an unprefixed
- * `.badge` shared between the two would half-merge on specificity, which is the kind of
- * defect that only shows on one screen out of two.
- *
- * The tokens are app.css's. Nothing here invents a colour.
+ * The shared vocabulary of the asset view. Global, prefixed `dv-`: six panels must not each keep a
+ * copy of a badge, and the prefix keeps them clear of the list's scoped row vocabulary (an unprefixed
+ * `.badge` shared between the two would half-merge on specificity). Tokens are app.css's.
  */
 
 .dv-panel {

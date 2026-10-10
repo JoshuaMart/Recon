@@ -1,11 +1,8 @@
 //go:build integration
 
-// Milestone 0, in the two assertions a database can answer: a migration can be
-// applied then rolled back without loss, and the application role is confined
-// to what the default privileges give it.
-//
-// Behind a build tag, because it needs a container. `make test` runs the unit
-// tests; `make test-integration` runs these.
+// A migration can be applied then rolled back without loss, and the application role is
+// confined to what default privileges give it. Behind a build tag as it needs a
+// container: `make test` runs the unit tests, `make test-integration` these.
 package store_test
 
 import (

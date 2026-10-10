@@ -28,10 +28,8 @@ linters:
     depguard:
       rules:
         sql:
-          # The migration runner needs database/sql because goose does.
-          # Everything else talks to the database through pgx, and a second
-          # driver stack would be a second set of connection settings that
-          # nobody keeps in step.
+          # The migration runner needs database/sql because goose does. Everything else uses pgx, and a
+          # second driver stack would be a second set of connection settings nobody keeps in step.
           files:
             - '!**/internal/store/*.go'
           deny:

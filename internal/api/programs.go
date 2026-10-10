@@ -21,13 +21,12 @@ import (
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
-// maxEntryBytes bounds a hand entered list. It is a person typing, not a
-// scanner delivering, so the bound is small and the refusal is readable.
+// maxEntryBytes bounds a hand-entered list: a person typing, so the bound is
+// small and the refusal readable.
 const maxEntryBytes = 1 << 20
 
-// maxEntries bounds one call. A list longer than this is an import, and an
-// import belongs behind a job rather than behind a request somebody is waiting
-// on.
+// maxEntries bounds one call. A longer list is an import, which belongs behind a
+// job and not a request someone is waiting on.
 const maxEntries = 5000
 
 // Programs holds the routes a console drives.
@@ -35,8 +34,8 @@ type Programs struct {
 	db        *store.Scoped
 	scheduler *runs.Scheduler
 	ingestor  *ingest.Ingestor
-	// launchTimeout bounds the work that outlives the request, which without a
-	// bound of its own would have none at all.
+	// launchTimeout bounds the work that outlives the request, which would otherwise
+	// have no bound.
 	launchTimeout time.Duration
 	now           func() time.Time
 	log           *slog.Logger
@@ -53,11 +52,9 @@ func NewPrograms(db *store.Scoped, scheduler *runs.Scheduler, ingestor *ingest.I
 	}
 }
 
-// StartRun provisions one run over a programme.
-//
-// It exists beside the cadence rather than instead of it: the scheduled pass
-// gives regular coverage, and this is what re-runs a perimeter after a scope
-// change without waiting for the next tick.
+// StartRun provisions one run over a programme. It sits beside the cadence: the
+// scheduled pass gives regular coverage, and this re-runs a perimeter after a
+// scope change without waiting for the next tick.
 func (h *Programs) StartRun(w http.ResponseWriter, r *http.Request, principal auth.Principal) {
 	ctx := r.Context()
 
@@ -93,10 +90,9 @@ func (h *Programs) StartRun(w http.ResponseWriter, r *http.Request, principal au
 		return
 	}
 
-	// A list, and a verification is a list of one. The scanner takes one root
-	// domain per execution, so a discovery over a perimeter of three apexes is
-	// three runs, and a response shape that could only carry one would have to
-	// pick which of them to tell the caller about.
+	// A list, and a verification is a list of one. The scanner takes one root domain
+	// per execution, so three apexes are three runs, and a response carrying one
+	// would have to pick which to report.
 	var definitions []*runs.Definition
 	switch body.Kind {
 	case runs.KindDiscovery:
@@ -114,9 +110,8 @@ func (h *Programs) StartRun(w http.ResponseWriter, r *http.Request, principal au
 
 	switch {
 	case errors.Is(err, runs.ErrNothingDue):
-		// Not a failure. A tick that finds nothing to do is the normal state
-		// of a healthy inventory, and answering 200 with a count is what lets
-		// a console say so instead of showing an error.
+		// Not a failure: nothing due is the normal state of a healthy inventory, and a
+		// 200 with a count lets the console say so.
 		writeJSON(w, http.StatusOK, map[string]any{"started": false, "reason": "nothing is due"})
 		return
 	case errors.Is(err, runs.ErrNoPerimeter):
@@ -124,10 +119,9 @@ func (h *Programs) StartRun(w http.ResponseWriter, r *http.Request, principal au
 			"the programme declares no apex, so there is nothing to enumerate")
 		return
 	case errors.Is(err, runs.ErrRunInFlight):
-		// The message names the run, its state and its age, because two
-		// situations here call for opposite actions: a run something has
-		// opened is a run to wait for, and a run nobody has claimed is a run
-		// whose provisioning failed.
+		// The message names the run, state and age because the two situations call for
+		// opposite actions: a run something opened is one to wait for, one nobody
+		// claimed is a failed provisioning.
 		fail(w, http.StatusConflict, "run_in_flight", err.Error())
 		return
 	case err != nil:
@@ -141,23 +135,15 @@ func (h *Programs) StartRun(w http.ResponseWriter, r *http.Request, principal au
 		return
 	}
 
-	// After the commit, deliberately. Starting inside the transaction would
-	// leave an execution running with a valid credential against a run row that
-	// was rolled back; starting after means a platform refusing on a quota
-	// leaves a row the deadline sweeper owns, and nothing has to be repaired.
-	//
-	// And detached from the request, which is the part that is easy to miss. A
-	// console that hangs up mid-call would otherwise cancel a start the
-	// platform has already accepted, or cancel the write that records what it
-	// called the execution: an execution nobody can find the logs of, which is
-	// the one thing that column exists for. The sweeper's story assumes a
-	// refusal means nothing started, and a cancelled call breaks that.
+	// After the commit: starting inside the transaction could leave an execution running with a
+	// valid credential against a rolled-back row. And detached from the request: a console
+	// hanging up mid-call would cancel a start the platform already accepted, or the write
+	// recording its name, leaving an execution with no findable logs.
 	launchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), h.launchTimeout)
 	defer cancel()
-	// The write that names the execution opens its own scoped transaction,
-	// after the platform has answered rather than around the call: a
-	// transaction held open for as long as somebody else's control plane takes
-	// to reply is a pool connection held for the same time.
+	// The write naming the execution opens its own scoped transaction after the
+	// platform answers, not around the call: holding one open while another control
+	// plane replies holds a pool connection just as long.
 	record := func(ctx context.Context, runID uuid.UUID, external string) error {
 		tx, err := h.db.Begin(ctx, principal.OrgID)
 		if err != nil {
@@ -171,10 +157,9 @@ func (h *Programs) StartRun(w http.ResponseWriter, r *http.Request, principal au
 		}
 		return tx.Commit(ctx)
 	}
-	// One entry per run, reported whether it started or not. A platform that
-	// refuses the third of three leaves a row the deadline sweeper owns and two
-	// enumerations that are genuinely walking, and a response that collapsed
-	// that into one boolean would describe neither.
+	// One entry per run, started or not. A platform refusing the third of three
+	// leaves a row the sweeper owns and two enumerations walking, which one boolean
+	// would describe neither of.
 	started := 0
 	reported := make([]map[string]any, 0, len(definitions))
 	for _, definition := range definitions {
@@ -184,22 +169,19 @@ func (h *Programs) StartRun(w http.ResponseWriter, r *http.Request, principal au
 			"scope":        definition.Scope,
 			"deadline":     definition.Deadline,
 			"target_count": definition.TargetCount,
-			// What the run was actually asked to do. In development nothing
-			// starts it, so the console shows this and a person runs the image:
-			// the same shape as production minus the call.
+			// What the run was asked to do. In development nothing starts it, so the console
+			// shows this and a person runs the image.
 			"args": definition.Args,
 			"env":  definition.Env,
 		}
-		// Only a discovery has one, and an empty string in the payload would
-		// read as a domain nobody named.
+		// Only a discovery has one; "" would read as a domain nobody named.
 		if definition.Apex != "" {
 			entry["apex"] = definition.Apex
 		}
 
 		if err := h.scheduler.Launch(launchCtx, record, definition); err != nil {
-			// The run exists and the sweeper owns it, so this is reported
-			// rather than turned into a failure the caller might retry into a
-			// second run.
+			// The run exists and the sweeper owns it. Reported, not turned into a failure the
+			// caller might retry into a second run.
 			h.log.ErrorContext(ctx, "run not started",
 				"run", definition.RunID, "apex", definition.Apex, "error", err)
 			entry["started"] = false
@@ -214,18 +196,16 @@ func (h *Programs) StartRun(w http.ResponseWriter, r *http.Request, principal au
 	}
 
 	writeJSON(w, http.StatusAccepted, map[string]any{
-		// True when anything went out at all. What went out and what did not is
-		// in the list, one entry per run.
+		// True when anything went out; the list says what did and did not.
 		"started": started > 0,
 		"runs":    reported,
 	})
 }
 
-// CancelRun closes an open run and asks the platform to stop its execution.
-//
-// For what the sweeper does not cover: a run started by mistake, or an
-// execution the platform still calls running while it does nothing useful. The
-// run is closed failed, so a discovery falls under the ordinary retry delay.
+// CancelRun closes an open run and asks the platform to stop its execution, for
+// what the sweeper does not cover: a run started by mistake, or an execution the
+// platform calls running while doing nothing useful. The run closes failed, so a
+// discovery falls under the ordinary retry delay.
 func (h *Programs) CancelRun(w http.ResponseWriter, r *http.Request, principal auth.Principal) {
 	ctx := r.Context()
 
@@ -263,9 +243,8 @@ func (h *Programs) CancelRun(w http.ResponseWriter, r *http.Request, principal a
 		return
 	}
 
-	// After the commit and detached from the request, for the reasons StartRun
-	// gives. A stop the platform refuses does not reopen the run: its token is
-	// refused from now on, whatever the execution does.
+	// After the commit and detached, as in StartRun. A stop the platform refuses does
+	// not reopen the run: its token is refused from now on.
 	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), h.launchTimeout)
 	defer cancel()
 	stopped, err := h.scheduler.Stop(stopCtx, external)
@@ -343,11 +322,9 @@ func (h *Programs) EnterAssets(w http.ResponseWriter, r *http.Request, principal
 	writeJSON(w, http.StatusOK, entered)
 }
 
-// owns refuses a programme that is not this caller's.
-//
-// A 404 rather than a 403: a caller learning that an identifier exists in
-// another organization is a cross-tenant leak of exactly one bit, and one bit
-// is enough to enumerate.
+// owns refuses a programme that is not this caller's, as a 404 and not a 403:
+// learning that an identifier exists in another organization is a one-bit
+// cross-tenant leak, and one bit is enough to enumerate.
 func (h *Programs) owns(
 	ctx context.Context, w http.ResponseWriter, q *sqlcgen.Queries,
 	principal auth.Principal, programID uuid.UUID,
@@ -371,11 +348,9 @@ func (h *Programs) unavailable(ctx context.Context, w http.ResponseWriter, messa
 	fail(w, http.StatusInternalServerError, "unavailable", "the request could not be served")
 }
 
-// compileScope reads the rules in force at an instant.
-//
-// It lives in ingest rather than here, because the Certificate Transparency
-// matcher needs the same thing and a second copy of it is a second answer to
-// "what is this programme allowed to look at".
+// compileScope reads the rules in force at an instant. It lives in ingest
+// because the CT matcher needs it too, and a second copy would be a second answer
+// to what a programme may look at.
 func compileScope(ctx context.Context, q *sqlcgen.Queries, programID uuid.UUID, at time.Time) (*scope.Set, error) {
 	return ingest.CompileScope(ctx, q, programID, at)
 }

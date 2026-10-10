@@ -12,17 +12,12 @@ import (
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
-// Bootstrap turns the configured webhook into the single row that carries it.
-//
-// It runs only when exactly one organization exists. A configuration file has
-// no way to name a tenant, so that is the only case where the intent is
-// unambiguous: beyond it, giving a global URL to one of several organizations
-// would leak one tenant's alerts into another's channel.
-//
-// The row is keyed on the organization and the config marker rather than on the
-// URL. Without that marker, changing the configured URL and restarting inserts
-// a second active row without disabling the first, and every alert goes out
-// twice, one of them to the destination just replaced.
+// Bootstrap turns the configured webhook into the single row that carries it, only when
+// exactly one organization exists: a configuration file cannot name a tenant, and a global
+// URL given to one of several would leak alerts across tenants. The row is keyed on the
+// organization and the config marker, not the URL: otherwise changing the URL and restarting
+// inserts a second active row without disabling the first, and every alert goes out twice,
+// one to the replaced destination.
 func Bootstrap(ctx context.Context, q *sqlcgen.Queries, url, template, minPriority string, log *slog.Logger) (bool, error) {
 	if url == "" {
 		log.InfoContext(ctx, "no configured notification channel")
@@ -35,10 +30,9 @@ func Bootstrap(ctx context.Context, q *sqlcgen.Queries, url, template, minPriori
 	}
 	switch len(orgs) {
 	case 0:
-		// Not settled. The organization is created by a command that runs
-		// outside this process, so a channel bootstrapped only at startup
-		// would silently not exist until somebody restarted for an unrelated
-		// reason. The notifier retries until there is a tenant to attach to.
+		// Not settled. The organization is created outside this process, so a channel
+		// bootstrapped only at startup would not exist until an unrelated restart. The
+		// notifier retries until there is a tenant.
 		log.InfoContext(ctx, "no organization yet, the configured channel waits for one")
 		return false, nil
 	case 1:

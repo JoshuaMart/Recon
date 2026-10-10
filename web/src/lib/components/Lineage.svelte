@@ -8,14 +8,10 @@
 	const { asset }: Props = $props();
 
 	/**
-	 * The chain the producer wrote, kept as it came.
-	 *
-	 * Each entry names a step and carries whatever else that producer recorded
-	 * beside it: the run, the sources it answered from, the port that implied a
-	 * service. None of it is reformatted, and that is the point of keeping it.
-	 * Rewriting it into a shape of ours would lose exactly the part that answers
-	 * "why is this here", which is the question a row raises the moment somebody
-	 * does not recognize a name.
+	 * The chain the producer wrote, kept as it came. Each entry names a step and carries whatever else
+	 * the producer recorded (the run, the sources, the port that implied a service). None is
+	 * reformatted: rewriting it into our shape would lose the part answering "why is this here", the
+	 * question a row raises when someone does not recognize a name.
 	 */
 	const steps = $derived(asset.lineage ?? []);
 

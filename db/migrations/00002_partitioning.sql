@@ -1,10 +1,7 @@
--- Monthly partitioning, without an extension.
---
--- pg_partman is the right tool as soon as several partitioned tables with
--- different retentions are in play. Here there are two, on a trivial monthly
--- range, with a retention policy that reduces to a DROP TABLE. Thirty lines of
--- SQL against an extension to install, a non-official image to follow and one
--- more component at startup.
+-- Monthly partitioning, without an extension. pg_partman suits several partitioned tables
+-- with different retentions; here there are two on a trivial monthly range with retention
+-- reducing to a DROP TABLE. Thirty lines of SQL beat an extension to install, a
+-- non-official image to follow and one more component at startup.
 --
 -- The functions come before the model because the model uses them.
 
@@ -14,11 +11,10 @@
 CREATE FUNCTION ensure_monthly_partitions(target regclass, months_ahead int DEFAULT 2)
 RETURNS int
 LANGUAGE plpgsql
--- The scheduler runs as the application role, which has no DDL, while creating
--- a partition is a CREATE TABLE. So this executes with its owner's rights, and
--- with a fixed search_path: a SECURITY DEFINER function that resolves names
--- through the caller's path is a way to run the owner's privileges on somebody
--- else's table.
+-- The scheduler runs as the application role, which has no DDL, while creating a partition
+-- is a CREATE TABLE. So this runs with its owner's rights and a fixed search_path: a
+-- SECURITY DEFINER function resolving names through the caller's path runs the owner's
+-- privileges on someone else's table.
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
@@ -33,10 +29,9 @@ BEGIN
         RAISE EXCEPTION 'months_ahead must not be negative, got %', months_ahead;
     END IF;
 
-    -- A partition belongs in its parent's schema, and saying so explicitly is
-    -- what keeps the fixed search_path above from deciding where it lands:
-    -- with pg_catalog first, an unqualified CREATE TABLE tries to write there
-    -- and is refused, which is the right refusal for the wrong reason.
+    -- A partition belongs in its parent's schema; saying so explicitly stops the fixed
+    -- search_path deciding where it lands (with pg_catalog first, an unqualified CREATE TABLE
+    -- is refused there, the right refusal for the wrong reason).
     SELECT n.nspname, c.relname
       INTO schema, parent
       FROM pg_class c
@@ -96,17 +91,15 @@ $$;
 COMMENT ON FUNCTION drop_monthly_partitions_before(regclass, date) IS
     'Retention, as a DROP rather than a DELETE. Not granted to the application: purging is maintenance, run as the owner.';
 
--- PostgreSQL grants EXECUTE on a new function to PUBLIC, so "not granted" is
--- not a state a function starts in: without the revokes below, the application
--- role can call both of these and the grant that follows is decoration. Found
+-- PostgreSQL grants EXECUTE on a new function to PUBLIC, so without the revokes below the
+-- application role can call both of these and the grant that follows is decoration. Found
 -- by calling the purge as asm_app and watching it run.
 REVOKE EXECUTE ON FUNCTION ensure_monthly_partitions(regclass, int) FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION drop_monthly_partitions_before(regclass, date) FROM PUBLIC;
 
--- Creating a partition is the only DDL the application is allowed, and only
--- through this door. The purge stays with the owner: retention is maintenance,
--- and a role that can drop a month of observations is a role that can lose the
--- one thing this system cannot reconstruct.
+-- Creating a partition is the only DDL the application is allowed, and only through this
+-- door. The purge stays with the owner: a role able to drop a month of observations can
+-- lose the one thing this system cannot reconstruct.
 GRANT EXECUTE ON FUNCTION ensure_monthly_partitions(regclass, int) TO asm_app, asm_sys;
 
 -- +goose Down

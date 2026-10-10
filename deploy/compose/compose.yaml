@@ -1,31 +1,28 @@
-# The local stack. Milestone 0 asks that this comes up in under sixty seconds
-# on a clean machine, so images are pinned to a minor tag and data lives in
-# named volumes: a bind mount for the data directory is ruinously slow on
-# macOS.
+# The local stack. It should come up in under sixty seconds on a clean machine, so images are
+# pinned to a minor tag and data lives in named volumes (a bind mount for the data directory is
+# ruinously slow on macOS).
 #
 # From the repository root:
 #   make up
 #
-# What is deliberately not here: a scanner. FastRecon is a one-shot job, not a
-# daemon. It is an image a run starts, with its perimeter supplied as overrides
-# on the start call, so there is nothing for it to listen to.
+# Deliberately absent: a scanner. FastRecon is a one-shot job, an image a run starts with its
+# perimeter supplied as overrides on the start call, so there is nothing for it to listen to.
 
 name: recon
 
 networks:
   # The inventory and everything allowed to reach it.
   control:
-  # The rendering service and its browser, and nothing else. A headless browser
-  # executing target-controlled JavaScript beside the database is an SSRF engine
-  # adjacent to the inventory, so the split is the point rather than tidiness.
+  # The rendering service and its browser, nothing else. A headless browser running
+  # target-controlled JavaScript beside the database is an SSRF engine next to the inventory, so
+  # the split is the point.
   scan:
 
 volumes:
   pgdata:
 
-# The browser, three times over. The three differ by name and by nothing else:
-# what makes them a pool is control_urls in fingerprinter.yml, and what makes
-# them safe is the scan network they are alone on.
+# The browser, three times over, differing by name only: control_urls in fingerprinter.yml
+# makes them a pool, and the scan network they are alone on makes them safe.
 x-chrome: &chrome
   networks: [scan]
   image: chromedp/headless-shell:latest
@@ -60,9 +57,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-recon}
     command:
-      # Continuous archiving, on from the first start. Turning it on later
-      # needs a restart and a fresh base backup, which is the kind of thing
-      # that gets postponed until the day it is needed.
+      # Continuous archiving, on from the first start. Enabling it later needs a restart and a fresh
+      # base backup, which gets postponed until the day it is needed.
       - postgres
       - -c
       - archive_mode=off
@@ -74,15 +70,13 @@ services:
       # default keeps too little to survive a slow one.
       - -c
       - max_wal_size=1GB
-    # Bound to the loopback interface. Published without a host this listens on
-    # every interface of the machine, which on a shared network is an open
-    # PostgreSQL port.
+    # Bound to loopback. Published without a host it listens on every interface, an open
+    # PostgreSQL port on a shared network.
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
-      # Mounted at /var/lib/postgresql rather than at its data subdirectory:
-      # the official image recommends this from 18 onwards so a later
-      # pg_upgrade --link does not run into a mount point boundary.
+      # Mounted at /var/lib/postgresql, not its data subdirectory: the official image recommends
+      # this from 18 on so a later pg_upgrade --link avoids a mount point boundary.
       - pgdata:/var/lib/postgresql
       # The archive destination is configuration (13.3). A path here, a bucket
       # in production, and the restore is exercised against whichever it is.
@@ -94,9 +88,8 @@ services:
       retries: 15
       start_period: 3s
 
-  # The archive directory has to exist and be writable by postgres before the
-  # first archive_command fires, or every WAL segment fails to ship and the
-  # only sign is a line in the log.
+  # The archive directory must exist and be writable by postgres before the first
+  # archive_command fires, or every WAL segment fails to ship with only a log line to show it.
   archive-init:
     networks: [control]
     image: postgres:18-alpine
@@ -107,9 +100,8 @@ services:
       - ${BACKUP_ARCHIVE_DIR:-../../var/archive}:/archive
     restart: "no"
 
-  # A service of its own rather than a step inside the control plane, so a
-  # failed migration is readable and the application is gated on it by the
-  # deployment rather than by an ordering somebody has to remember.
+  # A service of its own, not a control-plane step, so a failed migration is readable and the
+  # application is gated on it by the deployment, not a remembered ordering.
   migrate:
     networks: [control]
     build:
@@ -126,24 +118,19 @@ services:
         condition: service_healthy
     restart: "no"
 
-  # The migration creates the roles NOLOGIN with their privileges and stops
-  # there. Granting LOGIN and a secret is the deployment's job, so that no
-  # password ever lives in a migration file.
+  # The migration creates the roles NOLOGIN with their privileges and stops. LOGIN and a secret
+  # are the deployment's job, so no password lives in a migration file.
   db-app-role:
     networks: [control]
     image: postgres:18-alpine
     entrypoint: ["sh", "-c"]
-    # Through stdin rather than -c: psql does not interpolate variables in -c.
-    # The passwords go in as psql variables so they never reach a command line
-    # that ps could show.
+    # Through stdin, not -c: psql does not interpolate variables in -c. Passwords go in as psql
+    # variables so they never reach a command line ps could show. Two roles, two passwords: what
+    # separates them is what row-level security lets them see, and one shared credential would
+    # reduce that to a comment.
     #
-    # The two roles get two passwords. What separates them is what row-level
-    # security lets them see, so one shared credential would turn that
-    # distinction into a comment.
-    #
-    # The semicolons are not decoration: a newline does not end a statement for
-    # psql, so without them the second ALTER reads as a continuation of the
-    # first and the whole thing is a syntax error.
+    # The semicolons are needed: a newline does not end a statement for psql, so without them the
+    # second ALTER continues the first and the whole thing is a syntax error.
     command:
       - >-
         printf '%s;\n%s;\n'
@@ -162,9 +149,8 @@ services:
         condition: service_completed_successfully
     restart: "no"
 
-  # Reference data, reapplied on every deployment rather than by a one-off
-  # migration: the denylist grows as new frameworks and edges appear. It runs
-  # as the owner, because the application role has no write on that table.
+  # Reference data, reapplied on every deployment, not a one-off migration: the denylist grows
+  # with new frameworks and edges. It runs as the owner, as the application role cannot write it.
   seed:
     networks: [control]
     build:
@@ -181,11 +167,10 @@ services:
         condition: service_completed_successfully
     restart: "no"
 
-  # The operational command line, run rather than served. Behind a profile so
-  # `make up` does not start it: it is a command somebody invokes, and a
-  # container that exits immediately in the middle of a stack reads as a crash.
+  # The operational command line, run rather than served. Behind a profile so `make up` does
+  # not start it: a container exiting at once mid-stack reads as a crash.
   #
-  # It holds the owner credential, which is the whole reason it is not a route.
+  # It holds the owner credential, which is why it is not a route.
   recon:
     profiles: [tools]
     networks: [control]
@@ -204,15 +189,13 @@ services:
 
   controlplane:
     networks: [control]
-    # The control plane calls the rendering service and the rendering service
-    # never calls back. A bridge cannot express that: joining `scan` would let
-    # the browser side resolve `postgres` and `controlplane` by name, which is
-    # the one thing the split exists to prevent. So the call goes out through
-    # the host gateway to the port the renderer publishes on loopback, which is
-    # the path verify-isolation.sh already names rather than claims away.
+    # The control plane calls the rendering service and the service never calls back. A bridge
+    # cannot express that: joining `scan` would let the browser side resolve `postgres` and
+    # `controlplane`, which the split exists to prevent. So the call goes through the host gateway
+    # to the port the renderer publishes on loopback, the path verify-isolation.sh names.
     #
-    # In production the two are a plain URL and a firewall rule, and this line
-    # disappears with the bridge.
+    # In production the two are a plain URL and a firewall rule, and this line disappears with the
+    # bridge.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     build:
@@ -223,37 +206,31 @@ services:
       RECON_ENV: dev
       RECON_LOG__FORMAT: text
       RECON_HTTP__ADDR: ":8080"
-      # asm_app, never the owner. RECON_DATABASE__MIGRATION_URL is deliberately
-      # absent, and the configuration refuses to start if it appears: role
-      # separation buys nothing if whoever reaches execution here finds the
-      # owner credentials next to the application ones.
+      # asm_app, never the owner. RECON_DATABASE__MIGRATION_URL is absent on purpose and the
+      # configuration refuses to start if it appears: role separation buys nothing if whoever gets
+      # execution here finds the owner credentials beside the application ones.
       RECON_DATABASE__URL: >-
         postgres://asm_app:${APP_PASSWORD}@postgres:5432/${POSTGRES_DB:-recon}?sslmode=disable
-      # The second pool. The loops that serve every tenant in one tick connect
-      # with the role that is allowed past row-level security, and they say so
-      # by holding this credential rather than by omitting a filter. Both are
-      # required: with one credential those loops read zero rows and look
-      # healthy doing it.
+      # The second pool. The loops serving every tenant in a tick use the role allowed past
+      # row-level security and say so by holding this credential, not by omitting a filter. Both are
+      # required: with one, those loops read zero rows and look healthy.
       RECON_DATABASE__SYSTEM_URL: >-
         postgres://asm_sys:${SYSTEM_PASSWORD}@postgres:5432/${POSTGRES_DB:-recon}?sslmode=disable
       # What makes a run's credentials unforgeable. There is nothing to store
       # and nothing to revoke because everything rests on this.
       RECON_SECURITY__SIGNING_KEY: ${SIGNING_KEY:?set SIGNING_KEY in .env}
-      # Optional. A deployment with no database is a normal deployment, and the
-      # console is told which of the two it is rather than guessing from data
-      # that looks the same either way.
+      # Optional. A deployment without a database is normal, and the console is told which it is
+      # rather than guessing from data that looks the same either way.
       RECON_ENRICH__CITY_DATABASE: ${GEOIP_CITY_DATABASE:-}
       RECON_ENRICH__ASN_DATABASE: ${GEOIP_ASN_DATABASE:-}
-      # Where a run comes back to. Not derivable from the listen address: the
-      # scanner runs somewhere else entirely, and a definition that named
-      # nowhere would surface as a scanner unable to fetch its targets rather
-      # than as a missing setting.
+      # Where a run comes back to. Not derivable from the listen address (the scanner runs
+      # elsewhere); a definition naming nowhere would show as a scanner unable to fetch its targets,
+      # not a missing setting.
       RECON_VERIFICATION__PUBLIC_URL: ${PUBLIC_URL:-http://controlplane:8080}
       RECON_RENDER__URL: ${RENDER_URL:-http://host.docker.internal:3001}
-      # The Certificate Transparency aggregator, reached the same way and for
-      # the same reason: it sits on the scan network, so the call goes out
-      # through the host gateway rather than by service name. Empty turns the
-      # matcher off, which is a normal deployment.
+      # The CT aggregator, reached the same way: it sits on the scan network, so the call goes
+      # through the host gateway, not by service name. Empty turns the matcher off, a normal
+      # deployment.
       RECON_CT__URL: ${CT_URL:-ws://host.docker.internal:3002/}
       # How a run is started. Empty is the development shape: the definition is
       # rendered and a person runs the image with it.
@@ -263,17 +240,11 @@ services:
       RECON_RUNNER__SECRET_KEY: ${RUNNER_SECRET_KEY:-}
       RECON_NOTIFY__WEBHOOK_URL: ${NOTIFY_WEBHOOK_URL:-}
       RECON_NOTIFY__MIN_PRIORITY: ${NOTIFY_MIN_PRIORITY:-low}
-      # The tunables, passed through by name rather than mapped with a default.
-      #
-      # The form matters. Written as `RECON_X: ${X:-}` an unset variable reaches
-      # the container as an empty string, and an empty duration is a decode
-      # error that stops the process: the stack would refuse to start because
-      # somebody did not set an optional value. Written as `RECON_X: ${X:-72h}`
-      # the default lives in two places and drifts. Left without a value, an
-      # unset variable is simply absent from the container and the default in
-      # internal/config applies, which is the one place it is written down.
-      #
-      # What each of them does is in .env.example, beside the value.
+      # The tunables, passed through by name, not mapped with a default. `RECON_X: ${X:-}` delivers
+      # an unset variable as an empty string, and an empty duration is a decode error stopping the
+      # process; `RECON_X: ${X:-72h}` keeps the default in two places, drifting. With no value, an
+      # unset variable is absent from the container and the default in internal/config applies, the
+      # one place it is written. What each does is in .env.example, beside the value.
       RECON_VERIFICATION__RESOLVE:
       RECON_VERIFICATION__FULL:
       RECON_VERIFICATION__FINGERPRINT:
@@ -305,10 +276,9 @@ services:
     volumes:
       - ${GEOIP_DIR:-../../var/geoip}:/geoip:ro
     ports:
-      # Loopback by default. A deployment whose scanner runs off-host has to
-      # bind this wider, and that is a decision rather than a setting: the
-      # report and target-list credentials are bearer tokens, so on plain HTTP
-      # they travel in the clear for the life of the run they name.
+      # Loopback by default. A deployment whose scanner runs off-host must bind wider, a decision and
+      # not a setting: the report and target-list credentials are bearer tokens, so on plain HTTP they
+      # travel in the clear for the run's life.
       - "${CONTROLPLANE_BIND:-127.0.0.1}:${CONTROLPLANE_PORT:-8080}:8080"
     depends_on:
       db-app-role:
@@ -323,29 +293,25 @@ services:
       start_period: 2s
     restart: unless-stopped
 
-  # The console. On the control network and nowhere near the rendering one: it
-  # is the only other process that talks to the control plane, and it holds a
-  # credential where the renderer holds none.
+  # The console. On the control network, nowhere near the rendering one: it is the only other
+  # process talking to the control plane, and it holds a credential where the renderer holds none.
   #
-  # It holds no database credential either, which is the decision behind the
-  # whole component. It reaches the control plane over HTTP with the
-  # organization's token, like any other API client, so a bug here cannot become
-  # a write to the inventory.
+  # It holds no database credential either, the decision behind the whole component. It reaches
+  # the control plane over HTTP with the organization's token like any API client, so a bug here
+  # cannot become a write to the inventory.
   console:
     networks: [control]
     build:
       context: ../..
       dockerfile: web/Dockerfile
     environment:
-      # Where the proxy sends everything. The browser never calls this address:
-      # every request goes through the console's own server, which adds the
-      # Authorization header.
+      # Where the proxy sends everything. The browser never calls this address: every request goes
+      # through the console's own server, which adds the Authorization header.
       RECON_API_URL: http://controlplane:8080
-      # Required outside development, and the process refuses to start without
-      # it. The node adapter compares the Origin header of a POST against the
-      # origin it believes it serves, and without this it infers it badly: it
-      # then rejects legitimate POSTs, the login screen included, and the fault
-      # shows at the first form rather than at startup.
+      # Required outside development; the process refuses to start without it. The node adapter
+      # compares a POST's Origin header against the origin it believes it serves and infers it
+      # badly otherwise, rejecting legitimate POSTs (the login screen included) at the first form,
+      # not at startup.
       ORIGIN: ${CONSOLE_ORIGIN:-http://localhost:3000}
       # Development, because that is what this file is. Production sets NODE_ENV
       # and the check above becomes the one that matters.
@@ -357,18 +323,13 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # The browsers the rendering service drives over CDP, three of them.
+  # The browsers the rendering service drives over CDP, three. The pool is the one in
+  # fingerprinter.yml, not a preference: control_urls lists them by name, so a container added
+  # here and not there is never used, and the reverse is a pool dialling an unresolvable name.
   #
-  # Three rather than one, and the number is the pool in fingerprinter.yml
-  # rather than a preference: control_urls lists them by name, so adding a
-  # container here without adding it there gives a pool that never uses it, and
-  # the reverse gives a pool dialling a name that does not resolve.
-  #
-  # This is the one place the local stack pays for production's shape. Milestone
-  # 0 asks that `make up` comes up in under sixty seconds on a clean machine,
-  # and three Chrome containers is most of that budget on a cold image. The
-  # alternative was a local pool that does not look like the deployed one, and a
-  # concurrency setting nobody exercises until it is in production.
+  # The one place the local stack pays for production's shape: three Chrome containers are most
+  # of the sixty-second budget on a cold image. The alternative was a local pool unlike the
+  # deployed one and a concurrency setting nobody exercises until production.
   chrome-1:
     <<: *chrome
   chrome-2:
@@ -376,15 +337,13 @@ services:
   chrome-3:
     <<: *chrome
 
-  # The Certificate Transparency feed (7.5). An aggregator that follows the
-  # public logs and serves them as a websocket, deployed as an image the way
-  # FastRecon is: the matcher that walks the apex set is a loop in the control
-  # plane, not a second service.
+  # The CT feed. An aggregator following the public logs and serving a websocket, deployed as an
+  # image like FastRecon; the matcher walking the apex set is a loop in the control plane, not a
+  # second service.
   #
-  # On the scan network, for a weaker reason than the browser's and with the
-  # same shape. It parses X.509 that anybody can get logged, so its input is
-  # controlled by somebody else, and it has no business reaching the database.
-  # The control plane dials it and it never dials back.
+  # On the scan network, for a weaker reason than the browser's and with the same shape: it parses
+  # X.509 anyone can get logged, so its input is others', and it has no business reaching the
+  # database. The control plane dials it and it never dials back.
   certstream:
     networks: [scan]
     image: ghcr.io/d-rickyy-b/certstream-server-go:v1.9.0

@@ -15,19 +15,11 @@ import (
 	"github.com/JoshuaMart/recon/internal/runs"
 )
 
-// Scaleway starts a serverless job definition.
-//
-// Two facts about that API decide the shape of what is sent, and both were
-// measured against it rather than read into it:
-//
-//   - **Arguments replace, the environment merges.** A start call swaps the
-//     definition's arguments wholesale and adds its variables to the ones the
-//     definition already holds. The merge is what lets the definition keep the
-//     source API keys while the control plane sends only what it owns.
-//   - **A flag on the definition therefore beats a variable sent here.** A
-//     definition carrying "-d hackerone.com" would make every run scan that,
-//     whatever the environment said, and nothing would look wrong. So the whole
-//     invocation travels as arguments.
+// Scaleway starts a serverless job definition. Two measured facts shape the call: arguments
+// replace while the environment merges (the definition keeps the source API keys, and the
+// control plane sends only what it owns), so a flag on the definition beats a variable sent
+// here ("-d hackerone.com" there would make every run scan that, silently). The whole
+// invocation therefore travels as arguments.
 type Scaleway struct {
 	endpoint string
 	region   string
@@ -91,9 +83,8 @@ func (s *Scaleway) Start(ctx context.Context, def *runs.Definition) (string, err
 		return "", fmt.Errorf("read start response: %w", err)
 	}
 	if resp.StatusCode >= 300 {
-		// The detail is quoted rather than summarised. A quota refusal and a
-		// wrong definition id read the same way at the status code, and they
-		// call for opposite actions.
+		// The detail is quoted, not summarised: a quota refusal and a wrong definition id
+		// share a status code and call for opposite actions.
 		return "", fmt.Errorf("start run: %s: %s", resp.Status, bytes.TrimSpace(payload))
 	}
 
@@ -102,20 +93,17 @@ func (s *Scaleway) Start(ctx context.Context, def *runs.Definition) (string, err
 		return "", fmt.Errorf("decode start response: %w", err)
 	}
 	if len(decoded.Runs) == 0 {
-		// Accepted with nothing named. The run row still exists and the
-		// deadline sweeper still owns it, so this is reported rather than
-		// treated as a failure to start.
+		// Accepted with nothing named. The run row exists and the sweeper owns it, so this
+		// is reported, not treated as a failure to start.
 		s.log.WarnContext(ctx, "the platform started a run and named none", "run", def.RunID)
 		return "", nil
 	}
 	return decoded.Runs[0].ID, nil
 }
 
-// jobRun is the part of a job run this reads. Transcribed from a real failed
-// run rather than from the reference: the state, the platform's reason and the
-// exit code. error_message is left out on purpose, because it is the
-// truncated tail of the container's output, and what the scanner prints there
-// is its report.
+// jobRun is the part of a job run this reads, transcribed from a real failed run:
+// state, the platform's reason and exit code. error_message is left out because it
+// is the truncated tail of the container's output, which is the scanner's report.
 type jobRun struct {
 	State    string `json:"state"`
 	Reason   string `json:"reason"`
@@ -128,8 +116,8 @@ var ended = map[string]bool{
 }
 
 // failedStates are the endings that delivered nothing the platform knows of.
-// succeeded is not one: an execution that exited zero has delivered its
-// report, so a run still open after it is a report being written.
+// succeeded is not one: a zero exit has delivered its report, so a run still open
+// after it is a report being written.
 var failedStates = map[string]bool{"failed": true, "canceled": true, "interrupted": true}
 
 // Status reads what became of an execution.
@@ -152,11 +140,9 @@ func (s *Scaleway) Status(ctx context.Context, externalID string) (runs.Executio
 	return execution, nil
 }
 
-// Stop asks the platform to end an execution.
-//
-// The platform refuses to stop what already ended, and that refusal is the
-// outcome asked for rather than a failure, so a refused stop is checked against
-// the execution's state before it is reported.
+// Stop asks the platform to end an execution. It refuses to stop what already
+// ended, which is the outcome wanted, so a refused stop is checked against the
+// execution's state before being reported.
 func (s *Scaleway) Stop(ctx context.Context, externalID string) error {
 	status, payload, err := s.call(ctx, http.MethodPost, s.jobRunURL(externalID)+"/stop")
 	if err != nil {
@@ -191,9 +177,8 @@ func (s *Scaleway) jobRunURL(externalID string) string {
 		s.endpoint, s.region, url.PathEscape(externalID))
 }
 
-// call makes one authenticated request and returns the status and body. An
-// error body is quoted rather than summarised by the caller, for the reason
-// Start gives.
+// call makes one authenticated request and returns the status and body. Error
+// bodies are quoted by the caller, as in Start.
 func (s *Scaleway) call(ctx context.Context, method, target string) (int, []byte, error) {
 	req, err := http.NewRequestWithContext(ctx, method, target, nil)
 	if err != nil {
@@ -201,8 +186,7 @@ func (s *Scaleway) call(ctx context.Context, method, target string) (int, []byte
 	}
 	req.Header.Set("X-Auth-Token", s.secret)
 	if method == http.MethodPost {
-		// The stop takes an empty object, and an empty body is refused as
-		// not being one.
+		// The stop takes an empty object; an empty body is refused as not being one.
 		req.Body = io.NopCloser(strings.NewReader("{}"))
 		req.ContentLength = 2
 		req.Header.Set("Content-Type", "application/json")

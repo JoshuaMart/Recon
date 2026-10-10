@@ -20,14 +20,10 @@
 		/** What each field accepts, from the server rather than guessed. */
 		operators: Record<string, string[]>;
 		/**
-		 * Which shape the list is in, so a link out of it does not silently change
-		 * it.
-		 *
-		 * `href` defaults to grouped, which is right for a link arriving from
-		 * somewhere else and wrong for every link on this page: from the flat list,
-		 * clicking a facet or removing a chip folded the list back without anybody
-		 * asking. The shape lives in the URL, so it has to travel with every link
-		 * built from it.
+		 * Which shape the list is in, so a link out of it does not silently change it. `href` defaults
+		 * to grouped, right for an inbound link and wrong for every link on this page: from the flat
+		 * list, clicking a facet or removing a chip folded it back unasked. The shape lives in the URL,
+		 * so it travels with every link built from it.
 		 */
 		grouped?: boolean;
 	}
@@ -37,15 +33,10 @@
 	const shown = $derived(shownFacets(facets));
 
 	/**
-	 * Three shapes, and the fold says why one was not enough.
-	 *
-	 * A facet is an aggregation over the filtered result, and
-	 * nothing decided how it renders. A single shape is paid for at both extremes: seven
-	 * ports took seven rows each with a bar comparing nothing anyone reads, and thirteen
-	 * favicons took thirteen rows of a hash nobody recognises.
-	 *
-	 * Short values become chips, long labels keep the bar where the magnitudes are the
-	 * point, and favicons are drawn as what they are.
+	 * Three shapes, because one was not enough: a facet is an aggregation and nothing decided its
+	 * rendering, and one shape is paid for at both extremes (seven ports took seven rows with a
+	 * meaningless bar, thirteen favicons thirteen rows of unrecognised hashes). Short values become
+	 * chips, long labels keep the bar, favicons are drawn as what they are.
 	 */
 	const asChips = new Set([
 		'kind',
@@ -66,18 +57,10 @@
 	let expanded = $state<Record<string, boolean>>({});
 
 	/**
-	 * The facets asked for on their own, keyed by field.
-	 *
-	 * The sidebar is capped at twenty values per field and says so with a `+`,
-	 * which used to be the end of it: a technology carried by twelve assets is in
-	 * the inventory, is filterable, and had nothing to click. Opening a cut facet
-	 * asks the server for the same aggregation over the same filtered set,
-	 * bounded higher, so the values below the cut become what every other value
-	 * already is.
-	 *
-	 * Reset with the filters, since a facet counts the result under the other
-	 * selected fields: the answer opened under one search says nothing about the
-	 * next one.
+	 * The facets asked for on their own, keyed by field. The sidebar caps at twenty values and says so
+	 * with a `+`; a technology on twelve assets had nothing to click. Opening a cut facet asks the same
+	 * aggregation over the same filtered set, bounded higher. Reset with the filters: an answer opened
+	 * under one search says nothing about the next.
 	 */
 	let opened = $derived({ answer: filters, fields: {} as Record<string, Facet> });
 	/** The page's images, plus the ones that came with an opened facet. */
@@ -99,11 +82,9 @@
 	}
 
 	/**
-	 * What the control under a facet does, which is one of three things.
-	 *
-	 * A cut facet opens on every value first, since the folded terms are not the
-	 * question: what is missing is below them. After that, and on a facet that was
-	 * never cut, it is the fold over what is already here.
+	 * What the control under a facet does, one of three things. A cut facet opens on every value
+	 * first, since the folded terms are not the question: what is missing is below them. After that,
+	 * and on a never-cut facet, it folds what is already here.
 	 */
 	async function open(facet: { field: string; truncated: boolean }) {
 		if (!isCut(facet) || opened.fields[facet.field]) {
@@ -122,9 +103,8 @@
 			// twenty already on screen with.
 			if (!full?.terms?.length) throw new Error('the facet came back empty');
 			opened = { ...opened, fields: { ...opened.fields, [facet.field]: full } };
-			// The images of the values that were below the cut. Without them the
-			// favicon grid draws blank squares, which reads as a broken interface
-			// rather than as the answer.
+			// The images of the values below the cut; without them the favicon grid draws blank squares,
+			// reading as a broken interface.
 			images = { ...images, map: { ...images.map, ...(page.favicons ?? {}) } };
 			expanded[facet.field] = true;
 		} catch {
@@ -192,9 +172,8 @@
 			</h3>
 
 			{#if asIcons.has(facet.field)}
-				<!-- A favicon is an image, and it is the fastest identity signal an inventory
-				     has. Thirteen hashes were thirteen unreadable rows; the hash
-				     goes to the hover, where it is still the value the filter carries. -->
+				<!-- A favicon is an image and the fastest identity signal an inventory has. Thirteen hashes were
+				thirteen unreadable rows; the hash goes to the hover, still the value the filter carries. -->
 				<div class="icons">
 					{#each termsOf(facet) as bucket (bucket.value)}
 						<a
@@ -244,11 +223,9 @@
 </aside>
 
 <!--
-	One control for the three shapes.
-
-	`folds` says whether the list under it is capped on this side, which only the
-	bars are. Everything else it does is the same everywhere: a facet the server
-	cut opens on every value, and what is already here folds.
+One control for the three shapes. `folds` says whether the list under it is capped on this side,
+which only the bars are. Otherwise it is the same everywhere: a facet the server cut opens on
+every value, and what is already here folds.
 -->
 {#snippet more(facet: { field: string; terms: Term[]; truncated: boolean }, folds: boolean)}
 	{#if hasControl(facet, folds)}

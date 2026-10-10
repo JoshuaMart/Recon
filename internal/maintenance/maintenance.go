@@ -1,9 +1,7 @@
-// Package maintenance runs the loops that keep the database usable.
-//
-// Nothing here is a feature, and that is the load-bearing sentence. A partition
-// job placed inside another component's tick inherits that component's toggle,
-// so turning something off reopens an ingestion outage three months later
-// through a button that talks about something else.
+// Package maintenance runs the loops that keep the database usable. Nothing here
+// is a feature: a partition job inside another component's tick inherits that
+// component's toggle, so turning something off reopens an ingestion outage three
+// months later.
 package maintenance
 
 import (
@@ -19,40 +17,30 @@ import (
 // partitioned are the tables that need a month created ahead of time.
 var partitioned = []string{"observation", "notification_event"}
 
-// monthsAhead is how far the job works.
-//
-// Two rather than one, so that an incident at the end of a month does not
-// interrupt ingestion while somebody works out what broke. There is no default
-// partition to absorb a miss: a row whose month is absent has to fail loudly,
-// because that is the only signal this loop has stopped running.
+// monthsAhead is how far the job works. Two, so an incident at month end does not
+// interrupt ingestion. There is no default partition: a row whose month is
+// missing must fail loudly, the only signal that this loop stopped.
 const monthsAhead = 2
 
-// Retention is how long each population of events is kept.
-//
-// Asymmetric, because the three do not have the same value. The alert history
-// is what somebody looks back through; the suppressed rows are onboarding and
-// overflow noise, readable for the length of an investigation; and the queue is
-// never purged, because purging a queue is losing alerts.
+// Retention is how long each population of events is kept. Asymmetric: alert
+// history is what people look back through, suppressed rows are onboarding and
+// overflow noise needed for an investigation, and the queue is never purged
+// because that loses alerts.
 const (
-	// SuppressedRetention bounds the noise. A targeted delete inside the
-	// partitions rather than a partition drop: those rows are written in waves
-	// and the delete is bounded.
+	// SuppressedRetention bounds the noise. A targeted delete, not a partition drop:
+	// those rows are written in waves and the delete is bounded.
 	SuppressedRetention = 30 * 24 * time.Hour
-	// FeedMinuteRetention bounds the Certificate Transparency feed's own
-	// record. One row a minute is half a million a year: small, and unbounded,
-	// and unbounded is the half that matters, because nothing else in this
-	// schema grows forever.
+	// FeedMinuteRetention bounds the CT feed's own record. A row a minute is half a
+	// million a year: small but unbounded, and nothing else in the schema grows
+	// forever.
 	//
-	// It is a horizon rather than a window nothing reaches. An apex watched for
-	// a year has a span longer than this, so the coverage reading clips its span
-	// to this value and says where it clipped: without that, a perfectly healthy
-	// feed reads as half down on any apex older than the horizon, which is the
-	// reading this record exists to prevent rather than produce.
+	// It is a horizon: an apex watched for a year has a longer span, so the coverage
+	// reading clips to this value and says so. Otherwise a healthy feed reads as
+	// half down on any older apex.
 	FeedMinuteRetention = 180 * 24 * time.Hour
-	// StuckAfter is when a queue that is not draining becomes an alert. A
-	// broken notifier is a silent failure by nature: nothing else announces
-	// it, ingestion keeps writing and the inventory stays correct, and it is
-	// the kind of outage that goes unnoticed until the takeover it misses.
+	// StuckAfter is when a queue that is not draining becomes an alert. A broken
+	// notifier is silent: ingestion keeps writing and the inventory stays correct,
+	// until the takeover it misses.
 	StuckAfter = 24 * time.Hour
 )
 
@@ -72,11 +60,8 @@ func New(queries *sqlcgen.Queries, interval time.Duration, log *slog.Logger) *Lo
 	return &Loop{queries: queries, interval: interval, now: time.Now, log: log}
 }
 
-// Run ticks until the context ends.
-//
-// It runs once immediately rather than waiting for the first tick: a deployment
-// that starts on the last day of a month must not depend on staying up for an
-// hour.
+// Run ticks until the context ends. It runs once immediately: a deployment
+// starting on the last day of a month must not depend on staying up for an hour.
 func (l *Loop) Run(ctx context.Context) {
 	l.Once(ctx)
 
@@ -93,7 +78,7 @@ func (l *Loop) Run(ctx context.Context) {
 	}
 }
 
-// Once does a single pass, which is also what a test can call.
+// Once does a single pass, which tests call too.
 func (l *Loop) Once(ctx context.Context) {
 	for _, table := range partitioned {
 		created, err := l.queries.EnsurePartitions(ctx, sqlcgen.EnsurePartitionsParams{
@@ -101,8 +86,8 @@ func (l *Loop) Once(ctx context.Context) {
 			MonthsAhead: monthsAhead,
 		})
 		if err != nil {
-			// Loud, because the failure is silent everywhere else: ingestion
-			// keeps working until the month it could not create arrives.
+			// Loud, because the failure is silent elsewhere: ingestion works until the month
+			// it could not create arrives.
 			l.log.ErrorContext(ctx, "partition maintenance failed", "table", table, "error", err)
 			continue
 		}
@@ -116,10 +101,9 @@ func (l *Loop) Once(ctx context.Context) {
 	l.stuck(ctx)
 }
 
-// trimFeed bounds the record of when the Certificate Transparency feed was
-// alive. It is here rather than in the matcher's own tick for the reason this
-// package exists: a housekeeping job inside a feature's loop inherits that
-// feature's toggle, and a deployment with no feed configured still has a table
+// trimFeed bounds the record of when the CT feed was alive. It is here, not in the
+// matcher's tick, for the reason this package exists: inside a feature's loop it
+// would inherit that toggle, and a deployment without a feed still has a table
 // that grew while it had one.
 func (l *Loop) trimFeed(ctx context.Context) {
 	deleted, err := l.queries.PurgeFeedMinutes(ctx, sqlcgen.PurgeFeedMinutesParams{
@@ -134,12 +118,9 @@ func (l *Loop) trimFeed(ctx context.Context) {
 	}
 }
 
-// purge drops the onboarding and overflow noise.
-//
-// Neither this nor the partition job is a feature. Placed inside the notifier's
-// tick they would inherit a notifications toggle, and turning alerts off would
-// reopen an ingestion outage three months later through a button that talks
-// about alerts.
+// purge drops the onboarding and overflow noise. Like the partition job it is
+// not a feature: in the notifier's tick it would inherit a notifications toggle,
+// and turning alerts off would reopen the ingestion outage.
 func (l *Loop) purge(ctx context.Context) {
 	deleted, err := l.queries.PurgeSuppressed(ctx, sqlcgen.PurgeSuppressedParams{
 		Before: stamp(l.now().Add(-SuppressedRetention)),
@@ -163,8 +144,8 @@ func (l *Loop) stuck(ctx context.Context) {
 		return
 	}
 	if count > 0 {
-		// Loud, because nothing else announces it: ingestion keeps writing and
-		// the inventory stays correct while the alerts stop.
+		// Loud, because nothing else announces it: ingestion keeps writing while alerts
+		// stop.
 		l.log.ErrorContext(ctx, "notifications are not draining",
 			"pending", count, "older_than", StuckAfter.String())
 	}

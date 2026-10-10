@@ -1,14 +1,9 @@
-// Package bbot decodes the event stream a BBOT scan writes.
+// Package bbot decodes the event stream a BBOT scan writes. It is only a decoder: no
+// database, no perimeter classification, no due dates. It returns the file's claims,
+// deduplicated and typed, for internal/ingest to turn into inventory.
 //
-// It is a decoder and nothing else: it never touches the database, never
-// classifies against a perimeter and never decides a due date. What it returns
-// is the file's claims, deduplicated and typed, for internal/ingest to turn
-// into inventory on the terms 7.6 sets.
-//
-// The types below are transcribed rather than imported, like the FastRecon
-// report next door and for the same reason. Sharing a type with a producer
-// makes its release notes into this repository's compile errors, and this
-// producer publishes no schema at all.
+// The types are transcribed, not imported, like the FastRecon report: sharing a type with
+// a producer turns its release notes into compile errors here, and it publishes no schema.
 package bbot
 
 import (
@@ -17,10 +12,9 @@ import (
 	"time"
 )
 
-// Event types this decoder knows. Anything else is counted and ignored, which
-// is the rule the stream's lack of a version number forces: a new release will
-// emit something not on this list, and refusing the file for it would make an
-// upgrade somebody else performed into an outage here.
+// Event types this decoder knows. Others are counted and ignored: the stream has
+// no version number, a new release will emit unknown types, and refusing the
+// file would turn someone else's upgrade into an outage here.
 const (
 	TypeScan        = "SCAN"
 	TypeDNSName     = "DNS_NAME"
@@ -33,28 +27,21 @@ const (
 	TypeOrgStub     = "ORG_STUB"
 )
 
-// event is one line of the stream.
+// event is one line of the stream. The payload is a string Data or an object DataJSON,
+// never both or neither, so readers branch on which arrived and not on the type name; a
+// changed payload shape then cannot decode into a zero value that looks like an answer.
 //
-// The payload is a string Data or an object DataJSON, never both and never
-// neither, so every reader below branches on which one arrived rather than on
-// the type name. That is what keeps a type whose payload shape changed from
-// being decoded into a zero value that looks like a real answer.
-//
-// Parent, ParentUUID, ParentChain and DiscoveryPath are deliberately absent.
-// A third of the sample's events point at a parent that was never written to
-// the file, SCAN is its own parent, and the stream is not sorted by time. None
-// of that has to be survived if the chain is never walked, and an asset is
-// built from the event's own host, port and payload instead.
+// Parent, ParentUUID, ParentChain and DiscoveryPath are absent on purpose: a third of the
+// sample points at a parent never written, SCAN is its own parent and the stream is not
+// time-sorted. An asset is built from the event's own host, port and payload instead.
 type event struct {
 	Type string `json:"type"`
 	ID   string `json:"id"`
 
-	// Data is raw rather than a string, and that is not laziness. Typed as a
-	// string, one event carrying an object here fails the whole line with an
-	// UnmarshalTypeError, and every other field it held is thrown away with it
-	// under a reason that blames the shape of the line. A producer moving one
-	// payload from data_json to data would then shrink every import silently,
-	// which is the drift this package exists to survive.
+	// Data is raw, not a string. As a string, one event carrying an object fails the
+	// whole line with an UnmarshalTypeError and discards its other fields under a
+	// reason blaming the line's shape; a producer moving a payload from data_json
+	// to data would silently shrink every import.
 	Data     json.RawMessage `json:"data"`
 	DataJSON json.RawMessage `json:"data_json"`
 
@@ -62,19 +49,17 @@ type event struct {
 	Port int    `json:"port"`
 
 	Module string `json:"module"`
-	// Timestamp is a float unix epoch rather than a date, which is why it is
-	// decoded as a number and converted here instead of by encoding/json.
+	// Timestamp is a float unix epoch, converted in at() instead of by encoding/json.
 	Timestamp float64 `json:"timestamp"`
-	// Scope is BBOT's own verdict, one of in-scope, affiliate or distance-N.
-	// It is recorded in lineage and never acted on: the perimeter that decides
-	// what gets probed is this platform's, and 7.6 says why.
+	// Scope is BBOT's own verdict (in-scope, affiliate or distance-N). It goes to
+	// lineage and is never acted on: this platform's perimeter decides what is probed.
 	Scope   string   `json:"scope_description"`
 	Tags    []string `json:"tags"`
 	Context string   `json:"discovery_context"`
 }
 
-// text reads Data when it is a string, and answers empty for anything else.
-// A payload this decoder did not expect is not a reason to lose the event.
+// text reads Data when it is a string, else empty. An unexpected payload is no
+// reason to lose the event.
 func (e *event) text() string {
 	if len(e.Data) == 0 {
 		return ""
@@ -86,7 +71,7 @@ func (e *event) text() string {
 	return value
 }
 
-// at converts the float epoch, and reports whether the file carried one at all.
+// at converts the float epoch and reports whether the file carried one.
 func (e *event) at() (time.Time, bool) {
 	if e.Timestamp <= 0 {
 		return time.Time{}, false
@@ -95,8 +80,8 @@ func (e *event) at() (time.Time, bool) {
 	return time.Unix(sec, int64(frac*float64(time.Second))).UTC(), true
 }
 
-// scanPayload is what a SCAN event carries, minus the resolved preset, which is
-// several kilobytes of somebody's configuration and answers nothing here.
+// scanPayload is what a SCAN event carries, minus the resolved preset (several
+// kilobytes of configuration that answer nothing here).
 type scanPayload struct {
 	ID     string `json:"id"`
 	Name   string `json:"name"`
@@ -106,8 +91,8 @@ type scanPayload struct {
 	StartedAt float64 `json:"started_at"`
 }
 
-// urlPayload is a URL event's object. Only the URL is read: the body hashes and
-// the redirect location are measurements, and 7.6 keeps measurements out.
+// urlPayload is a URL event's object. Only the URL is read: body hashes and the
+// redirect location are measurements, which imports leave out.
 type urlPayload struct {
 	URL string `json:"url"`
 }
@@ -118,19 +103,17 @@ type protocolPayload struct {
 	Banner   string `json:"banner"`
 }
 
-// technologyPayload is one CPE string or product name, beside the host it was
-// found on. The host is read here as well as at the top level, because these
-// events are the ones with no data field to fall back on: without it a producer
-// that omits the top level host drops the technology and counts nothing.
+// technologyPayload is one CPE string or product name beside its host. The host
+// is read here too: these events have no data field to fall back on, and a
+// producer omitting the top-level host would drop the technology.
 type technologyPayload struct {
 	Host       string `json:"host"`
 	Technology string `json:"technology"`
 }
 
-// normalizeHost lowercases and strips the trailing dot, which is all this layer
-// does to a name. The canonical form is normalize's business and applying a
-// second, weaker version of it here is how two spellings of one host become two
-// assets.
+// normalizeHost lowercases and strips the trailing dot, nothing more. The
+// canonical form is normalize's; a second, weaker version here makes two
+// spellings of one host two assets.
 func normalizeHost(host string) string {
 	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
 }

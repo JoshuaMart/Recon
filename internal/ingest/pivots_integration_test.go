@@ -1,8 +1,7 @@
 //go:build integration
 
-// Milestone 6's projection half. A facet aggregates over what the table holds,
-// and a counter maintained on write cannot be maintained if the write never
-// sees the value, so everything else in the search chapter rests on this.
+// The projection half of the pivots. A facet aggregates over what the table holds,
+// and a counter maintained on write needs the write to see the value.
 package ingest_test
 
 import (
@@ -47,20 +46,17 @@ func rendered() *fingerprint.Result {
 }
 
 // withCertificate brings the service into existence through the ordinary path,
-// presenting a certificate.
-//
-// The probe measures the certificate and the render does not, and the reason is
-// coverage: the probe sees every HTTPS service on every full pass, while a
-// render happens on five triggers that can be three weeks apart.
+// presenting a certificate. The probe measures it, not the render, for coverage:
+// the probe sees every HTTPS service on every full pass, a render comes on five
+// triggers weeks apart.
 func (h *harness) withCertificate(t *testing.T, c *clock, ing *ingest.Ingestor, set *scope.Set) {
 	t.Helper()
 
 	report := liveHost("app.acme.test", ingest.Port{
 		Port: 443, Protocol: "tcp", State: "open", HTTP: &ingest.HTTP{
 			URL: "https://app.acme.test", Scheme: "https", StatusCode: 200,
-			// One name the render will also report and one it will not, so
-			// that the union is the discriminating case rather than an
-			// intersection that happens to look the same.
+			// One name the render also reports and one it does not, so the union is the
+			// discriminating case, not an intersection that looks the same.
 			Title: "App", Server: "nginx", Tech: []string{"nginx", "openssl"},
 			TLS: &ingest.TLS{
 				SubjectCN: "app.acme.test", Issuer: "Test CA",
@@ -119,17 +115,15 @@ func TestTheProjectionLiftsThePivotsOutOfThePayload(t *testing.T) {
 		t.Errorf("favicon_hash = %v, want the render's hash", got)
 	}
 
-	// The internal flag is not a reading detail. A bundle from a public CDN is
-	// shared by thousands of unrelated sites: it groups without discriminating,
-	// which is the test that decides what is a pivot at all.
+	// The internal flag is not a detail: a public-CDN bundle is shared by thousands of
+	// unrelated sites and groups without discriminating.
 	scripts := textsOf(t, attrs["script_hashes"])
 	if len(scripts) != 1 || scripts[0] != "bundle-hash" {
 		t.Errorf("script_hashes = %v, want the internal one alone", scripts)
 	}
 
-	// The pivot belongs to the fingerprinter, which also sees the cookies a
-	// script sets. PHPSESSID is present because the denylist removes a badge and
-	// never a piece of data.
+	// The pivot belongs to the fingerprinter, which also sees script-set cookies.
+	// PHPSESSID is present: the denylist removes a badge, never data.
 	cookies := textsOf(t, attrs["cookie_names"])
 	if strings.Join(cookies, ",") != "PHPSESSID,SESS_INTERNAL" {
 		t.Errorf("cookie_names = %v, want both names indexed", cookies)
@@ -139,9 +133,8 @@ func TestTheProjectionLiftsThePivotsOutOfThePayload(t *testing.T) {
 		t.Errorf("external_hosts = %v", hosts)
 	}
 
-	// The probe's certificate, from the other layer, still in place after a
-	// render rewrote its own keys. One producer per value means one layer's
-	// write is not the other's erasure.
+	// The probe's certificate survives a render rewriting its own keys: one producer
+	// per value, so one layer's write is not the other's erasure.
 	if attrs["cert_spki_hash"] != "spki-of-the-service" {
 		t.Errorf("cert_spki_hash = %v: the render erased what the probe projected", attrs["cert_spki_hash"])
 	}
@@ -159,9 +152,8 @@ func TestTheProjectionLiftsThePivotsOutOfThePayload(t *testing.T) {
 			"render's alone, and a filter has to answer for both", technologies)
 	}
 
-	// The version travels beside the name rather than inside it: the column is
-	// queried by exact element, so "react 18.2" would not answer a filter on
-	// "react".
+	// The version travels beside the name: the column is queried by exact element, so
+	// "react 18.2" would not answer a filter on "react".
 	var versions []struct {
 		Name    string `json:"name"`
 		Version string `json:"version"`
@@ -187,20 +179,12 @@ func TestTheProjectionLiftsThePivotsOutOfThePayload(t *testing.T) {
 	}
 }
 
-// TestAnInventoryWrittenBeforeThisPhaseKeepsItsTechnologies is the upgrade
-// this change would otherwise have eaten.
-//
-// The column stopped being written by the http layer and started being derived
-// from two keys of `attributes`, and neither key exists on a row written before
-// the migration. A render strips its own key and rewrites it, and it has no
-// business touching the probe's: on a legacy row there is no probe key to
-// leave alone, so the union is computed from the render alone and everything
-// the probe had ever reported disappears from the column. It comes back on the
-// next full HTTP pass, which can be a week away, and nothing fails in the
-// meantime.
-//
-// The migration backfills the key from the column, which is exact: before this
-// phase the column was written by the http layer and by nothing else.
+// The upgrade this change would otherwise have eaten. The column moved from the http layer to
+// being derived from two keys of `attributes`, neither present on a pre-migration row. A render
+// rewrites only its own key, so on a legacy row the union comes from the render alone and
+// everything the probe reported vanishes until the next full HTTP pass, possibly a week away,
+// with nothing failing. The migration backfills the key from the column, exactly: the http layer
+// wrote the column and nothing else did.
 func TestAnInventoryWrittenBeforeThisPhaseKeepsItsTechnologies(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -240,12 +224,9 @@ func TestAnInventoryWrittenBeforeThisPhaseKeepsItsTechnologies(t *testing.T) {
 	}
 }
 
-// TestALayerThatStopsReportingAValueStopsCountingIt is the COALESCE trap
-// wearing another name.
-//
-// A merge alone would keep the favicon of a page that no longer has one, which
-// is exactly the coalesced title that survives its own page forever, except the
-// consequence here is a counter that keeps asserting.
+// The COALESCE trap under another name: a merge alone would keep the favicon of a
+// page that no longer has one, like a coalesced title surviving its page, except
+// the result is a counter that keeps asserting.
 func TestALayerThatStopsReportingAValueStopsCountingIt(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -290,20 +271,14 @@ func TestALayerThatStopsReportingAValueStopsCountingIt(t *testing.T) {
 	}
 }
 
-// TestArchivingGivesBackEveryPivotAndTheKeysWithThem is the path that gets
-// forgotten.
+// Archiving gives back every pivot and its keys, the path that gets forgotten. No
+// value changed, so no payload comparison signals it; the lifecycle transition
+// does, and it travels in the rescheduling statement.
 //
-// An archived asset gives back all its pivots although no value changed.
-// Nothing in a payload comparison signals it: the lifecycle transition is what
-// says so, which is why it travels in the statement that reschedules rather
-// than in a sweep of its own.
-//
-// The transition is driven through that statement directly, and that is
-// deliberate. Archiving is reachable today only from a candidate host that
-// exhausted its budget without ever coming alive, and such a host has no
-// service, no render and therefore no pivot. Waiting for a curve to produce a
-// case the model cannot produce would test nothing; the statement is the thing
-// under test, and it is the one the system uses.
+// The transition is driven through that statement directly. Archiving is reachable
+// today only from a candidate host that exhausted its budget never alive, which has
+// no service, render or pivot; waiting for a curve to produce a case the model
+// cannot produce would test nothing.
 func TestArchivingGivesBackEveryPivotAndTheKeysWithThem(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -342,10 +317,8 @@ func TestArchivingGivesBackEveryPivotAndTheKeysWithThem(t *testing.T) {
 		}
 	}
 
-	// The keys go with the counters. Without that, pivot_count stops being a
-	// function of asset_current and there is nowhere left to read the truth,
-	// which is what makes a drifted counter unrepairable rather than merely
-	// wrong.
+	// The keys go with the counters; otherwise pivot_count stops being a function of
+	// asset_current and a drifted counter is unrepairable, not merely wrong.
 	attrs := h.attributes(t, service)
 	for _, key := range []string{"favicon_hash", "script_hashes", "cookie_names", "cert_spki_hash"} {
 		if attrs[key] != nil {
@@ -362,12 +335,8 @@ func TestArchivingGivesBackEveryPivotAndTheKeysWithThem(t *testing.T) {
 	}
 }
 
-// TestTheCounterIsAFunctionOfTheTableAndOfNothingElse is the invariant that
-// makes the rest checkable.
-//
-// A counter that reflects nothing cannot be repaired, for lack of anywhere to
-// read the truth. This one recomputes entirely from a scan of the table, and
-// this is that scan.
+// The invariant that makes the rest checkable: a counter reflecting nothing cannot
+// be repaired, so this one recomputes entirely from a scan of the table.
 func TestTheCounterIsAFunctionOfTheTableAndOfNothingElse(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -451,9 +420,8 @@ func TestTheFaviconImageIsStoredOncePerDistinctValueAndBounded(t *testing.T) {
 		t.Errorf("%d rows for one distinct favicon, want 1", stored)
 	}
 
-	// The value is chosen by the target, and nothing stops a server serving
-	// five megabytes under that name. Past the bound the hash and its counter
-	// keep working and only the thumbnail is missing.
+	// The target chooses the value and could serve five megabytes under that name. Past
+	// the bound the hash and counter keep working; only the thumbnail is missing.
 	c.now = c.now.Add(time.Hour)
 	huge := rendered()
 	other := "0000ffff0000ffff"
@@ -477,14 +445,11 @@ func TestTheFaviconImageIsStoredOncePerDistinctValueAndBounded(t *testing.T) {
 	}
 }
 
-// TestVolatilityCountsChangesAndNotArrivals is the assertion the filter rests
-// on.
-//
-// Incrementing on any non deduplicated observation counts the arrival of an
-// asset, which the row already carries as its age, and it counts it once per
-// layer, so a freshly discovered asset scores three or four. Volatility is also
-// a filter, so "volatility > 2" would then return everything just discovered,
-// which is the opposite of the question it asks.
+// The assertion the filter rests on. Incrementing on any non-deduplicated
+// observation counts an asset's arrival (which the row carries as its age), once
+// per layer, so a fresh asset scores three or four. Volatility is a filter, so
+// "volatility > 2" would return everything just discovered, the opposite of the
+// question.
 func TestVolatilityCountsChangesAndNotArrivals(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -496,10 +461,9 @@ func TestVolatilityCountsChangesAndNotArrivals(t *testing.T) {
 	if n := h.volatility(t, service); n != 0 {
 		t.Errorf("a service just discovered scores %d, and its arrival is its age rather than a change", n)
 	}
-	// The array itself, not only the number derived from it. The guard sits on
-	// two columns, and a sum read against a day nobody wrote is zero whatever
-	// the buckets hold: asserting the sum alone lets half the guard be removed
-	// without a test noticing.
+	// The array itself, not only the derived number: the guard sits on two columns, and
+	// a sum against a day nobody wrote is zero whatever the buckets hold, so asserting
+	// the sum alone lets half the guard go unnoticed.
 	if buckets := h.buckets(t, service); buckets != "{0,0,0,0,0,0,0,0}" {
 		t.Errorf("a service just discovered carries %s, and an arrival is not a change", buckets)
 	}
@@ -507,9 +471,8 @@ func TestVolatilityCountsChangesAndNotArrivals(t *testing.T) {
 		t.Error("last_changed_at is set on an asset that has never changed, and the console reads that as \"never\"")
 	}
 
-	// The same page again. A confirmation of the same state is a probe, not a
-	// change, and a counter that moved on every probe would score an untouched
-	// asset by how often it is looked at.
+	// The same page again: confirming a state is a probe, not a change, and a counter
+	// moving per probe would score an untouched asset by how often it is looked at.
 	c.now = c.now.Add(time.Hour)
 	h.answering(t, c, ing, set, 200, "App", "nginx")
 	if n := h.volatility(t, service); n != 0 {
@@ -530,13 +493,10 @@ func TestVolatilityCountsChangesAndNotArrivals(t *testing.T) {
 	}
 }
 
-// TestTheWindowSlidesOnTheDayTheArrayWasLastShifted is the read side of the
-// trap.
-//
-// The array of an asset unchanged for five days has not been shifted, because
-// nothing rewrote it. Summing its first seven buckets naively would count
-// changes twelve days old as if they were yesterday's, and no test that does
-// not move the clock across a day boundary can see it.
+// The read side of the trap. An asset unchanged for five days has not been shifted,
+// as nothing rewrote its array; naively summing the first seven buckets counts
+// twelve-day-old changes as yesterday's, which only a clock crossing a day boundary
+// exposes.
 func TestTheWindowSlidesOnTheDayTheArrayWasLastShifted(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -576,14 +536,10 @@ func TestTheWindowSlidesOnTheDayTheArrayWasLastShifted(t *testing.T) {
 	}
 }
 
-// today is noon UTC on the calendar day the database is living in.
-//
-// The two clocks have to agree, and here that is the test's problem rather than
-// the system's: the buckets are written from the observation's instant and read
-// against the database's own day, which is exactly right in production and
-// exactly wrong under a fixed clock set to some date in the past. Noon rather
-// than the current time, so that a test adding a couple of hours does not cross
-// midnight and measure the shift instead of the count.
+// today is noon UTC on the calendar day the database is living in. Buckets are
+// written from the observation's instant and read against the database's own day,
+// right in production and wrong under a fixed past clock. Noon, so adding a couple
+// of hours does not cross midnight and measure the shift instead of the count.
 func today() time.Time {
 	now := time.Now().UTC()
 	return time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, time.UTC)

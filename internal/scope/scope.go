@@ -1,9 +1,8 @@
 // Package scope decides what a program is allowed to look at.
 //
-// The perimeter is persistent and versioned rather than a per-run setting, and
-// it is evaluated on every ingestion rather than only when a run starts. That
-// is what lets a rule change reclassify history without rescanning, and what
-// lets an out of scope result be kept instead of thrown away.
+// The perimeter is persistent and versioned, not a per-run setting, and is
+// evaluated on every ingestion. A rule change thus reclassifies history without
+// rescanning, and an out-of-scope result is kept instead of discarded.
 package scope
 
 import (
@@ -25,9 +24,8 @@ const (
 	InScope Status = "in_scope"
 	// OutOfScope matches an exclude rule. Stored, never probed.
 	OutOfScope Status = "out_of_scope"
-	// Unknown was reached through lineage and matches no rule. Stored,
-	// displayed, never probed, and where acquisitions and shared
-	// infrastructure show up.
+	// Unknown was reached through lineage and matches no rule. Stored and displayed,
+	// never probed; where acquisitions and shared infrastructure show up.
 	Unknown Status = "unknown"
 )
 
@@ -51,43 +49,33 @@ type Rule struct {
 	Pattern string
 }
 
-// Target is what gets classified.
-//
-// Addresses are supplied separately because a CIDR rule cannot be answered
-// from a key: an address is only known after resolution, which is also why a
-// CIDR exclusion cannot be pushed down into a run and is applied here instead.
+// Target is what gets classified. Addresses are supplied separately because a
+// CIDR rule cannot be answered from a key: an address is known only after
+// resolution, which is why a CIDR exclusion cannot be pushed into a run.
 type Target struct {
 	Key       normalize.Key
 	Addresses []netip.Addr
 }
 
-// ErrInvalidRule is the base of every compilation failure, so a caller can tell
-// a malformed perimeter from a failure to read one.
+// ErrInvalidRule is the base of every compilation failure, to tell a malformed
+// perimeter from a failure to read one.
 var ErrInvalidRule = errors.New("invalid scope rule")
 
-// Unmatchable reports a pattern that compiles and can never match anything.
+// Unmatchable reports a pattern that compiles and can never match anything. Separate from
+// Compile on purpose: Compile runs on the ingestion path and must keep accepting whatever is
+// in the table, or a perimeter mistyped months ago becomes an outage. This is the write
+// path's check, a refusal to someone looking at the form.
 //
-// It is separate from Compile on purpose, and the separation is the whole point.
-// Compile has to keep accepting whatever is already in the table: it runs on the
-// ingestion path, so a rule it refuses stops reports being written, and a
-// perimeter somebody typed badly six months ago would become an outage rather
-// than a correction. This is the write path's check, where the answer is a
-// refusal to somebody who is looking at the form.
-//
-// The case that costs a week: an apex rule written as "*.target.com". The apex
-// matcher covers the domain and everything under it by construction, so the
-// glob is redundant at best; what it actually does is make the comparison
-// literal, and no hostname is ever equal to "*.target.com" or a suffix of
-// ".*.target.com". The rule is stored, reads as in force, matches nothing, and
-// every asset the perimeter should have covered stays unknown and unprobed.
-// That is a perimeter that lies, silently, which is what this whole chapter is
-// built to prevent.
+// The costly case is an apex rule written "*.target.com": the apex matcher already covers
+// the domain and everything under it, and the glob makes the comparison literal, so the rule
+// reads as in force, matches nothing and leaves the assets it should cover unknown and
+// unprobed, a perimeter that lies silently.
 func Unmatchable(matcher, pattern string) error {
 	switch matcher {
 	case MatchApex, MatchFQDN:
 	default:
-		// A regex is meant to carry metacharacters, a CIDR cannot hold one, and
-		// a url prefix is compared as written.
+		// A regex is meant to carry metacharacters, a CIDR cannot hold one, and a url
+		// prefix is compared as written.
 		return nil
 	}
 
@@ -105,8 +93,8 @@ func Unmatchable(matcher, pattern string) error {
 		ErrInvalidRule, trimmed, MatchApex, MatchFQDN)
 }
 
-// Set is a compiled perimeter. Compiling once and classifying many times is
-// what makes reclassifying a whole program affordable.
+// Set is a compiled perimeter: compile once, classify many, which makes
+// reclassifying a whole program affordable.
 type Set struct {
 	includes []compiled
 	excludes []compiled
@@ -117,16 +105,14 @@ type compiled struct {
 	pattern string
 	re      *regexp.Regexp
 	prefix  netip.Prefix
-	// host is the name a url_prefix rule names, kept so an include can reach
-	// the host its path sits on. Empty on every other matcher.
+	// host is the name a url_prefix rule names, so an include can reach the host its
+	// path sits on. Empty on other matchers.
 	host string
 }
 
-// Compile turns rows into a rule set, rejecting anything unusable.
-//
-// A pattern that cannot be compiled is refused here rather than skipped: a
-// rule that silently does not apply is a perimeter that lies, and the two
-// directions of that lie are lost coverage and a scan outside authorization.
+// Compile turns rows into a rule set, rejecting anything unusable. An
+// uncompilable pattern is refused, not skipped: a rule silently not applying is a
+// perimeter that lies, through lost coverage or a scan outside authorization.
 func Compile(rules []Rule) (*Set, error) {
 	set := &Set{}
 
@@ -152,8 +138,8 @@ func Compile(rules []Rule) (*Set, error) {
 			item.prefix = prefix.Masked()
 
 		case MatchRegex:
-			// RE2, so a pattern cannot backtrack into a denial of service on
-			// the ingestion path.
+			// RE2, so a pattern cannot backtrack into a denial of service on the ingestion
+			// path.
 			re, err := regexp.Compile("(?i)" + rule.Pattern)
 			if err != nil {
 				return nil, fmt.Errorf("%w: rule %s: %v", ErrInvalidRule, rule.ID, err)
@@ -162,10 +148,8 @@ func Compile(rules []Rule) (*Set, error) {
 
 		case MatchURLPrefix:
 			item.pattern = strings.TrimSpace(rule.Pattern)
-			// The host is read out of the pattern once, here, so the matcher
-			// does not parse a URL per asset on the ingestion path. A prefix
-			// that will not parse keeps an empty host and stays what it always
-			// was: a rule that matches URLs by prefix and nothing else.
+			// The host is read once here so the matcher does not parse a URL per asset. A
+			// prefix that will not parse keeps an empty host and matches by prefix only.
 			if parsed, err := url.Parse(item.pattern); err == nil {
 				item.host = strings.ToLower(parsed.Hostname())
 			}
@@ -187,17 +171,11 @@ func Compile(rules []Rule) (*Set, error) {
 	return set, nil
 }
 
-// Classify answers for one asset.
-//
-// It reads the asset's **host**, not its key. A rule names a host, and a
-// service key is host:port/proto: matching the rule against the key would put
-// the host in scope and leave every service on it out, which is the same
-// perimeter described twice with only one of them acted on. So a service takes
-// the status of its host, and a URL takes the status of its service.
-//
-// One matcher goes the other way. A url_prefix rule is more specific than a
-// host, so a URL can be excluded while the service carrying it stays in scope:
-// a child may be stricter than its parent, never looser.
+// Classify answers for one asset. It reads the asset's host, not its key: a rule names a
+// host and a service key is host:port/proto, so matching the key would put the host in scope
+// and leave its services out. A service takes its host's status, a URL its service's;
+// url_prefix goes the other way (more specific than a host), so a child may be stricter than
+// its parent, never looser.
 func (s *Set) Classify(target Target) Status {
 	if s.matches(s.excludes, target) {
 		return OutOfScope
@@ -208,9 +186,8 @@ func (s *Set) Classify(target Target) Status {
 	return Unknown
 }
 
-// Matched reports which rule decided, for the report a reclassification
-// returns. Without it, an over-broad exclusion is a number rather than a
-// pattern somebody can read.
+// Matched reports which rule decided, for the reclassification report; without
+// it an over-broad exclusion is a number, not a readable pattern.
 func (s *Set) Matched(target Target) (Rule, bool) {
 	for _, item := range s.excludes {
 		if item.matches(target) {
@@ -239,9 +216,8 @@ func (c compiled) matches(target Target) bool {
 
 	switch c.rule.Matcher {
 	case MatchApex:
-		// The apex itself and everything under it. The dot is in the
-		// comparison rather than in the pattern, so evil-target.com does not
-		// come back under target.com.
+		// The apex and everything under it. The dot is in the comparison, not the
+		// pattern, so evil-target.com does not match target.com.
 		return host == c.pattern || strings.HasSuffix(host, "."+c.pattern)
 
 	case MatchFQDN:
@@ -262,21 +238,12 @@ func (c compiled) matches(target Target) bool {
 		return false
 
 	case MatchURLPrefix:
-		// The only matcher that reads the key rather than the host, and the one
-		// place the two kinds of rule are not symmetric.
-		//
-		// As an exclusion it reads the key alone, which is what lets it be
-		// stricter than the asset's parent: a path can be taken out while the
-		// service carrying it stays in. A child may be stricter than its parent.
-		//
-		// As an inclusion it also reaches the host, and that is not the same
-		// rule read backwards. A path is not reachable without the name it sits
-		// on: an include that matched the URL alone would put in scope a thing
-		// that can only exist once its host has been probed, and the host would
-		// never be probed because nothing put it in scope. The loop closes on
-		// itself and the perimeter reads as configured while covering nothing.
-		// So declaring a path declares the name it is served from, and the
-		// service that answers it.
+		// The only matcher reading the key rather than the host, and the one asymmetry. As an
+		// exclusion it reads the key alone, so a path can be taken out while its service stays in. As
+		// an inclusion it also reaches the host: a path is unreachable without its name, and an
+		// include matching the URL alone would put in scope something that exists only once its host
+		// is probed, which nothing would put in scope. So declaring a path declares its host and the
+		// service answering it.
 		if target.Key.Kind == normalize.KindURL {
 			return strings.HasPrefix(target.Key.Value, c.pattern)
 		}

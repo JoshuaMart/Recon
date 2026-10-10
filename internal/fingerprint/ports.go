@@ -1,18 +1,11 @@
 package fingerprint
 
-// blockedPorts is Chromium's own restricted list.
-//
-// It is the browser's list rather than a hand written list of "non web" ports,
-// and the difference is the whole point. Chrome answers ERR_UNSAFE_PORT on
-// these, so the failure is certain before the call, which makes it a fact about
-// the instrument rather than a hypothesis about the target. A hand written list
-// would be the hypothesis, and it would be wrong about the forgotten
-// application on 9000 that is exactly what this platform exists to find.
-//
-// The consequence is assumed: on these services fingerprint_reachable stays
-// undefined. That is correct. Unobservable qualifies an asset whose state is
-// unknown, and there is no uncertainty about what a browser sees on a port it
-// refuses to open.
+// blockedPorts is Chromium's own restricted list, not a hand-written "non web" list. Chrome
+// answers ERR_UNSAFE_PORT on these, so the failure is certain before the call: a fact about
+// the instrument, where a hand-written list would be a hypothesis about the target, wrong
+// about the forgotten application on 9000 this platform exists to find. On these services
+// fingerprint_reachable stays undefined, correctly: there is no uncertainty about what a
+// browser sees on a port it refuses to open.
 var blockedPorts = map[int]struct{}{}
 
 func init() {
@@ -29,14 +22,11 @@ func init() {
 	}
 }
 
-// Renderable reports whether a browser will open this port at all.
-//
-// It is the whole of the baseline filter, and it reads transport reachability
-// and nothing else. It is deliberately not a filter on outcome: an origin error
-// behind a CDN is an informative failure counted as proof of death, and it
-// still deserves a baseline, because an edge answering for a dead origin is a
-// page with something to read. Deriving this from the qualification would get
-// that case exactly backwards.
+// Renderable reports whether a browser will open this port at all. It is the whole
+// baseline filter and reads transport reachability only, not outcome: an origin
+// error behind a CDN counts as proof of death yet still deserves a baseline, as an
+// edge answering for a dead origin is a page with something to read. Deriving it
+// from the qualification would get that backwards.
 func Renderable(port int) bool {
 	_, blocked := blockedPorts[port]
 	return !blocked

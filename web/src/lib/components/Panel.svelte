@@ -15,11 +15,9 @@
 	const { title, evidence, meta, children }: Props = $props();
 
 	/**
-	 * Two instants and not one, which is the fix for a confusion the old view carried.
-	 *
-	 * The identity line said "probed 1 h ago" and the evidence beneath it said "3 h ago"
-	 * for the same layer. Both were true: one is `last_checked_at`, the other is when the
-	 * state now held **began**. Side by side and unnamed they read as stale data, so the
+	 * Two instants, not one, fixing a confusion of the old view: the identity line said "probed 1 h ago"
+	 * and the evidence beneath "3 h ago" for the same layer. Both true: one is `last_checked_at`, the
+	 * other is when the state now held began. Unnamed side by side they read as stale data, so the
 	 * panel says which is which.
 	 */
 	const when = $derived.by(() => {

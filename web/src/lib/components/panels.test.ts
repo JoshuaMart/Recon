@@ -7,12 +7,9 @@ import RenderPanel from './RenderPanel.svelte';
 import type { Asset, Evidence } from '$lib/types';
 
 /**
- * The panels of the asset view, rendered on the server.
- *
- * These are not screenshot tests and they do not check a layout. What they hold is the
- * one property the whole redesign rests on: a panel with nothing to show must say which
- * nothing it is. That sentence is the thing a refactor silently loses, and it is exactly
- * what the flat evidence dump could never say.
+ * The panels of the asset view, rendered on the server. Not screenshot tests and not layout checks:
+ * they hold the one property the redesign rests on, that a panel with nothing to show says which
+ * nothing it is. A refactor silently loses that sentence, which the flat evidence dump could never say.
  */
 
 function asset(overrides: Partial<Asset> = {}): Asset {

@@ -19,33 +19,25 @@ import (
 // synthetic is the size the milestone names.
 const synthetic = 1_000_000
 
-// The budgets the search chapter's bet rests on, and the machine they mean
-// something on.
+// The budgets the search bet rests on, and the machine they mean something on. A wall
+// clock number is about hardware as much as SQL: these were measured on the reference
+// machine with room to spare, and a shared CI runner lands at 2.5 times each, saying
+// nothing about the query. A budget enforced there is red for reasons nobody can act
+// on, and such a suite stops being read.
 //
-// A wall clock number is a statement about hardware as much as about SQL. These
-// two were measured on the reference machine and they hold there with room to
-// spare; on a shared CI runner the same code lands at two and a half times
-// each, which says nothing about the query and everything about the runner. A
-// budget enforced there is red for a reason that is not about the code, and a
-// suite that is red for reasons nobody can act on is a suite that stops being
-// read.
-//
-// So the number is enforced where it can mean something, and the plan is
-// checked everywhere.
+// So the number is enforced where it means something, and the plan everywhere.
 const (
 	listBudget   = 300 * time.Millisecond
 	facetsBudget = time.Second
 
-	// What the same budgets become off the reference machine. Not a softer
-	// version of the assertion above: it is a different one, a ceiling for
-	// something absurd, since the assertion that actually survives a change of
-	// machine is the plan.
+	// The budgets off the reference machine: not a softer assertion but a ceiling for
+	// something absurd, since what survives a change of machine is the plan.
 	elsewhere = 10
 )
 
-// reference reports whether this run is on the machine the numbers above were
-// measured on, and it is opt in because no runtime check can tell. Set
-// RECON_SCALE_REFERENCE and the milliseconds are enforced.
+// reference reports whether this run is on the machine the numbers were measured on.
+// Opt in, as no runtime check can tell: set RECON_SCALE_REFERENCE to enforce the
+// milliseconds.
 func reference() bool { return os.Getenv("RECON_SCALE_REFERENCE") != "" }
 
 func budget(strict time.Duration) (time.Duration, string) {
@@ -55,32 +47,16 @@ func budget(strict time.Duration) (time.Duration, string) {
 	return strict * elsewhere, "this is not the reference machine, so the ceiling is"
 }
 
-// TestAFourClauseQueryOverAMillionAssets is the assertion that decides whether
-// PostgreSQL is enough.
+// The assertion that decides whether PostgreSQL is enough: with the right indexes, facets over
+// the filtered result are bet to hold to a few million rows per tenant, making a day-one
+// Elasticsearch double write a trap.
 //
-// The whole search chapter rests on one bet: with the right indexes, facets
-// over the filtered result hold comfortably to a few million rows per tenant,
-// so a double write to Elasticsearch on day one is a trap rather than
-// foresight. That bet is either measured or it is a hope, and a hope is what
-// gets discovered on the day somebody's inventory grows.
-//
-// "With the right indexes" is the half of that sentence a clock cannot check
-// and a query plan can. The plan is asked for below and it answers the same
-// thing on every machine: whether the tenant's slice is reached through an
-// index or by reading every row of the table.
-//
-// That split is not a precaution, it is measured. Dropping the six indexes this
-// filter uses and running the same test again makes both numbers go *down*, to
-// 116ms and 426ms, because a parallel sequential scan over a warm million rows
-// beats the bitmap path on a machine with cores to spare. The strict budget
-// passes. Every index gone, and the clock says the system is healthier than
-// before. So a timing here cannot see this regression at all, on any machine
-// and at any threshold, and the plan sees nothing else.
-//
-// The distribution matters as much as the count. Every row carrying port 443
-// would let any index look fast; what is generated below is skewed the way a
-// real perimeter is, a few common ports against a long tail, a handful of
-// technologies against forty, and most of the inventory under one apex.
+// "With the right indexes" is what a clock cannot check and a plan can, identically on every
+// machine. Measured: dropping the six indexes this filter uses makes both timings go down (116
+// and 426 ms), as a parallel sequential scan over a warm million rows beats the bitmap path, so
+// the strict budget passes with every index gone. The data is skewed like a real perimeter (a few
+// common ports and a long tail, a handful of technologies against forty, most under one apex),
+// since uniform data would let any index look fast.
 func TestAFourClauseQueryOverAMillionAssets(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -89,10 +65,9 @@ func TestAFourClauseQueryOverAMillionAssets(t *testing.T) {
 	h.generate(t, synthetic)
 	t.Logf("%d assets generated in %s", synthetic, time.Since(start).Round(time.Second))
 
-	// Without this the planner is working from the statistics of an empty
-	// table, and it will pick a plan that says nothing about the real one. It
-	// is also what the housekeeping loop does in production, and for the same
-	// reason.
+	// Without this the planner uses the statistics of an empty table and picks a plan
+	// that says nothing about the real one. The housekeeping loop does it in production,
+	// for the same reason.
 	h.exec(t, `ANALYZE asset, asset_current, pivot_count`)
 
 	// Four clauses, and the shape a console actually sends: a perimeter, a
@@ -105,9 +80,8 @@ func TestAFourClauseQueryOverAMillionAssets(t *testing.T) {
 	]}`
 
 	h.scoped(t, h.org, func(tx pgx.Tx) {
-		// One warm run first. The measurement is of the query rather than of
-		// the first touch of a cold cache, which is a different question and
-		// one a milestone cannot state a number for.
+		// One warm run first: the measurement is the query, not the first touch of a cold
+		// cache.
 		if _, err := search.List(ctx, tx, h.org, search.Request{
 			Filter: filter(t, tree), Display: true,
 		}); err != nil {
@@ -131,20 +105,11 @@ func TestAFourClauseQueryOverAMillionAssets(t *testing.T) {
 			t.Errorf("the list took %s over %d assets, and %s %s", took, synthetic, why, limit)
 		}
 
-		// The half that means the same thing on every machine.
-		//
-		// Which index is deliberately not asserted, and the measurement is
-		// why. The obvious assertion is that a page ordered by last_seen walks
-		// asset_current_recent_idx, and the planner declines: on this filter
-		// it bitmaps the reversed host index against the technology one, sorts
-		// what survives and takes fifty rows, and that is the faster plan
-		// because four clauses cut a million rows down to a set a sort barely
-		// notices. Naming the index here would assert a choice that belongs to
-		// the planner and that moves with the shape of the filter, which is a
-		// test that fails on a query somebody legitimately improved.
-		//
-		// What does not move: the tenant's slice is reached through an index
-		// rather than by reading the table.
+		// The half that means the same on every machine. Which index is deliberately not asserted: the
+		// planner declines the obvious asset_current_recent_idx walk for a bitmap of the reversed host
+		// index against the technology one, faster because four clauses cut a million rows to a set a
+		// sort barely notices, and naming an index would fail on a legitimately improved query. What
+		// does not move: the tenant's slice is reached through an index, not by reading the table.
 		plan := explain(t, tx, listed.on(t, "asset_current"))
 		refuseSeqScan(t, plan, "asset_current", "the list")
 		requireIndex(t, plan, "asset_current", "the list")
@@ -160,29 +125,25 @@ func TestAFourClauseQueryOverAMillionAssets(t *testing.T) {
 			t.Fatal("no facet came back")
 		}
 		t.Logf("the facets of the same filter: %s", took.Round(time.Millisecond))
-		// Facets are the real cost, and they are what usually pushes a project
-		// toward a search engine. The budget here is wider than the list's
-		// because the work is: this aggregates over the whole filtered result
-		// rather than over one page of it.
+		// Facets are the real cost and what usually pushes a project toward a search engine.
+		// The budget is wider than the list's because the work is: it aggregates the whole
+		// filtered result, not one page.
 		if limit, why := budget(facetsBudget); took > limit {
 			t.Errorf("the facets took %s, %s %s, and that is the number that decides whether "+
 				"this stays in PostgreSQL", took, why, limit)
 		}
 
-		// The same pair, on the statement that aggregates rather than
-		// paginates. Facets have no early exit, so a scan is a much more
-		// tempting plan here, and it is the one that would push this toward a
-		// search engine.
+		// The same pair on the aggregating statement. Facets have no early exit, so a scan is
+		// a far more tempting plan here.
 		facetPlan := explain(t, tx, faceted.on(t, "asset_current"))
 		refuseSeqScan(t, facetPlan, "asset_current", "the facets")
 		requireIndex(t, facetPlan, "asset_current", "the facets")
 	})
 }
 
-// recorder is a Querier that keeps what it forwards, so the statement the
-// package actually built can be handed to EXPLAIN. Nothing in the search
-// package exposes its SQL, and nothing should: a test that asks for the plan of
-// a query it wrote itself is a test of its own copy.
+// recorder is a Querier that keeps what it forwards, so the statement the package
+// built can go to EXPLAIN. The search package exposes no SQL, and should not: asking
+// the plan of a query the test wrote is a test of its own copy.
 type recorder struct {
 	inner search.Querier
 	seen  []statement
@@ -201,9 +162,8 @@ func (r *recorder) Query(ctx context.Context, sql string, args ...any) (pgx.Rows
 	return r.inner.Query(ctx, sql, args...)
 }
 
-// on returns the single statement that reads the named relation. Both calls
-// under test issue a second query for favicons, which is a lookup by hash and
-// not the thing being measured, so it is named here rather than assumed to be
+// on returns the single statement that reads the named relation. Both calls also issue
+// a favicon lookup by hash, not the thing measured, so it is named instead of assumed
 // second.
 func (r *recorder) on(t *testing.T, relation string) statement {
 	t.Helper()
@@ -226,9 +186,9 @@ func (r *recorder) on(t *testing.T, relation string) statement {
 	return statement{}
 }
 
-// explain asks the planner what it intends to do, in the transaction that runs
-// the real thing: row-level security is part of the statement, so a plan taken
-// outside the tenant's scope is a plan for a different query.
+// explain asks the planner what it intends, in the transaction that runs the real
+// thing: row-level security is part of the statement, so a plan outside the tenant's
+// scope is for a different query.
 func explain(t *testing.T, tx pgx.Tx, s statement) map[string]any {
 	t.Helper()
 
@@ -276,9 +236,8 @@ func walk(node map[string]any, visit func(map[string]any)) {
 	}
 }
 
-// requireIndex is the other half of the same claim: not merely that no scan
-// happened, but that an index was what reached the rows. The two are not the
-// same assertion, because a plan can reach a relation through a materialized
+// requireIndex is the other half: not only that no scan happened but that an index
+// reached the rows, since a plan can reach a relation through a materialized
 // intermediate and show neither.
 func requireIndex(t *testing.T, plan map[string]any, relation, what string) {
 	t.Helper()
@@ -295,10 +254,9 @@ func requireIndex(t *testing.T, plan map[string]any, relation, what string) {
 	}
 }
 
-// refuseSeqScan is the assertion that survives a change of machine. Reading a
-// million rows to answer a question about one tenant's slice of them is the
-// regression this whole set of indexes exists to prevent, and it is the one a
-// timing on a shared runner cannot distinguish from a busy afternoon.
+// refuseSeqScan is the assertion that survives a change of machine: reading a million
+// rows to answer about one tenant's slice is the regression the indexes prevent, and a
+// timing on a shared runner cannot tell it from a busy afternoon.
 func refuseSeqScan(t *testing.T, plan map[string]any, relation, what string) {
 	t.Helper()
 
@@ -314,9 +272,8 @@ func refuseSeqScan(t *testing.T, plan map[string]any, relation, what string) {
 	})
 }
 
-// render prints the plan the way a failure needs it: the node types and what
-// each one touches, rather than the whole JSON, which is mostly cost estimates
-// nobody reads from a test log.
+// render prints the plan as a failure needs it: node types and what each touches, not
+// the cost-estimate JSON nobody reads from a log.
 func render(plan map[string]any) string {
 	var out strings.Builder
 	var depth int

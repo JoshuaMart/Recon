@@ -21,8 +21,7 @@ type Rendered struct {
 	Lifecycle string
 	Outcome   string
 	Usable    bool
-	// Page says a browser obtained something. It is what moves
-	// last_fingerprint_at and nothing else does.
+	// Page says a browser obtained something; it alone moves last_fingerprint_at.
 	Page         bool
 	Deduplicated bool
 	Next         time.Time
@@ -30,15 +29,11 @@ type Rendered struct {
 
 // Render writes what the browser saw.
 //
-// The rule it exists to respect: an error return is for a target the service
-// could not address, and a target that refuses, times out or answers a
-// challenge all come back as observations. When no candidate produces a chain,
-// a browser receiving an invalid response on a port that speaks something other
-// than HTTP, the service addressed the target perfectly well and the target
-// answered something that is not HTTP. That is an observation with no page, and
-// returning a bare error instead would leave the asset's counters untouched: its
-// backoff never widens, its streak never moves, and the unobservable verdict
-// this whole layer provides for becomes unreachable.
+// An error return is for a target the service could not address. A target that
+// refuses, times out or answers a challenge comes back as an observation, and so
+// does a port speaking something other than HTTP: the service addressed it fine
+// and got a non-HTTP answer. A bare error there would leave the asset's counters
+// untouched, its backoff never widening and the unobservable verdict unreachable.
 func (i *Ingestor) Render(
 	ctx context.Context, q *sqlcgen.Queries, asset RenderTarget, result *fingerprint.Result,
 ) (Rendered, error) {
@@ -57,9 +52,8 @@ func (i *Ingestor) Render(
 	usable := true
 
 	if !page {
-		// The service addressed the target and the target answered something
-		// that is not a page. Nothing conclusive, and it is still a
-		// measurement of the observer.
+		// The service addressed the target and got something that is not a page: not
+		// conclusive, but still a measurement of the observer.
 		outcome = lifecycle.OutcomeError
 		usable = false
 	} else {
@@ -70,11 +64,10 @@ func (i *Ingestor) Render(
 			Fronted:    asset.Fronted,
 			Provider:   asset.Provider,
 		})
-		// A challenge page is the same page whichever client fetched it, and it
-		// is what proves a challenge here. A technology in the WAF category
-		// means "there is a WAF here", which Cloudflare reports on every
-		// response it fronts including a normal 200: reading that as proof
-		// would mark every legitimate 403 of a fronted application unmeasurable.
+		// A challenge page is the same whichever client fetched it, and proves a
+		// challenge. A WAF-category technology only means "a WAF is here" (Cloudflare
+		// reports it on every response, even a normal 200), so reading it as proof would
+		// mark every legitimate 403 of a fronted application unmeasurable.
 		if verdict.Dead != "" {
 			outcome = lifecycle.OutcomeFail
 		}
@@ -92,33 +85,25 @@ func (i *Ingestor) Render(
 	if page {
 		obs.rendered = &at
 
-		// The scheme the browser actually spoke, and it is a measurement rather
-		// than a reading of the port: the request completed, so the service
-		// answers there. It is what an imported service has no other way of
-		// getting. A port scan reports an open port and no scheme, so the
-		// console had nothing to name the asset with but `host:port` and
-		// nothing to open, on assets a browser had already rendered.
+		// The scheme the browser spoke: a measurement, not a reading of the port, since
+		// the request completed. An imported service has no other source: a port scan
+		// gives an open port and no scheme, leaving the console `host:port` and nothing
+		// to open on assets already rendered.
 		//
-		// The target's scheme and never the final hop's: a redirect to another
-		// host says what that host speaks, not this one.
+		// The target's scheme, never the final hop's: a redirect to another host says what
+		// that host speaks.
 		if parsed, err := url.Parse(asset.URL); err == nil {
 			obs.scheme = parsed.Scheme
 		}
 	}
 
-	// The render owns the response columns while the probe has never spoken.
-	//
-	// One producer per value still holds, and this is which one: the promoted
-	// columns belong to whichever observer has measured a response, and an
-	// asset whose http layer has never run has exactly one. Without it a
-	// console showed `no answer · the probe obtained nothing` beside the 302 a
-	// browser had brought back an hour earlier, because the chain travels as a
-	// pivot and the status code did not. The probe takes the columns back on
-	// its first pass, by the same rule and with no special case.
-	//
-	// Set whether or not a page came back, like the chain beside it: a render
-	// that got nothing clears what a previous render wrote, where a COALESCE
-	// would keep a status code its page no longer answers.
+	// The render owns the response columns while the probe has never spoken. They belong to
+	// whichever observer has measured a response, and an asset whose http layer never ran has
+	// exactly one; otherwise the console showed `no answer` beside the 302 a browser had brought
+	// back (the chain travels as a pivot, the status code did not). The probe takes the columns
+	// back on its first pass by the same rule. Set whether or not a page came back, like the
+	// chain: a render that got nothing clears what an earlier one wrote, where COALESCE would
+	// keep a stale status code.
 	if _, probed := st.layers[normalize.LayerHTTP]; !probed {
 		obs.promote = true
 		if page {
@@ -127,9 +112,8 @@ func (i *Ingestor) Render(
 				Title:      text(final.Title),
 				Server:     text(final.Headers["Server"]),
 			}
-			// Where it landed, and only when that is somewhere else. A final
-			// url equal to the target is the ordinary case and repeating it
-			// would make every console read "lands on" its own address.
+			// Where it landed, only when elsewhere: a final URL equal to the target is the
+			// ordinary case and would make every console read "lands on" its own address.
 			if final.URL != asset.URL {
 				obs.promoted.FinalURL = text(final.URL)
 			}
@@ -141,21 +125,18 @@ func (i *Ingestor) Render(
 		return Rendered{}, err
 	}
 
-	// A render produces events like any other observation, and they are written
-	// in the same transaction. Leaving this out made every detection the
-	// browser improved on invisible, which is the one classification the
-	// instrument's version exists for.
+	// A render produces events like any observation, in the same transaction. Leaving
+	// this out hid every detection the browser improved on, the one classification
+	// the instrument's version exists for.
 	if err := i.writeEvents(ctx, q, Run{OrgID: asset.OrgID, ProgramID: asset.ProgramID}, &summary); err != nil {
 		return Rendered{}, err
 	}
 
-	// The regime decides the cadence, and it is read after this observation
-	// rather than before: a render that just flipped an asset onto the sole
-	// detector regime has to be scheduled as one.
+	// The regime decides the cadence, read after this observation: a render that just
+	// put an asset on the sole-detector regime must be scheduled as one.
 	next := at.Add(i.cadence.Spread(i.cadence.Render(st.regime), i.random()))
-	// Back to the low queue whatever brought it here. A render that was urgent
-	// has happened, and leaving the priority raised would keep an asset ahead
-	// of the queue for every pass afterwards.
+	// Back to the low queue whatever brought it here: an urgent render has happened,
+	// and a raised priority would keep the asset ahead of the queue afterwards.
 	if err := q.RescheduleRender(ctx, sqlcgen.RescheduleRenderParams{
 		AssetID:  uuidTo(asset.AssetID),
 		At:       stamp(next),
@@ -184,17 +165,14 @@ type RenderTarget struct {
 	URL       string
 	Fronted   bool
 	Provider  string
-	// Grace is what this programme's first run may keep quiet, frozen by the
-	// caller for the same reason ingestion freezes it: a decision taken at
-	// drain time would send a first run's flood late rather than never.
+	// Grace is what this programme's first run may keep quiet, frozen by the caller
+	// as in ingestion: deciding at drain time would send a first run's flood late.
 	Grace notify.Grace
 }
 
-// renderState reads the asset's counters without writing an identity.
-//
-// A render never creates an asset. The upsert path exists because a report
-// discovers things; a render is made for an asset that already exists, and
-// going through the same statement would let the renderer invent inventory.
+// renderState reads the asset's counters without writing an identity. A render
+// never creates an asset: reports discover things, and the same statement would
+// let the renderer invent inventory.
 func (i *Ingestor) renderState(ctx context.Context, q *sqlcgen.Queries, asset RenderTarget) (*state, error) {
 	row, err := q.AssetForRender(ctx, sqlcgen.AssetForRenderParams{AssetID: uuidTo(asset.AssetID)})
 	if err != nil {
@@ -218,9 +196,8 @@ func (i *Ingestor) renderState(ctx context.Context, q *sqlcgen.Queries, asset Re
 	if err != nil {
 		return nil, err
 	}
-	// A render is made for an asset that already exists, so its identity comes
-	// from the target rather than from a write. Without it every event a render
-	// produces names nothing.
+	// The identity comes from the target, not a write; without it every event a
+	// render produces names nothing.
 	st.key = asset.Key
 	return st, nil
 }

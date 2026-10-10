@@ -58,9 +58,9 @@ func (h *harness) sourceOf(t *testing.T, key string) string {
 	return source
 }
 
-// The rung is the whole point. Nobody typed this name in, a log did, and most
-// candidates never resolve to anything: the cheap rung answers whether the name
-// exists yet, and the expensive one is earned by an answer.
+// The rung is the point. A log published this name, nobody typed it, and most candidates
+// never resolve: the cheap rung asks whether the name exists yet, the expensive one is
+// earned by an answer.
 func TestACandidateIsDueForResolveAndNotForFull(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -101,9 +101,8 @@ func TestACandidateIsDueForResolveAndNotForFull(t *testing.T) {
 	}
 }
 
-// "Why is this here" has to be answerable six months later by somebody looking
-// at a name they do not recognise, and it is the reason the lite stream is
-// dialled rather than the one carrying names alone.
+// "Why is this here" must be answerable months later by someone looking at an unknown
+// name, which is why the lite stream is dialled and not the one carrying names alone.
 func TestACandidateCarriesItsCertificateInItsLineage(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -169,9 +168,8 @@ func TestACandidateOutsideThePerimeterIsStoredAndNeverProbed(t *testing.T) {
 	}
 }
 
-// A widening of rediscovery, and it is the case the freshness advantage exists
-// for: a name this system gave up on, appearing in a fresh certificate, is the
-// strongest available signal that somebody is provisioning it again.
+// A widening of rediscovery, and the case the freshness advantage exists for: a name
+// given up on, in a fresh certificate, is the strongest sign someone is provisioning it again.
 func TestACertificateForAnArchivedNameBringsItBack(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -208,9 +206,8 @@ func TestACertificateForAnArchivedNameBringsItBack(t *testing.T) {
 	}
 }
 
-// The second half of "resolve, then full once it answers", and without it a
-// candidate is checked only ever by resolve runs, which leave the full date
-// alone, and swept for ports never.
+// The second half of "resolve, then full once it answers": without it a candidate is
+// checked only by resolve runs (which leave the full date alone) and never port-swept.
 func TestACandidateThatAnswersEarnsTheExpensiveRung(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -257,9 +254,8 @@ func TestACandidateThatAnswersEarnsTheExpensiveRung(t *testing.T) {
 	}
 }
 
-// The control. A host that was never a candidate must not be promoted by a
-// resolve run, or every resolve pass would drag the whole inventory onto the
-// expensive rung.
+// The control: a host that was never a candidate must not be promoted by a resolve run,
+// or every resolve pass would drag the whole inventory onto the expensive rung.
 func TestAResolveRunStillLeavesAnActiveHostsFullDateAlone(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -287,9 +283,8 @@ func TestAResolveRunStillLeavesAnActiveHostsFullDateAlone(t *testing.T) {
 	}
 }
 
-// A candidate that was never reachable ends ARCHIVED and not INACTIVE. It is
-// not dead: it never existed, and the two readings call for opposite things in
-// a console.
+// A never-reachable candidate ends ARCHIVED, not INACTIVE: it is not dead, it never
+// existed, and a console reads the two oppositely.
 func TestACandidateThatIsNeverReachableEndsArchived(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -302,10 +297,9 @@ func TestACandidateThatIsNeverReachableEndsArchived(t *testing.T) {
 		t.Fatalf("enter candidates: %v", err)
 	}
 
-	// Chased on the curve, answering nothing, for longer than the budget. The
-	// failures are informative on purpose: nxdomain with resolver consensus is
-	// the strongest death signal there is, and even that must not make a name
-	// that never existed read as one that died.
+	// Chased on the curve, answering nothing, past the budget. The failures are informative
+	// on purpose: nxdomain with resolver consensus is the strongest death signal, and even
+	// that must not make a name that never existed read as one that died.
 	resolve := h.run()
 	resolve.Kind = "candidate"
 	resolve.Scope = "resolve"
@@ -338,15 +332,12 @@ func TestACandidateThatIsNeverReachableEndsArchived(t *testing.T) {
 	}
 }
 
-// What Certificate Transparency notifies, and when.
+// What CT notifies, and when. Nothing on the certificate: a candidate is not a finding,
+// most never resolve, and notifying on creation would give the exact flood the
+// anti-flood stops, from the one source delivering thousands of names a minute.
 //
-// Nothing on the certificate. A candidate is not a finding: most of them never
-// resolve to anything, and notifying on creation would produce the exact flood
-// the anti-flood exists to stop, on the one source that can deliver several
-// thousand names in a minute.
-//
-// The event is that one went live, and it is new_active, which the table of 12.2
-// already carried before the source that produces it existed.
+// The event is that one went live: new_active, already in the event table before this
+// source existed.
 func TestACandidateNotifiesNothingUntilItGoesLive(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))

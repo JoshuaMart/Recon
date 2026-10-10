@@ -12,11 +12,9 @@ import (
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
-// Cadence is the pass that provisions enumeration.
-//
-// It is separate from the due-date pass and complementary to it: this one gives
-// regular coverage, and the console endpoint re-runs a perimeter after a scope
-// change without waiting for the next tick.
+// Cadence is the pass that provisions enumeration. It complements the due-date
+// pass: this gives regular coverage, while the console endpoint re-runs a
+// perimeter after a scope change without waiting for the next tick.
 type Cadence struct {
 	pool      *pgxpool.Pool
 	scheduler *Scheduler
@@ -49,12 +47,10 @@ func (c *Cadence) Run(ctx context.Context) {
 	}
 }
 
-// Once provisions one discovery run per programme that is due.
-//
-// The absence of a run in flight is the condition that does the work. It
-// prevents a provisioning storm, because last_discovery_at is written when the
-// run is created rather than when it completes, and it bounds concurrency to
-// one discovery run per programme.
+// Once provisions one discovery run per programme that is due. The absence of a
+// run in flight does the work: last_discovery_at is written at creation, not
+// completion, which prevents a provisioning storm and bounds a programme to one
+// discovery run.
 func (c *Cadence) Once(ctx context.Context) (int, error) {
 	queries := sqlcgen.New(c.pool)
 
@@ -78,13 +74,11 @@ func (c *Cadence) Once(ctx context.Context) (int, error) {
 	return started, nil
 }
 
-// provision defines a programme's enumerations and starts them, reporting
-// whether any went out.
-//
-// One run per apex, because the scanner takes one root domain per execution.
-// They are defined in one transaction and started one by one after it: a
-// platform refusing the third leaves three rows the deadline sweeper owns, and
-// two enumerations that are genuinely walking.
+// provision defines a programme's enumerations, starts them and reports whether
+// any went out. One run per apex, as the scanner takes one root domain per
+// execution. They are defined in one transaction and started one by one after it:
+// a platform refusing the third leaves rows the sweeper owns and two enumerations
+// genuinely walking.
 func (c *Cadence) provision(ctx context.Context, org, program uuid.UUID, name string) bool {
 	tx, err := c.pool.Begin(ctx)
 	if err != nil {
@@ -96,9 +90,8 @@ func (c *Cadence) provision(ctx context.Context, org, program uuid.UUID, name st
 	definitions, err := c.scheduler.Discovery(ctx, sqlcgen.New(tx), org, program)
 	switch {
 	case errors.Is(err, ErrNoPerimeter):
-		// The selection above already requires an apex, so reaching this means
-		// the rule was closed between the two statements. Rare, and worth one
-		// line rather than the warning a minute it used to be.
+		// The selection requires an apex, so the rule was closed between the two
+		// statements. Rare: one line, not a warning a minute.
 		c.log.WarnContext(ctx, "programme declares no apex", "program", program, "name", name)
 		return false
 	case errors.Is(err, ErrRunInFlight):
@@ -113,21 +106,17 @@ func (c *Cadence) provision(ctx context.Context, org, program uuid.UUID, name st
 		return false
 	}
 
-	// After the commit, deliberately. A platform that refuses on a quota leaves
-	// a row the deadline sweeper owns, and the next tick tries again once that
-	// row is out of the way.
-	// The cadence serves every tenant, so its pool crosses them and the record
-	// below needs no organization of its own.
+	// After the commit: a platform refusing on a quota leaves a row the sweeper owns,
+	// and the next tick retries once it is out of the way. The cadence serves every
+	// tenant, so its pool crosses them and the record needs no organization.
 	record := func(ctx context.Context, runID uuid.UUID, external string) error {
 		return sqlcgen.New(c.pool).RecordRunStart(ctx, sqlcgen.RecordRunStartParams{
 			RunID: pgUUID(runID), ExternalID: external,
 		})
 	}
-	// Counted rather than short circuited. One apex the platform refuses must
-	// not hold back the others, and a tick that started two of three is a
-	// different fact from one that started none: the first leaves one row for
-	// the sweeper, the second leaves three and usually means the platform
-	// itself is down.
+	// Counted, not short-circuited: one refused apex must not hold back the others, and
+	// starting two of three differs from none (one row for the sweeper versus three,
+	// usually a platform that is down).
 	started := 0
 	for _, definition := range definitions {
 		if err := c.scheduler.Launch(ctx, record, definition); err != nil {

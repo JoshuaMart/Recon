@@ -17,14 +17,10 @@ func parse(t *testing.T, raw string) Node {
 	return node
 }
 
-// TestTheOrganizationIsEmittedOnEveryCompilation is the assertion the whole
-// compiler rests on.
-//
-// This query does not live in the static query files, so the tenant guard does
-// not see it. What holds instead is that the clause is structural, and this is
-// what makes it so: it is asserted on every shape a tree can take, including
-// the empty one, which is the shape an interface sends before anybody has
-// clicked a facet.
+// The assertion the compiler rests on. This query is not in the static query files,
+// so the tenant guard does not see it; the clause is structural, and this asserts it
+// on every tree shape, including the empty one an interface sends before any facet
+// is clicked.
 func TestTheOrganizationIsEmittedOnEveryCompilation(t *testing.T) {
 	t.Parallel()
 
@@ -61,10 +57,8 @@ func TestACompilationWithNoOrganizationIsRefused(t *testing.T) {
 	}
 }
 
-// TestTheTenantCannotBeExpressed is the other half of the same property.
-//
-// An organization filter the caller can express is one the caller can forget,
-// and one they can set to somebody else's.
+// The other half: an organization filter the caller can express is one they can
+// forget, or set to someone else's.
 func TestTheTenantCannotBeExpressed(t *testing.T) {
 	t.Parallel()
 
@@ -76,14 +70,11 @@ func TestTheTenantCannotBeExpressed(t *testing.T) {
 	}
 }
 
-// A programme is not the tenant wearing another name, and the difference is
-// what decides whether it belongs in the vocabulary.
-//
-// The organization is emitted by the compiler on every compilation, so a query
-// can neither name it nor omit it. A programme is a perimeter inside one
-// organization, the switcher on every screen filters on it, and the tenant
-// clause is still emitted beside it: naming somebody else's programme returns
-// nothing rather than their inventory.
+// A programme is not the tenant under another name. The compiler emits the
+// organization on every compilation, so a query can neither name nor omit it. A
+// programme is a perimeter inside one organization that the switcher filters on,
+// and the tenant clause is still emitted beside it: naming another's programme
+// returns nothing, not their inventory.
 func TestAProgrammeIsAFilterAndTheTenantIsStillEmitted(t *testing.T) {
 	t.Parallel()
 
@@ -125,15 +116,11 @@ func TestAnUnknownFieldOrOperatorIsARefusalRatherThanAQuery(t *testing.T) {
 	}
 }
 
-// TestANestedEmptyGroupIsARefusalRatherThanAGuess.
-//
-// An empty AND is TRUE by identity and an empty OR is FALSE, so the same shape
-// means the whole inventory in one parent and nothing at all in the other. The
-// case that decides it is the negation: "not(and())" is "not everything", which
-// is zero rows, and a compiler that lets an empty group contribute nothing
-// answers the entire inventory instead. A console that cleared the last facet
-// out of a negated group would read that as "there is nothing to exclude" and
-// get everything back.
+// An empty AND is TRUE and an empty OR is FALSE, so one shape means everything in one
+// parent and nothing in the other. The deciding case is negation: "not(and())" is
+// "not everything", zero rows, and a compiler letting an empty group contribute
+// nothing would answer the whole inventory to a console that cleared the last facet
+// of a negated group.
 func TestANestedEmptyGroupIsARefusalRatherThanAGuess(t *testing.T) {
 	t.Parallel()
 
@@ -160,12 +147,10 @@ func TestANestedEmptyGroupIsARefusalRatherThanAGuess(t *testing.T) {
 	}
 }
 
-// TestASuffixWithAWildcardStaysASuffix is the trap the doc names, and it is
-// invisible without a wildcard in the value.
-//
-// Escaping the LIKE wildcards before reversing puts each backslash after the
-// character it should protect, so "_" stays a live wildcard and a trailing
-// backslash escapes the appended "%". The search silently becomes an equality.
+// The trap the doc names, invisible without a wildcard in the value. Escaping LIKE
+// wildcards before reversing puts each backslash after the character it should
+// protect: "_" stays live and a trailing backslash escapes the appended "%", turning
+// the search into an equality.
 func TestASuffixWithAWildcardStaysASuffix(t *testing.T) {
 	t.Parallel()
 
@@ -180,10 +165,8 @@ func TestASuffixWithAWildcardStaysASuffix(t *testing.T) {
 		t.Fatalf("the pattern is %T, want a string", compiled.Args[1])
 	}
 
-	// Reversed first, then escaped: the value read backwards is
-	// "tset.tegrat_ym.", and the underscore has to carry a backslash *before*
-	// it. Escaping first would produce "_\" reversed, which puts the backslash
-	// on the character after.
+	// Reversed first, then escaped: backwards the value is "tset.tegrat_ym.", and the
+	// underscore needs the backslash before it. Escaping first would put it after.
 	const want = `tset.tegrat\_ym.%`
 	if pattern != want {
 		t.Errorf("pattern = %q, want %q", pattern, want)
@@ -196,12 +179,9 @@ func TestASuffixWithAWildcardStaysASuffix(t *testing.T) {
 	}
 }
 
-// The search field of the console types into a substring, and a value carrying
-// a wildcard must not widen it.
-//
-// It is the operator no index answers, so it is granted on the name alone. What
-// it must not do on top of that is let "50%" match everything: the escape is
-// what keeps a typed character a character.
+// The console's search field types a substring, and a wildcard in the value must not
+// widen it. No index answers it, so it is granted on the name alone; "50%" must not
+// match everything.
 func TestANameSearchIsASubstringAndNotAPattern(t *testing.T) {
 	t.Parallel()
 
@@ -219,10 +199,9 @@ func TestANameSearchIsASubstringAndNotAPattern(t *testing.T) {
 	}
 }
 
-// A suffix stays a string suffix rather than a notion of domain membership, and
-// the dot in the pattern is what makes "evil-target.test" not come back under
-// "target.test". Inventing a domain notion now would freeze scope semantics in
-// the place where one is merely searching.
+// A suffix stays a string suffix, not domain membership: the dot makes
+// "evil-target.test" not match "target.test". A domain notion here would freeze scope
+// semantics in a place that only searches.
 func TestASuffixIsAStringSuffix(t *testing.T) {
 	t.Parallel()
 
@@ -235,9 +214,8 @@ func TestASuffixIsAStringSuffix(t *testing.T) {
 	}
 }
 
-// Reversal is by rune, because reverse() in PostgreSQL reverses characters. By
-// byte it would produce a pattern matching nothing on any internationalized
-// name, and an inventory holds those without anybody noticing.
+// Reversal is by rune, as PostgreSQL's reverse() works on characters; by byte it
+// would match nothing on internationalized names.
 func TestAReversalIsByCharacterAndNotByByte(t *testing.T) {
 	t.Parallel()
 
@@ -269,9 +247,8 @@ func TestEveryValueIsAParameter(t *testing.T) {
 	}
 }
 
-// The JSONB fields compile to containment and to nothing else, which is the one
-// form the GIN index serves. An "->>" beside it would be an unindexed full scan
-// behind an operator indistinguishable from the indexed one.
+// The JSONB fields compile to containment only, the form the GIN index serves; "->>"
+// would be an unindexed scan behind an operator that looks indexed.
 func TestTheJSONFieldsCompileToContainment(t *testing.T) {
 	t.Parallel()
 
@@ -303,12 +280,9 @@ func TestADeepTreeIsRefused(t *testing.T) {
 	}
 }
 
-// A malformed identifier is the caller's mistake and has to be named as one.
-//
-// The first version bound the value and cast it at the placeholder, so a typo in
-// a hand-edited filter reached PostgreSQL, failed there, and came back as a 500
-// and a line in our log: the caller was told the request could not be served
-// when the honest answer names the field.
+// A malformed identifier is the caller's mistake and is named as one. Binding and
+// casting at the placeholder let a hand-edited typo reach PostgreSQL, fail, and
+// return a 500 where the honest answer names the field.
 func TestAMalformedIdentifierIsRefusedRatherThanRunTest(t *testing.T) {
 	t.Parallel()
 
@@ -335,19 +309,13 @@ func TestAMalformedIdentifierIsRefusedRatherThanRunTest(t *testing.T) {
 	}
 }
 
-// The third state of a nullable boolean, and the fact that it is the only way
-// to ask for it.
+// The third state of a nullable boolean, and the only way to ask for it. is_cdn is
+// null when no pass could look (a timed-out resolution carries no address, CNAME or
+// provider, and false would clear the flag on a genuinely fronted asset), so the
+// column answers three things and equality reaches two.
 //
-// is_cdn is null when no pass has been able to look, which ingestion writes
-// deliberately: a resolution that timed out carries no address, no CNAME and no
-// provider, and writing false from it would clear the flag on an asset that is
-// genuinely behind an edge. The column therefore answers three things, and
-// equality reaches two of them.
-//
-// The negation does not reach the third and cannot. In SQL NOT (NULL = true) is
-// NULL, and a null predicate excludes the row rather than returning it, so
-// "everything that is not fronted" written as a negation silently drops every
-// asset nobody has looked at.
+// Negation does not reach the third: NOT (NULL = true) is NULL, which excludes the
+// row, so "everything not fronted" silently drops every asset nobody has looked at.
 func TestANullableBooleanCanBeAskedAboutItsThirdState(t *testing.T) {
 	t.Parallel()
 
@@ -409,19 +377,11 @@ func TestABooleanEqualityIsStillABoundComparison(t *testing.T) {
 	}
 }
 
-// A group nested in a group is parenthesised, and this asserts the SQL rather
-// than the fact that it compiles.
-//
-// SQL binds AND tighter than OR and the tree does not. Joined flat,
-// "and(a, or(b, c))" is "a AND b OR c", which PostgreSQL reads as
-// "(a AND b) OR c": the OR branch escapes every condition beside it. "Port 443,
-// and 200 or 301" then answers with everything carrying a 301 on any port.
-//
-// The reason this went unnoticed is worth keeping beside the fix. Nothing here
-// asserted the shape of the SQL, only that a tree compiled and that the
-// organization was bound first, and the one deep tree in the suite has a single
-// clause in its nested group, which is exactly the case where flat and
-// parenthesised are the same string.
+// A group nested in a group is parenthesised; this asserts the SQL, not that it compiles. SQL
+// binds AND tighter than OR and the tree does not: flat, "and(a, or(b, c))" is
+// "(a AND b) OR c" and the OR branch escapes every condition. It went unnoticed because
+// nothing asserted the SQL's shape, and the suite's one deep tree has a single clause in its
+// nested group, where flat and parenthesised are identical.
 func TestANestedGroupIsParenthesised(t *testing.T) {
 	t.Parallel()
 
@@ -440,14 +400,12 @@ func TestANestedGroupIsParenthesised(t *testing.T) {
 	}
 }
 
-// The organization is not among the conditions an unparenthesised OR would
-// escape, and that is a fact of where the clause is joined rather than luck.
-// Compile wraps the whole tree before putting the tenant beside it, so the
-// widening above is within a tenant and never across two.
+// The organization is not among the conditions an unparenthesised OR would escape,
+// by where the clause is joined: Compile wraps the whole tree before adding the
+// tenant, so any widening stays within a tenant.
 //
-// Asserted on the shape that would have exposed it, which is an OR at the root:
-// a flat join there would have produced "org_id = $1 AND a OR b", and the OR
-// branch would have carried rows belonging to somebody else.
+// Asserted on the shape that would expose it, an OR at the root: a flat join gives
+// "org_id = $1 AND a OR b", and the OR branch would carry another tenant's rows.
 func TestTheOrganizationSurvivesAnOrAtTheRoot(t *testing.T) {
 	t.Parallel()
 

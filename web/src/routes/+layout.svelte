@@ -10,13 +10,10 @@
 	const bare = $derived(page.url.pathname === '/connect');
 
 	/**
-	 * The breadcrumb, which used to read `Assets · Search` on every screen.
-	 *
-	 * A trail that says the same thing everywhere is a trail that says nothing, and it was
-	 * at its worst on the asset view, where the one piece of context somebody wants is
-	 * which asset they are looking at. The name comes from the page's own data rather than
-	 * from a store: the load function already has it, and a second source would be a
-	 * second thing to keep in step.
+	 * The breadcrumb, which read `Assets · Search` on every screen. A trail saying the same everywhere
+	 * says nothing, worst on the asset view where the wanted context is which asset. The name comes
+	 * from the page's own data, not a store: the load function has it, and a second source is a second
+	 * thing to keep in step.
 	 */
 	const crumb = $derived.by(() => {
 		const path = page.url.pathname;
@@ -30,10 +27,9 @@
 	});
 
 	/**
-	 * The rail carries the whole of phase 7, and only the first entry is built.
-	 * The rest are shown as pending rather than hidden, because the shape of the
-	 * phase is part of what the interface says, and rather than as links, because
-	 * a link to a 404 is worse than a label that admits it is not there yet.
+	 * The rail carries the whole of phase 7, with only the first entry built. The rest show as pending,
+	 * not hidden, as the phase's shape is part of what the interface says, and not as links, since a
+	 * link to a 404 is worse than a label admitting it is not there yet.
 	 */
 	const nav = [
 		{ href: '/', name: 'search' as const, title: 'Search', ready: true },
@@ -69,13 +65,11 @@
 		</nav>
 
 		<div class="main">
-			<!-- Breadcrumb only. The search field and the scan button that a topbar
-			     usually carries were removed on purpose: filtering happens in the
-			     sidebar, and a scan is a decision that belongs to a program. -->
+			<!-- Breadcrumb only. The search field and scan button a topbar usually carries were removed on
+			purpose: filtering happens in the sidebar, and a scan is a decision belonging to a program. -->
 			<header class="topbar">
-				<!-- The pill is the programme filter, not a label. It was dead text
-				     until program_id became a searchable field, which is what made
-				     "how do I filter by programme" a question with no answer. -->
+				<!-- The pill is the programme filter, not a label. It was dead text until program_id became
+				searchable, leaving "how do I filter by programme" with no answer. -->
 				<ProgramSwitcher programs={data.programs} />
 				<span class="crumb">{crumb.section} · <b>{crumb.leaf}</b></span>
 				<span class="spacer"></span>

@@ -1,10 +1,7 @@
-// Package normalize owns the canonical forms.
-//
-// Deduplication depends entirely on it, which is why one function here decides
-// each shape and SQL never parses a key. A second implementation, in a query or
-// in a migration, would diverge on the cases that matter: an IPv6 literal, an
-// implicit port, a percent-encoded separator, and nothing would raise an error
-// when the two disagreed.
+// Package normalize owns the canonical forms. Deduplication depends on it, so
+// one function decides each shape and SQL never parses a key: a second
+// implementation in a query or migration would diverge on IPv6 literals,
+// implicit ports and percent-encoded separators without any error.
 package normalize
 
 import (
@@ -28,18 +25,15 @@ const (
 	KindIP Kind = "ip"
 	// KindService is a host and a port, which is the unit of a web surface.
 	KindService Kind = "service"
-	// KindURL is what a human declares. No producer creates one: a path is
-	// where a redirect landed that day, and an application renaming its login
-	// page would retire one asset and create another.
+	// KindURL is what a human declares. No producer creates one: a path is where a
+	// redirect landed that day, and a renamed login page would retire one asset and
+	// create another.
 	KindURL Kind = "url"
 )
 
-// Key is a canonical identity, together with what is derivable from it.
-//
-// Host, Port and Scheme are filled here rather than waited for from an
-// observation: the information is in the key at the moment the row is written,
-// and deriving it in SQL later would be the second implementation this package
-// exists to prevent.
+// Key is a canonical identity with what is derivable from it. Host, Port and
+// Scheme are filled here because the key already holds them; deriving them in
+// SQL later would be the second implementation this package prevents.
 type Key struct {
 	Kind   Kind
 	Value  string
@@ -48,25 +42,21 @@ type Key struct {
 	Scheme string
 }
 
-// ErrInvalid is the base of every rejection here, so a caller can tell a
-// malformed input from a failure to reach something.
+// ErrInvalid is the base of every rejection, to tell malformed input from a
+// failure to reach something.
 var ErrInvalid = errors.New("invalid asset key")
 
 func invalid(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrInvalid, fmt.Sprintf(format, args...))
 }
 
-// defaultPorts is what a scheme implies. A key omits the port when it matches,
-// which is not cosmetic: it makes a scheme on a non-default port the only kind
-// that keeps one, so the unusual case stands out instead of drowning among
-// redundant suffixes.
+// defaultPorts is what a scheme implies. A key omits a matching port, so a
+// scheme on a non-default port is the only kind keeping one and stands out.
 var defaultPorts = map[string]int{"http": 80, "https": 443}
 
-// Hostname normalizes a name or an address literal.
-//
-// Lowercased, trailing dot removed, IDN converted to punycode. Underscore
-// labels are accepted on purpose: _dmarc and _domainkey are everywhere, and a
-// strict hostname grammar would drop real assets.
+// Hostname normalizes a name or an address literal: lowercased, trailing dot
+// removed, IDN as punycode. Underscore labels are accepted on purpose (_dmarc,
+// _domainkey); a strict grammar would drop real assets.
 func Hostname(raw string) (string, error) {
 	host := strings.TrimSpace(raw)
 	host = strings.TrimSuffix(host, ".")
@@ -74,8 +64,8 @@ func Hostname(raw string) (string, error) {
 		return "", invalid("empty host")
 	}
 
-	// A bracketed literal is an address, and lowercasing it before parsing is
-	// what makes two spellings of the same IPv6 converge.
+	// A bracketed literal is an address; lowercasing before parsing makes two
+	// spellings of one IPv6 converge.
 	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
 		addr, err := Address(host[1 : len(host)-1])
 		if err != nil {
@@ -102,8 +92,8 @@ func Hostname(raw string) (string, error) {
 	return ascii, nil
 }
 
-// Address normalizes an IP literal. An IPv4-mapped address is reduced to its
-// IPv4 form: ::ffff:1.2.3.4 and 1.2.3.4 are one machine, not two assets.
+// Address normalizes an IP literal. An IPv4-mapped address reduces to IPv4:
+// ::ffff:1.2.3.4 and 1.2.3.4 are one machine.
 func Address(raw string) (string, error) {
 	ip := net.ParseIP(strings.TrimSpace(raw))
 	if ip == nil {
@@ -165,12 +155,9 @@ func Service(host string, port int, proto string) (Key, error) {
 	}, nil
 }
 
-// URL builds a declared surface key.
-//
-// The query string is excluded. Placeholders do not fix it: the order of
-// parameters is arbitrary and optional ones produce several keys for one
-// endpoint. The deeper reason is that the inventory is about surfaces rather
-// than requests, so ?page=2 is not a second asset.
+// URL builds a declared surface key. The query string is excluded: parameter
+// order is arbitrary and optional ones would make several keys for one endpoint,
+// and the inventory is about surfaces, so ?page=2 is not a second asset.
 func URL(raw string) (Key, error) {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
@@ -195,8 +182,8 @@ func URL(raw string) (Key, error) {
 		}
 	}
 
-	// EscapedPath rather than Path: the decoded form has already lost the
-	// difference between a separator and a %2F inside a segment.
+	// EscapedPath, not Path: the decoded form loses the difference between a
+	// separator and a %2F inside a segment.
 	value := scheme + "://" + bracket(host)
 	if port != defaultPorts[scheme] {
 		value += ":" + strconv.Itoa(port)
@@ -206,13 +193,10 @@ func URL(raw string) (Key, error) {
 	return Key{Kind: KindURL, Value: value, Host: host, Port: port, Scheme: scheme}, nil
 }
 
-// Scheme narrows a reported scheme to one a browser speaks.
-//
-// A report is evidence rather than a fact, so this is validated and lowered
-// here rather than stored as it arrived. The case matters more than it looks:
-// the scheme decides whether a port belongs in an authority, and "HTTPS" read
-// as anything but https drops the port and points a render at a different
-// service on the same host.
+// Scheme narrows a reported scheme to one a browser speaks. A report is evidence,
+// so it is validated and lowered here. Case matters: the scheme decides whether a
+// port belongs in an authority, and "HTTPS" read as anything but https drops the
+// port and points a render at another service on the host.
 func Scheme(raw string) (string, error) {
 	lowered := strings.ToLower(strings.TrimSpace(raw))
 	if _, ok := defaultPorts[lowered]; !ok {
@@ -221,19 +205,15 @@ func Scheme(raw string) (string, error) {
 	return lowered, nil
 }
 
-// Path normalizes the path of a URL.
-//
-// Case is preserved, because paths are case sensitive where hosts are not.
-// Redundant slashes go, "." and ".." are resolved, and a trailing slash is
-// removed everywhere but at the root.
+// Path normalizes the path of a URL. Case is preserved (paths are case
+// sensitive), redundant slashes go, "." and ".." resolve, and a trailing slash
+// goes except at the root.
 func Path(raw string) string {
 	if raw == "" || raw == "/" {
 		return "/"
 	}
 
-	// Split before decoding. A %2F is a slash *inside* a segment rather than a
-	// separator, so decoding first would turn one segment into two and change
-	// the path.
+	// Split before decoding: a %2F is a slash inside a segment, not a separator.
 	var out []string
 	for _, segment := range strings.Split(raw, "/") {
 		decoded := decodeUnreserved(segment)
@@ -255,9 +235,8 @@ func Path(raw string) string {
 	return "/" + strings.Join(out, "/")
 }
 
-// decodeUnreserved expands the percent-encodings that carry no meaning and
-// leaves the ones that do, uniformizing the hexadecimal case of what stays so
-// that two spellings of the same reserved character converge.
+// decodeUnreserved expands meaningless percent-encodings, keeps meaningful ones,
+// and uppercases the hex of what stays so two spellings converge.
 func decodeUnreserved(segment string) string {
 	var b strings.Builder
 	for i := 0; i < len(segment); i++ {
@@ -267,7 +246,7 @@ func decodeUnreserved(segment string) string {
 		}
 		value, err := strconv.ParseUint(segment[i+1:i+3], 16, 8)
 		if err != nil {
-			// Not an encoding at all. Left as written rather than guessed at.
+			// Not an encoding at all: left as written.
 			b.WriteByte(segment[i])
 			continue
 		}
@@ -291,9 +270,8 @@ func isUnreserved(c byte) bool {
 	return false
 }
 
-// bracket wraps an IPv6 literal, which is what makes a service key parseable
-// at all: without it, splitting on the last colon is the only way to find the
-// port, and that is a rule waiting to be got wrong.
+// bracket wraps an IPv6 literal, which makes a service key parseable; otherwise
+// splitting on the last colon is the only way to find the port.
 func bracket(host string) string {
 	if ip := net.ParseIP(host); ip != nil && strings.Contains(host, ":") {
 		return "[" + host + "]"

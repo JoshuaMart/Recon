@@ -22,22 +22,18 @@
 	const favicon = $derived(faviconOf(data.detail.evidence));
 
 	/**
-	 * The layers, read once and handed to the panels that own them.
-	 *
-	 * Each panel reads the last observation of one layer and states what it
-	 * measured, in the vocabulary of that layer rather than in the vocabulary of a JSON
-	 * walk. The walk is still there, whole, at the bottom.
+	 * The layers, read once and handed to the panels that own them. Each panel reads one layer's last
+	 * observation and states what it measured in that layer's vocabulary, not a JSON walk's. The walk
+	 * is still there, whole, at the bottom.
 	 */
 	const http = $derived(layerOf(data.detail.evidence, 'http'));
 	const tcp = $derived(layerOf(data.detail.evidence, 'tcp'));
 	const render = $derived(layerOf(data.detail.evidence, 'fingerprint'));
 
 	/**
-	 * The layers this asset has never had an observation of.
-	 *
-	 * Named rather than omitted, and only where the layer would apply: nothing probes
-	 * a name over http, so "no fingerprint" on an fqdn is a rule and not a gap, and saying
-	 * it would answer a question nobody asked.
+	 * The layers this asset never had an observation of. Named, not omitted, and only where the layer
+	 * would apply: nothing probes a name over http, so "no fingerprint" on an fqdn is a rule, not a
+	 * gap, and saying it answers a question nobody asked.
 	 */
 	const never = $derived.by(() => {
 		const expected: Evidence['layer'][] = webSurface(asset) ? ['dns', 'tcp', 'http', 'fingerprint'] : ['dns', 'tcp'];
@@ -59,10 +55,9 @@
 
 	<div class="columns">
 		<div class="main">
-			<!-- The http layers when the kind is a web surface, and also when it is not but
-			     an observation exists anyway: nothing probes a name over http, and the
-			     observations taken before it stopped are still measurements. Hiding a panel
-			     over data the fold below shows would be the interface deciding what counts. -->
+			<!-- The http layers when the kind is a web surface, and also when it is not but an observation
+			exists: nothing probes a name over http, yet observations taken earlier are still measurements.
+			Hiding a panel over data the fold below shows would be the interface deciding what counts. -->
 			{#if webSurface(asset) || http}
 				<HttpPanel {asset} evidence={http} />
 				<CertificatePanel {asset} evidence={http} />
@@ -95,9 +90,8 @@
 					<!-- The scheme is the one the probe measured, never one inferred from
 					     the port. Its absence is exact rather than prudent. -->
 					<dd class:none={!asset.scheme}>{asset.scheme ?? 'none measured'}</dd>
-					<!-- The canonical key, and not the readable spelling the header
-					     carries: `vulns.jomar.ovh:80/tcp` is what the database holds and what an
-					     export or an API call needs. -->
+					<!-- The canonical key, not the readable spelling the header carries: `vulns.jomar.ovh:80/tcp` is
+					what the database holds and what an export or API call needs. -->
 					<dt>Key</dt>
 					<dd>{asset.key}</dd>
 					<dt>Scope</dt>
@@ -140,9 +134,8 @@
 			</section>
 
 			{#if !data.enriched}
-				<!-- the three absences, first state: a deployment with no MaxMind database is a normal
-				     deployment, so the infrastructure family is not shown at all. The absence
-				     is said once, where it can be acted on, rather than as an empty block. -->
+				<!-- First state: a deployment with no MaxMind database is normal, so the infrastructure family is
+				not shown at all. The absence is said once, where it can be acted on, not as an empty block. -->
 				<p class="settings">This deployment derives no ASN and no geolocation.</p>
 			{/if}
 

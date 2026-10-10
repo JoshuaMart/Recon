@@ -12,19 +12,11 @@ import (
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
-// CandidatePass is the third pass, and it exists because of what it does not
-// wait for.
-//
-// A Certificate Transparency candidate is due one minute after it is created,
-// and the whole aggressive curve rests on that first check happening then. The
-// due date pass cannot deliver it: one live verification run per programme is a
-// slot held for the run's whole deadline, so a candidate arriving a minute into
-// a sweep would wait half an hour for a check the curve wanted at sixty seconds.
-// That is the freshness advantage spent on a queue.
-//
-// The two passes exclude each other on the selection as well, and that is not
-// tidiness. Without it they fight over the same names: each freezes what the
-// other was about to take, and which one wins is whichever tick fired first.
+// CandidatePass is the third pass, existing for what it does not wait for. A CT candidate is
+// due one minute after creation and the aggressive curve rests on that check, but a live
+// verification run holds its programme's slot for the whole deadline, so a candidate arriving
+// a minute into a sweep would wait half an hour. The passes also exclude each other in the
+// selection, or they fight over the same names.
 type CandidatePass struct {
 	pool      *pgxpool.Pool
 	scheduler *Scheduler
@@ -42,13 +34,10 @@ func NewCandidatePass(
 	return &CandidatePass{pool: pool, scheduler: scheduler, interval: interval, log: log}
 }
 
-// Run ticks until the context ends.
-//
-// The interval is the floor under the curve's first rung. A rung of one minute
-// checked by a pass that runs every five is a rung of five, so this shares the
-// due date pass's interval rather than having a slower one of its own: what
-// bounds the executions is the due dates and the one live candidate run per
-// programme, so a tick that finds nothing starts nothing.
+// Run ticks until the context ends. The interval is the floor under the curve's
+// first rung (a one-minute rung checked every five is a five), so it shares the
+// due-date pass's interval. Due dates and the one live candidate run per
+// programme bound the executions, so an empty tick starts nothing.
 func (c *CandidatePass) Run(ctx context.Context) {
 	ticker := time.NewTicker(c.interval)
 	defer ticker.Stop()
@@ -88,11 +77,9 @@ func (c *CandidatePass) Once(ctx context.Context) (int, error) {
 	return started, nil
 }
 
-// provision defines and starts one candidate run, and reports whether it went
-// out. The shape is the due date pass's, for the reason that pass gives: the
-// run is committed before anything is started, because starting inside the
-// transaction would leave an execution running with a valid credential against
-// a run row that was rolled back.
+// provision defines and starts one candidate run and reports whether it went out.
+// Same shape as the due-date pass: the run is committed before starting, or an
+// execution could run with a valid credential against a rolled-back row.
 func (c *CandidatePass) provision(ctx context.Context, org, program uuid.UUID, name string) bool {
 	tx, err := c.pool.Begin(ctx)
 	if err != nil {
@@ -104,9 +91,8 @@ func (c *CandidatePass) provision(ctx context.Context, org, program uuid.UUID, n
 	definition, err := c.scheduler.Candidate(ctx, sqlcgen.New(tx), org, program)
 	switch {
 	case errors.Is(err, ErrNothingDue):
-		// The last due candidate was taken between the two statements, which
-		// on this lane is the normal outcome of a busy apex rather than a
-		// condition to report.
+		// The last due candidate was taken between the statements: on this lane the
+		// normal outcome of a busy apex, not a condition to report.
 		return false
 	case errors.Is(err, ErrRunInFlight):
 		return false

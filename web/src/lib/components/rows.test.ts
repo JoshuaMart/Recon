@@ -6,12 +6,9 @@ import Timeline from './Timeline.svelte';
 import type { Asset, Group } from '$lib/types';
 
 /**
- * The row of the fold, rendered on the server.
- *
- * The card carried four milestone 7 assertions and the row inherits them, which is the
- * whole risk of replacing it: a shape that loses the explicit mention of an
- * `unobservable`, or the three states of the cookie badge, passes every other test in
- * this suite. These hold them on the new shape.
+ * The row of the fold, rendered on the server. The card carried four assertions and the row
+ * inherits them, the risk of replacing it: a shape losing the explicit mention of an
+ * `unobservable`, or the three cookie states, passes every other test. These hold them here.
  */
 
 function asset(overrides: Partial<Asset> = {}): Asset {
@@ -40,9 +37,8 @@ const row = (a: Asset, props: Record<string, unknown> = {}) =>
 	render(AssetRow, { props: { asset: a, filters: [], ...props } }).body;
 
 describe('AssetRow', () => {
-	// An unobservable asset needs an explicit mention and not a colour alone, and
-	// the three absences says why the two sentences differ in kind. The row has no band, so the
-	// sentence takes the cell of a title an unreachable asset does not have.
+	// An unobservable asset needs an explicit mention, not colour alone: the two sentences differ in
+	// kind. The row has no band, so the sentence takes the cell of a title an unreachable asset lacks.
 	it('writes the sentence of an unobservable asset, not only its colour', () => {
 		const body = row(asset({ lifecycle: 'unobservable', http_state: 'dead' }));
 		expect(body).toContain('No observer gets through');
@@ -78,10 +74,9 @@ describe('AssetRow', () => {
 		expect(row(filtered)).toContain('none worth a badge');
 	});
 
-	// the three absences took script hashes off the card on a granularity measurement, and the row
-	// is the same line at a smaller scale.
-	// A badge that says something and does nothing is a fact somebody has to
-	// retype into the filter bar this interface deliberately does not have.
+	// Script hashes left the card on a granularity measurement, and the row is the same line smaller.
+	// A badge that says something and does nothing is a fact to retype into the filter bar this
+	// interface deliberately lacks.
 	it('makes every pivot badge a link that re-runs the search', () => {
 		const body = row(
 			asset({
@@ -92,9 +87,8 @@ describe('AssetRow', () => {
 				]
 			})
 		);
-		// The field the server searches, not the name the pivot goes by: the two
-		// vocabularies differ, and a value keyed on the wrong one matches nothing
-		// rather than failing.
+		// The field the server searches, not the pivot's name: the vocabularies differ, and a value keyed
+		// on the wrong one matches nothing instead of failing.
 		expect(body).toContain('href="/?f=cookie_name%3Acontains%3ASESS_INTERNAL"');
 		expect(body).toContain('href="/?f=favicon_hash%3Aeq%3Aabc123def"');
 		// And the counter travels with it, because that is what turns an attribute
@@ -103,18 +97,15 @@ describe('AssetRow', () => {
 		expect(body).toContain('>9<');
 	});
 
-	// The badge decision is the server's and this never re-makes it. A second
-	// copy of the denylist here would be a second list to keep in step, and the
-	// divergence would read as a badge appearing on one screen and not the other.
+	// The badge decision is the server's and never re-made here: a second denylist copy would be a
+	// second list to keep in step, reading as a badge on one screen and not another.
 	it('draws no badge for a pivot the server did not mark', () => {
 		const body = row(
 			asset({
 				last_fingerprint_at: '2026-08-18T10:00:00Z',
-				// Both halves, because that is what the wire carries: the pivot with
-				// the server's verdict on it, and the attribute the value came from.
-				// The second is what separates "sets no cookie" from "sets one no
-				// badge deserves", and reading only the pivots would state the first
-				// where the second is true.
+				// Both halves, as the wire carries: the pivot with the server's verdict, and the attribute it came
+				// from. The second separates "sets no cookie" from "sets one no badge deserves"; reading only the
+				// pivots would state the first where the second is true.
 				attributes: { cookie_names: ['PHPSESSID'] },
 				pivots: [{ type: 'cookie_name', value: 'PHPSESSID', count: 812, badge: false }]
 			})
@@ -125,9 +116,8 @@ describe('AssetRow', () => {
 		expect(body).toContain('cookies, none worth a badge');
 	});
 
-	// The finding this product exists for, and the one badge on a row that is not
-	// a pivot: it does not link assets, it says one of them points at something
-	// anybody can claim.
+	// The finding this product exists for, and the row's one badge that is not a pivot: it links no
+	// assets, it says one points at something anyone can claim.
 	it('renders a takeover candidate on the row, and links it to the search', () => {
 		const body = row(
 			asset({
@@ -142,9 +132,8 @@ describe('AssetRow', () => {
 		expect(body).toContain('href="/?f=takeover_candidate%3Aexists%3Atrue"');
 	});
 
-	// The fingerprinter runs on five triggers rather than on a cadence, so its
-	// values can be weeks older than the last probe. A badge that shared the row's
-	// timestamp would be claiming the browser saw what the probe saw.
+	// The fingerprinter runs on five triggers, not a cadence, so its values can be weeks older than
+	// the last probe; a badge sharing the row's timestamp would claim the browser saw what the probe saw.
 	it('dates a fingerprinter badge separately from the row', () => {
 		const body = row(
 			asset({
@@ -205,12 +194,10 @@ describe('HostGroup', () => {
 		expect(body).not.toContain('AS62000');
 	});
 
-	// the three absences, first state: a deployment with no MaxMind database is a normal deployment,
-	// so the family is not shown rather than shown empty.
-	// The positive control, and without it the two cases below pass just as
-	// happily on a console that shows nothing at all. That is how an absence
-	// test goes quietly green: it asserts that something is missing, on a screen
-	// where everything is.
+	// First state: a deployment with no MaxMind database is normal, so the family is hidden, not empty.
+	// The positive control: without it the two cases below pass on a console showing nothing at all,
+	// how an absence test goes quietly green (it asserts something is missing on a screen where
+	// everything is).
 	it('shows the operator and the place when the deployment enriches', () => {
 		const body = host(group([asset({ asn: 51167, asn_org: 'Contabo GmbH', country: 'FR', city: 'Lauterbourg' })]));
 		expect(body).toContain('AS51167');
@@ -252,9 +239,9 @@ describe('HostGroup', () => {
 });
 
 describe('AssetRow landing', () => {
-	// A service reached on :443 answers a final URL that spells the port the canonical
-	// form drops, so a string comparison shows an arrow pointing at the address the row
-	// already carries. What is shown is the difference, never the repetition.
+	// A service reached on :443 answers a final URL spelling the port the canonical form drops, so a
+	// string comparison would show an arrow at the address the row already carries. Show the
+	// difference, never the repetition.
 	it('says nothing when the chain landed on the asset itself', () => {
 		const body = row(asset({ status_code: 200, final_url: 'https://a.acme.test:443' }));
 		expect(body).not.toContain('→');
@@ -299,8 +286,7 @@ describe('Timeline diff rendering', () => {
 			held_until: '2026-08-18T11:00:00Z',
 			outcome: 'ok',
 			diff: {
-				// The class sits on the transition and not on each field, because that
-				// is what it describes: one field of a diff cannot be a revelation
+				// The class sits on the transition, not each field: one field of a diff cannot be a revelation
 				// while another is not.
 				class: 'real_change',
 				fields: [{ field: 'open_ports', kind: 'added', ...field }]

@@ -2,36 +2,30 @@ package lifecycle
 
 import "time"
 
-// Curve is a backoff ladder. Two of them exist because they answer different
-// questions, and a single curve tuned between the two answers neither.
+// Curve is a backoff ladder. There are two because one curve tuned between the
+// two questions would answer neither.
 type Curve []time.Duration
 
-// CandidateCurve is aggressive at the start.
-//
-// Between a certificate being issued and the service actually going live,
-// anything from a few minutes to a few days passes. Probing often during the
-// first hour is what catches a service as it appears, before it is hardened,
-// and that is where the freshness advantage actually is.
+// CandidateCurve is aggressive at the start. Between certificate issuance and
+// the service going live, minutes to days pass; probing often in the first hour
+// catches it as it appears.
 var CandidateCurve = Curve{
 	time.Minute, 5 * time.Minute, 15 * time.Minute,
 	time.Hour, 6 * time.Hour, 24 * time.Hour, 72 * time.Hour,
 }
 
-// FlappingCurve is patient, because the cost of a false positive is a useless
-// alert and the cost of waiting is a few hours of staleness.
+// FlappingCurve is patient: a false positive is a useless alert, while waiting
+// costs a few hours of staleness.
 var FlappingCurve = Curve{
 	15 * time.Minute, time.Hour, 6 * time.Hour, 24 * time.Hour,
 }
 
-// CandidateBudget is how long a candidate is chased before it is given up on.
-//
-// It ends archived rather than inactive: an asset whose infrastructure was
-// never provisioned is not dead, it never existed.
+// CandidateBudget is how long a candidate is chased before being given up on.
+// It ends archived, not inactive: infrastructure never provisioned is not dead.
 const CandidateBudget = 14 * 24 * time.Hour
 
-// At reads the delay for a tier, clamping at both ends. A tier past the end of
-// a curve stays on its last rung rather than wrapping to the first, which is
-// the bug this method exists to make impossible.
+// At reads the delay for a tier, clamped at both ends. A tier past the end
+// stays on the last rung instead of wrapping to the first.
 func (c Curve) At(tier int) time.Duration {
 	if len(c) == 0 {
 		return 0
@@ -50,59 +44,46 @@ func Exhausted(firstSeen, at time.Time) bool {
 	return !firstSeen.IsZero() && !at.Before(firstSeen.Add(CandidateBudget))
 }
 
-// Render priorities. The column is sorted ascending before the due date, so a
-// lower number is served first.
-//
-// A baseline enters low. A first render of something nobody has looked at yet
-// must not queue ahead of a change somebody is waiting on, and after a mass
-// discovery there are thousands of the first and a handful of the second.
+// Render priorities, sorted ascending before the due date (lower is served
+// first). A baseline enters low: after a mass discovery there are thousands of
+// first renders, and they must not queue ahead of a change someone is waiting on.
 const (
 	PriorityChange   int16 = 100
 	PriorityBaseline int16 = 200
 )
 
-// Cadence is the nominal rate of each rung, which the stage ladder is the cost
-// knob for. These are configuration rather than constants: the right numbers
-// depend on the size of a perimeter and on what the programme allows.
+// Cadence is the nominal rate of each rung. It is configuration because the
+// right values depend on perimeter size and programme rules.
 type Cadence struct {
-	// Resolve costs one round trip to the resolver pool, and nothing is sent
-	// to the target.
+	// Resolve costs one round trip to the resolver pool; nothing reaches the target.
 	Resolve time.Duration
 	// Full is a hundred connections per host plus an HTTP probe, by far the
-	// most expensive rung.
+	// costliest rung.
 	Full time.Duration
-	// Fingerprint is the nominal render cadence, and it is per service rather
-	// than per host. Modulating it by volatility is deliberately left out: the
-	// tiers need weeks of real data, and fixing them on a few hundred assets
-	// would produce invented thresholds that later read as measurements.
+	// Fingerprint is the nominal render cadence, per service rather than per host.
+	// It is not modulated by volatility: tiers need weeks of real data, and
+	// thresholds fixed on a few hundred assets would later read as measurements.
 	Fingerprint time.Duration
-	// RenderSole is the cadence when the renderer is the only detector left,
-	// which is the common shape of a mitigation aimed at a raw client.
+	// RenderSole is the cadence when the renderer is the only detector left.
 	RenderSole time.Duration
-	// RenderRecovery is the cadence when the renderer is the one being turned
-	// away. It is a recovery attempt rather than a measurement, so it is rare.
+	// RenderRecovery is the cadence when the renderer itself is turned away. It is
+	// a recovery attempt, so it is rare.
 	RenderRecovery time.Duration
-	// RenderBlind is the cadence when neither observer gets through. It stays
-	// short because the asset is unmeasurable rather than dead, and something
-	// has to keep asking.
+	// RenderBlind is the cadence when neither observer gets through. The asset is
+	// unmeasurable, not dead, so it stays short.
 	RenderBlind time.Duration
-	// Inactive is the low rate a confirmed death is still watched at. An
-	// inventory that stops looking at what died never notices it come back.
+	// Inactive is the low rate at which a confirmed death is still watched; without
+	// it a return is never noticed.
 	Inactive time.Duration
-	// Jitter is the ceiling of the spread added to every delay. Without it the
-	// thousands of assets one discovery run wrote share a due date and come
-	// back together forever.
+	// Jitter is the ceiling of the spread added to every delay, so assets written
+	// by one discovery run do not share a due date forever.
 	Jitter time.Duration
-	// FullFloor is how often the expensive rung may run at its fastest.
+	// FullFloor is the fastest the expensive rung may run on a backoff.
 	//
-	// A backoff curve is a confirmation rate, and it is written for the cheap
-	// rung: fifteen minutes of resolution costs one round trip to a resolver
-	// pool. The same fifteen minutes on the full rung is a hundred connections
-	// per host plus an HTTP probe, four times an hour, and an asset can reach
-	// the failing state from the tcp or the http layer, where the target is
-	// answering and the sweep costs everything it says on the tin. Worse, a
-	// failing asset always holds the earliest due date, so it takes the head of
-	// every batch and starves the inventory of its nominal passes.
+	// Curves are written for the cheap rung. Fifteen minutes is one resolver round
+	// trip but, on full, a hundred connections per host four times an hour. A
+	// failing asset also holds the earliest due date, so it would head every batch
+	// and starve the nominal passes.
 	FullFloor time.Duration
 }
 
@@ -123,13 +104,10 @@ func DefaultCadence() Cadence {
 
 // Stagger is a due date of "now", spread.
 //
-// Spread widens an existing delay by a fraction of itself, so it cannot spread a
-// zero one, and that is the case this exists for: a candidate that answers is
-// due for the expensive rung immediately, and a certificate carrying tens of
-// names promotes all of them in the same instant. full is the entry into a
-// recurring cadence rather than a rung of a curve, so a convoy formed there
-// comes back every cycle for good, which is exactly what the jitter on a
-// discovery run's assets exists to prevent.
+// Spread widens an existing delay and cannot spread zero. That is the case
+// here: a candidate that answers is due for full immediately, and a certificate
+// with tens of names promotes all of them at once. Full is the entry into a
+// recurring cadence, so a convoy formed there would recur every cycle.
 func (c Cadence) Stagger(r float64) time.Duration {
 	if c.Jitter <= 0 {
 		return 0
@@ -143,13 +121,11 @@ func (c Cadence) Stagger(r float64) time.Duration {
 	return time.Duration(float64(c.Jitter) * r)
 }
 
-// Spread widens a delay by a fraction of itself, bounded by the configured
-// ceiling. It is proportional rather than additive because the two curves span
-// four orders of magnitude: fifteen minutes of jitter on a one minute rung
-// would delete the rung.
+// Spread widens a delay by a fraction of itself, capped by the configured
+// ceiling. It is proportional because the curves span four orders of magnitude;
+// fifteen minutes of jitter would delete a one minute rung.
 //
-// The randomness is a parameter in [0, 1) rather than a package level source,
-// so a test asserts a delay instead of a range.
+// The randomness r in [0, 1) is a parameter so tests assert a delay, not a range.
 func (c Cadence) Spread(delay time.Duration, r float64) time.Duration {
 	if delay <= 0 {
 		return delay
@@ -167,12 +143,9 @@ func (c Cadence) Spread(delay time.Duration, r float64) time.Duration {
 	return delay + time.Duration(float64(ceiling)*r)
 }
 
-// Delay is how long until an asset in this state is due again.
-//
-// The backoff tier only means something while an asset is failing. On an
-// active one the nominal cadence applies, which is what makes recovery cheap:
-// a single success puts the asset back on its normal rhythm rather than
-// walking the curve back down.
+// Delay is how long until an asset in this state is due again. The tier only
+// matters while failing; an active asset gets the nominal cadence, so one
+// success restores its rhythm without walking the curve back down.
 func (c Cadence) Delay(state string, rung string, tier int) time.Duration {
 	var delay time.Duration
 	switch state {
@@ -191,33 +164,25 @@ func (c Cadence) Delay(state string, rung string, tier int) time.Duration {
 		return c.Resolve
 	}
 
-	// The curve accelerates confirmation, and the expensive rung has a floor on
-	// how fast it may be asked to confirm. Without it a curve written for one
-	// round trip to a resolver pool is applied to a hundred connections per
-	// host, and an asset failing on the tcp or http layer, where the target is
-	// answering and the sweep really costs what it says, runs a full pass four
-	// times an hour.
-	//
-	// The nominal cadence is never affected: this is a floor on a backoff, not
-	// on the schedule.
+	// Floor on a backoff, never on the nominal schedule: a curve written for one
+	// resolver round trip must not run a full pass four times an hour on an asset
+	// failing at the tcp or http layer.
 	if rung == RungFull && delay < c.FullFloor {
 		return c.FullFloor
 	}
 	return delay
 }
 
-// The rungs of the ladder a due date belongs to. A run's scope decides which
-// dates its report moves: an asset due for full does not need a resolve run,
-// because full runs every rung below it, and the reverse is not true.
+// The rungs a due date belongs to. A run's scope decides which dates its
+// report moves: full runs every rung below it, so an asset due for full needs
+// no resolve run, but not the reverse.
 const (
 	RungResolve = "resolve"
 	RungFull    = "full"
 )
 
-// NextTier is the backoff tier after one observation.
-//
-// It resets on any state that is not a failure, so an asset that comes back
-// does not carry the widening it earned while it was down.
+// NextTier is the backoff tier after one observation. It resets on any
+// non-failure so a returning asset does not keep the widening it earned.
 func NextTier(state string, tier int) int {
 	switch state {
 	case Flapping, Candidate, Inactive, Unobservable:

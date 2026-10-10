@@ -14,28 +14,21 @@ import (
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
-// maxImportBytes bounds an imported stream.
-//
-// A scanner delivering rather than a person typing, so it is the report's bound
-// and not the assets form's. The largest file anybody has produced here is
-// under a megabyte, and the room above that is for a perimeter, not for a
-// mistake: what actually bounds the work is the asset count below.
+// maxImportBytes bounds an imported stream. A scanner delivering, not a person
+// typing, so it is the report's bound. The largest file seen is under a megabyte,
+// and the room above is for a perimeter; the asset count below bounds the work.
 const maxImportBytes = 64 << 20
 
-// maxImportAssets bounds what one call may write.
-//
-// An import goes through the same statement as every other asset, one round
-// trip each, which is a deliberate refusal to keep a second implementation of
-// classification and scheduling. That choice is what this number pays for. It
-// is refused rather than truncated: an import that silently kept the first ten
-// thousand assets of a file would report a perimeter smaller than the one the
-// caller handed over, and nothing would say so.
+// maxImportAssets bounds what one call may write. An import uses the same
+// statement as every asset, one round trip each (refusing a second implementation
+// of classification and scheduling), and this number pays for that. Refused, not
+// truncated: silently keeping the first ten thousand would report a smaller
+// perimeter than the caller handed over.
 const maxImportAssets = 10_000
 
-// ownsProgram answers the same question as owns, on a transaction of its own.
-//
-// It exists so the check can happen before the body is read. Its answer is not
-// trusted for the write: the transaction that writes asks again.
+// ownsProgram answers the same question as owns, in its own transaction, so the
+// check can precede reading the body. The write's transaction asks again; this
+// answer is not trusted for it.
 func (h *Programs) ownsProgram(
 	ctx context.Context, w http.ResponseWriter, principal auth.Principal, programID uuid.UUID,
 ) bool {
@@ -49,12 +42,9 @@ func (h *Programs) ownsProgram(
 	return h.owns(ctx, w, sqlcgen.New(tx), principal, programID)
 }
 
-// ImportBBOT turns a scan run outside this platform into inventory.
-//
-// It sits on Programs beside the assets form rather than in a handler of its
-// own, because it is the same act under the same action and it needs the same
-// two checks. A second place deciding who may touch which programme is a second
-// place to get it wrong.
+// ImportBBOT turns a scan run outside this platform into inventory. It sits on
+// Programs beside the assets form: same act, same action, same two checks, and a
+// second place deciding who may touch which programme is a second place to be wrong.
 func (h *Programs) ImportBBOT(w http.ResponseWriter, r *http.Request, principal auth.Principal) {
 	ctx := r.Context()
 
@@ -64,9 +54,8 @@ func (h *Programs) ImportBBOT(w http.ResponseWriter, r *http.Request, principal 
 	}
 
 	// The programme is checked before the body is read, so a caller holding
-	// manage_scope somewhere cannot spend sixty four megabytes of decoding
-	// against a programme it has no access to. It costs one transaction that is
-	// opened and closed around a single read, which is the cheaper of the two.
+	// manage_scope elsewhere cannot spend sixty-four megabytes of decoding against a
+	// programme it cannot access. One short transaction around one read is cheaper.
 	if !h.ownsProgram(ctx, w, principal, programID) {
 		return
 	}
@@ -75,9 +64,8 @@ func (h *Programs) ImportBBOT(w http.ResponseWriter, r *http.Request, principal 
 	if err != nil {
 		var refusal *bbot.Error
 		if errors.As(err, &refusal) {
-			// The file's shape is the caller's, and naming it is what makes the
-			// endpoint usable: "malformed" on a body that is valid JSON teaches
-			// nobody that the container was wrong rather than the content.
+			// The file's shape is the caller's, and naming it makes the endpoint usable:
+			// "malformed" on valid JSON would not teach that the container was wrong.
 			fail(w, http.StatusBadRequest, "malformed", refusal.Error())
 			return
 		}
@@ -106,9 +94,9 @@ func (h *Programs) ImportBBOT(w http.ResponseWriter, r *http.Request, principal 
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := sqlcgen.New(tx)
 
-	// Again, inside the transaction that writes. The check above bounds the
-	// work a stranger can ask for; this one is the one that decides, because
-	// between the two the programme could have been archived or handed over.
+	// Again, inside the writing transaction. The check above bounds what a stranger
+	// can ask for; this one decides, as the programme could be archived or handed over
+	// in between.
 	if !h.owns(ctx, w, q, principal, programID) {
 		return
 	}

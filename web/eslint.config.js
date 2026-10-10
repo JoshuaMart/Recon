@@ -18,20 +18,17 @@ export default ts.config(
 			parserOptions: {
 				projectService: true,
 				extraFileExtensions: ['.svelte'],
-				// svelte-eslint-parser handles the markup and hands the script block
-				// to this one. Without it every `<script lang="ts">` fails to parse,
-				// and a file that fails to parse is a file nothing is checked in.
+				// svelte-eslint-parser handles the markup and hands the script block to this one. Without it every
+				// `<script lang="ts">` fails to parse, and an unparsed file is one nothing is checked in.
 				parser: ts.parser
 			}
 		}
 	},
 	{
 		rules: {
-			// Off deliberately. The rule wants every internal href to go through
-			// `resolve()`, which guards against a base path the console does not
-			// have. Every link here is built by $lib/query, which is the one place
-			// that constructs a URL, and that is where a base path would be applied
-			// if one ever appears.
+			// Off deliberately. The rule wants every internal href through `resolve()`, guarding a base path the
+			// console lacks. Every link is built by $lib/query, the one place that constructs a URL and where a
+			// base path would be applied if one appears.
 			'svelte/no-navigation-without-resolve': 'off'
 		}
 	},

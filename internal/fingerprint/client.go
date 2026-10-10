@@ -15,26 +15,23 @@ import (
 )
 
 // maxResultBytes bounds a render. A page with a large inline favicon and a long
-// chain is still small; anything past this is a service the caller has no
-// business believing.
+// chain is still small; more is a service not to be believed.
 const maxResultBytes = 16 << 20
 
-// Saturated is the service saying its pool is full.
-//
-// It is a state of the service, so it must not touch the asset: no
-// observation, no counter, no streak, no last_fingerprint_at. A render that
-// reached the target and got nothing writes an observation; a render that never
-// happened writes nothing at all, and confusing the two walks assets toward
-// unobservable for a reason that has nothing to do with them.
+// Saturated is the service saying its pool is full. A state of the service, it must
+// not touch the asset: no observation, counter, streak or last_fingerprint_at. A
+// render that reached the target and got nothing writes an observation; one that
+// never happened writes nothing, and confusing them walks assets toward
+// unobservable for a reason unrelated to them.
 type Saturated struct{ RetryAfter time.Duration }
 
 func (s *Saturated) Error() string {
 	return "the rendering service is saturated, retry after " + s.RetryAfter.String()
 }
 
-// ErrRefused is a target the service would not address at all: an unresolvable
-// name, a scheme it does not speak, or a range it refuses. Like saturation it
-// is a probe error and writes nothing.
+// ErrRefused is a target the service would not address at all (an unresolvable
+// name, an unsupported scheme, a refused range). Like saturation, a probe error
+// that writes nothing.
 var ErrRefused = errors.New("the rendering service refused the target")
 
 // Client is the control plane's side of POST /scan.
@@ -45,9 +42,9 @@ type Client struct {
 	random func() float64
 }
 
-// New builds a client. The timeout is the caller's ceiling and is deliberately
-// longer than the service's own: a render is seconds, and cutting it here would
-// turn the service's answer into a caller-side error nobody can qualify.
+// New builds a client. The timeout is the caller's ceiling and deliberately longer
+// than the service's own: a render takes seconds, and cutting it here would turn
+// the service's answer into a caller-side error nobody can qualify.
 func New(base string, timeout time.Duration, guard *Guard) *Client {
 	if guard == nil {
 		guard = NewGuard(nil)
@@ -64,13 +61,11 @@ func New(base string, timeout time.Duration, guard *Guard) *Client {
 type Options struct {
 	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
 	MaxRedirects   int `json:"max_redirects,omitempty"`
-	// SkipPathChecks turns off robots.txt, the sitemap and the 404 probe. They
-	// are part of what a render costs, so a pass that does not need them says
-	// so rather than paying for them.
+	// SkipPathChecks turns off robots.txt, the sitemap and the 404 probe. They are part
+	// of a render's cost, so a pass not needing them says so.
 	SkipPathChecks bool `json:"skip_path_checks,omitempty"`
-	// Screenshot is never asked for. The capture does not reach the database,
-	// and nothing else stores it yet, so requesting one would spend bandwidth
-	// on bytes with nowhere to go.
+	// Screenshot is never asked for: the capture does not reach the database and
+	// nothing else stores it, so it would spend bandwidth on bytes with nowhere to go.
 	Screenshot bool `json:"screenshot,omitempty"`
 }
 
@@ -106,9 +101,8 @@ func (c *Client) Scan(ctx context.Context, target string, opts Options) (*Result
 	case resp.StatusCode == http.StatusTooManyRequests:
 		return nil, &Saturated{RetryAfter: c.retryAfter(resp)}
 	case resp.StatusCode >= 400:
-		// The service could not address the target. That is a probe error and
-		// not a measurement: a target that refuses, times out or answers a
-		// challenge all come back as results.
+		// The service could not address the target: a probe error, not a measurement. A
+		// target that refuses, times out or answers a challenge comes back as a result.
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return nil, fmt.Errorf("%w: %s: %s", ErrRefused, resp.Status, bytes.TrimSpace(detail))
 	}
@@ -120,11 +114,9 @@ func (c *Client) Scan(ctx context.Context, target string, opts Options) (*Result
 	return &result, nil
 }
 
-// retryAfter reads the header and spreads it.
-//
-// Everyone refused at the same instant received the same value, and waiting
-// exactly that long reconstitutes the convoy the refusal was meant to break.
-// Between half and one and a half times the announced delay.
+// retryAfter reads the header and spreads it between half and one and a half times
+// the announced delay: everyone refused at once got the same value, and waiting
+// exactly that long rebuilds the convoy the refusal meant to break.
 func (c *Client) retryAfter(resp *http.Response) time.Duration {
 	announced := defaultRetryAfter
 	if raw := resp.Header.Get("Retry-After"); raw != "" {
@@ -136,6 +128,6 @@ func (c *Client) retryAfter(resp *http.Response) time.Duration {
 	return time.Duration(float64(announced) * spread)
 }
 
-// defaultRetryAfter is what a refusal with no header is worth waiting. A
-// saturated pool frees a slot in seconds.
+// defaultRetryAfter is the wait for a refusal with no header; a saturated pool
+// frees a slot in seconds.
 const defaultRetryAfter = 5 * time.Second

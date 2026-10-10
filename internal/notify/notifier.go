@@ -15,18 +15,15 @@ import (
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
-// Notifier reads events, aggregates and sends.
-//
-// It is the only asynchronous half. Producing an event is ingestion's job, in
-// its transaction; this can lag without consequence, which is why it is allowed
-// to be a loop at all.
+// Notifier reads events, aggregates and sends. It is the only asynchronous half:
+// events are produced by ingestion in its transaction, so this can lag harmlessly.
 type Notifier struct {
 	pool   *pgxpool.Pool
 	sender *Sender
 	batch  int
-	// tips remembers the last mass tip per programme, which is the one piece
-	// of state a window may hold in memory: it is a cooldown rather than a
-	// count, so a restart re-emitting once is the safe direction.
+	// tips remembers the last mass tip per programme, the one piece of state a window
+	// may hold in memory: a cooldown, not a count, so a restart re-emitting once is
+	// the safe direction.
 	tips map[uuid.UUID]tip
 	now  func() time.Time
 	log  *slog.Logger
@@ -74,9 +71,9 @@ func (n *Notifier) Once(ctx context.Context) (Summary, error) {
 
 	channels := map[uuid.UUID][]Channel{}
 	overflowed := map[overflow]Window{}
-	// A channel that failed once in this tick is not asked again. With a two
-	// hundred event batch and a ten second timeout, a dead webhook otherwise
-	// makes one tick take half an hour against a thirty second interval.
+	// A channel that failed once this tick is not asked again: with 200 events and a
+	// ten second timeout, a dead webhook would make a tick take half an hour against
+	// a thirty second interval.
 	broken := map[uuid.UUID]struct{}{}
 	for _, event := range pending {
 		if ctx.Err() != nil {
@@ -93,21 +90,18 @@ func (n *Notifier) Once(ctx context.Context) (Summary, error) {
 		n.deliver(ctx, queries, event, channels[org], &summary, overflowed, broken)
 	}
 
-	// Once the whole batch is known, the summaries speak for what they actually
-	// stand for.
+	// Once the whole batch is known, the summaries speak for what they stand for.
 	for window, span := range overflowed {
 		n.summarise(ctx, queries, window, span, &summary)
 	}
 	return summary, nil
 }
 
-// summarise writes the one summary a saturated window owes.
-//
-// It carries the priority of the window it replaces rather than its own, so a
-// flood of high events is summarised at high and reaches a channel whose floor
-// would have refused a medium one. And it is written once per window: without
-// that, every suppressed event writes its own summary and the anti-flood
-// produces one notification per notification it suppressed.
+// summarise writes the one summary a saturated window owes. It carries the
+// priority of the window it replaces, so a flood of high events is summarised at
+// high and reaches a channel whose floor would refuse medium. Once per window:
+// otherwise every suppressed event writes a summary and the anti-flood produces a
+// notification per suppressed notification.
 func (n *Notifier) summarise(
 	ctx context.Context, q *sqlcgen.Queries, window overflow, span Window, summary *Summary,
 ) {
@@ -179,7 +173,6 @@ func (n *Notifier) channels(ctx context.Context, q *sqlcgen.Queries, org uuid.UU
 	return out, nil
 }
 
-// deliver sends one event, or decides it should not be sent.
 // overflow names a window that saturated, so one summary can speak for it.
 type overflow struct {
 	org      pgtype.UUID
@@ -195,9 +188,8 @@ func (n *Notifier) deliver(
 ) {
 	program := uuid.UUID(event.ProgramID.Bytes)
 
-	// The window is read from the table, never from memory. An in-memory
-	// counter resets on restart, which reopens the tap exactly when one
-	// restarts because of an incident.
+	// The window is read from the table, never memory: an in-memory counter resets on
+	// restart, reopening the tap exactly when an incident restarts the process.
 	if Windowed(event.Priority, event.AssetID.Valid) {
 		window := Windows[event.Priority]
 		sent, err := q.CountWindow(ctx, sqlcgen.CountWindowParams{
@@ -211,9 +203,8 @@ func (n *Notifier) deliver(
 			return
 		}
 		if sent >= int64(window.Cap) {
-			// Past the cap the individual event stays in the database,
-			// readable and not sent, and a summary speaks for it. An overflow
-			// must never produce the absence of a notification.
+			// Past the cap the event stays in the database, readable and unsent, and a summary
+			// speaks for it. An overflow must never produce the absence of a notification.
 			if _, err := q.SuppressWindow(ctx, sqlcgen.SuppressWindowParams{
 				Ids:        []int64{event.ID},
 				CreatedAts: []pgtype.Timestamptz{event.CreatedAt},
@@ -223,9 +214,9 @@ func (n *Notifier) deliver(
 				return
 			}
 			summary.Suppressed++
-			// The summary is written once the tick is over, not here. Written
-			// on the first event past the cap it would count one held event and
-			// claim to speak for the four thousand nine hundred that follow.
+			// The summary is written after the tick, not here: on the first event past the cap
+			// it would count one held event and speak for the four thousand nine hundred
+			// following.
 			overflowed[overflow{
 				org: event.OrgID, program: event.ProgramID,
 				priority: event.Priority, kind: event.Kind, name: event.ProgramName,
@@ -236,9 +227,9 @@ func (n *Notifier) deliver(
 
 	message := n.message(event)
 
-	// An organization with no channel is a deliberate configuration: the event
-	// is marked delivered and counted, so "computed and sent nowhere" stays
-	// visible rather than looking like a queue that is draining.
+	// An organization with no channel is a deliberate setup: the event is marked
+	// delivered and counted, so "computed and sent nowhere" does not look like a
+	// draining queue.
 	eligible := 0
 	for _, channel := range channels {
 		if AtLeast(event.Priority, channel.MinPriority) {
@@ -261,9 +252,8 @@ func (n *Notifier) deliver(
 		}
 		if err := n.sender.Send(ctx, channel, message); err != nil {
 			broken[channel.ID] = struct{}{}
-			// The event stays queued. A dead webhook is an observability
-			// outage rather than a transport detail, and the stuck queue
-			// alert is what says so.
+			// The event stays queued. A dead webhook is an observability outage, and the stuck
+			// queue alert says so.
 			n.log.ErrorContext(ctx, "notification not delivered",
 				"event", event.ID, "kind", event.Kind, "channel", channel.ID, "error", err)
 			summary.Failed++
@@ -276,8 +266,8 @@ func (n *Notifier) deliver(
 }
 
 func (n *Notifier) mark(ctx context.Context, q *sqlcgen.Queries, event sqlcgen.PendingEventsRow, summary *Summary) {
-	// By (id, created_at) rather than id alone: the primary key is composite,
-	// and forgetting the second half scans every partition on each mark.
+	// By (id, created_at): the primary key is composite, and omitting the second half
+	// scans every partition per mark.
 	if err := q.MarkNotified(ctx, sqlcgen.MarkNotifiedParams{
 		ID:        event.ID,
 		CreatedAt: event.CreatedAt,
@@ -310,10 +300,9 @@ func (n *Notifier) message(event sqlcgen.PendingEventsRow) Message {
 	return message
 }
 
-// The diff is in the payload for a template that wants it; this is what somebody
-// reads on a phone, and it has to say which asset and what moved rather than
-// which event kind fired.
-// Line is the sentence a notification leads with.
+// Line is the sentence a notification leads with. It is what someone reads on a
+// phone, so it says which asset and what moved, not which event kind fired; the
+// diff is in the payload for templates that want it.
 func Line(message Message) string {
 	subject := message.Asset
 	if subject == "" {

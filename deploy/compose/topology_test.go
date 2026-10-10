@@ -1,9 +1,7 @@
-// Package compose holds no code. It exists so that the network split is
-// guarded by a test rather than by whoever reads the compose file next.
-//
-// The script beside it proves the isolation holds on a running stack. This
-// proves nobody undid it in the file since, which is a different question and
-// the one a pull request can answer.
+// Package compose holds no code. It exists so the network split is guarded by a
+// test, not by whoever reads the compose file next. The script beside it proves the
+// isolation on a running stack; this proves nobody undid it in the file since, the
+// question a pull request can answer.
 package compose
 
 import (
@@ -15,29 +13,25 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// browsers are the pool the rendering service drives. Listed rather than
-// inferred, because a browser added to a compose file and not here is a browser
-// no test says anything about, which is the quiet way an isolated set stops
-// covering what it names.
+// browsers are the pool the rendering service drives. Listed, not inferred: a
+// browser added to compose and not here has no test, the quiet way an isolated set
+// stops covering what it names.
 var browsers = []string{"chrome-1", "chrome-2", "chrome-3"}
 
-// isolated are the services whose input is controlled by somebody else and
-// which therefore hold nothing: the browsers and the service driving them, and
-// the Certificate Transparency feed, which parses X.509 anybody can get logged.
+// isolated are the services whose input others control and which therefore hold
+// nothing: the browsers, the service driving them, and the CT feed, which parses
+// X.509 anyone can get logged.
 var isolated = append([]string{"fingerprinter", "certstream"}, browsers...)
 
-// The two files, and what the rendering side must stay away from in each.
+// The two files and what the rendering side must stay away from in each. They differ
+// in one entry, deliberately: one host cannot express a one-directional link, so the
+// production file gives the control plane and fingerprinter a network of their own
+// and the fingerprinter can resolve `controlplane` there. The local file needs no
+// such thing, as Docker Desktop proxies a published port to the host's loopback, and
+// keeps the stricter shape.
 //
-// They differ in one entry, and the difference is a decision rather than an
-// oversight. One host has no way to express a link that works in one direction
-// only, so the production file gives the control plane and the fingerprinter a
-// network of their own and the fingerprinter can resolve `controlplane` on it.
-// The local file needs no such thing, because Docker Desktop proxies a
-// published port to the host's loopback, and it keeps the stricter shape.
-//
-// The database is in both lists, and the browser, which is where a target's
-// JavaScript actually runs, is covered by the test below on top of this one:
-// it reaches nothing in either file.
+// The database is in both lists; the browser, where a target's JavaScript runs, is
+// also covered by the test below, reaching nothing in either file.
 var topologies = []struct {
 	file        string
 	unreachable []string
@@ -118,10 +112,9 @@ func TestTheRenderingServiceSharesNoNetworkWithTheInventory(t *testing.T) {
 	}
 }
 
-// The browser is held to the stricter rule in both files, and it is the one
-// that matters most: the fingerprinter fetches what it is told to fetch, but
-// Chrome executes whatever the page it renders contains. Everything the
-// production file relaxes for the service driving it stays closed here.
+// The browser is held to the stricter rule in both files, and matters most: the
+// fingerprinter fetches what it is told, but Chrome executes whatever the page
+// contains. What production relaxes for the service driving it stays closed here.
 func TestTheBrowserReachesNothingThatHoldsAnything(t *testing.T) {
 	for _, topology := range topologies {
 		t.Run(topology.file, func(t *testing.T) {
@@ -140,9 +133,8 @@ func TestTheBrowserReachesNothingThatHoldsAnything(t *testing.T) {
 	}
 }
 
-// The positive control. Without it the test above passes just as happily on a
-// compose file where the services were renamed or removed, which is how an
-// isolation test usually goes quietly green.
+// The positive control: without it the test above passes on a compose file where the
+// services were renamed or removed, how isolation tests usually go quietly green.
 func TestTheControlPlaneStillReachesTheDatabase(t *testing.T) {
 	for _, topology := range topologies {
 		t.Run(topology.file, func(t *testing.T) {
@@ -156,9 +148,9 @@ func TestTheControlPlaneStillReachesTheDatabase(t *testing.T) {
 	}
 }
 
-// The second positive control, and it belongs to the production file: there the
-// control plane calls the rendering service by name, so a file where they share
-// nothing is a file where rendering silently never happens.
+// The second positive control, for the production file: the control plane calls the
+// rendering service by name, so a file where they share nothing means rendering
+// silently never happens.
 func TestTheControlPlaneStillReachesTheRenderingService(t *testing.T) {
 	parsed := load(t, "compose.prod.yaml")
 
@@ -168,10 +160,9 @@ func TestTheControlPlaneStillReachesTheRenderingService(t *testing.T) {
 	}
 }
 
-// A service holding a credential is a service whose network confinement is one
-// bug away from irrelevant. Checked on the environment rather than on the code,
-// because that is where a credential would actually be handed over, and because
-// it is the edit somebody makes in a hurry.
+// A service holding a credential is one bug away from its network confinement being
+// irrelevant. Checked on the environment, where a credential would be handed over and
+// where a hurried edit happens.
 func TestTheRenderingServiceHoldsNoCredential(t *testing.T) {
 	// Substrings rather than exact names: the point is to catch a variable
 	// nobody thought to list here, whatever a future integration calls it.
@@ -194,9 +185,8 @@ func TestTheRenderingServiceHoldsNoCredential(t *testing.T) {
 								"everything it needs arrives in the scan request", name, key)
 						}
 					}
-					// Both names, in both files. The production file lets the
-					// fingerprinter resolve the control plane, and that is still
-					// not a reason to hand it the address.
+					// Both names, in both files: production lets the fingerprinter resolve the control
+					// plane, which is no reason to hand it the address.
 					for _, host := range []string{"postgres", "controlplane"} {
 						if strings.Contains(strings.ToLower(value), host) {
 							t.Errorf("%s is given %s=%s, which names %s", name, key, value, host)
@@ -208,9 +198,8 @@ func TestTheRenderingServiceHoldsNoCredential(t *testing.T) {
 	}
 }
 
-// The migration credential must not be in the control plane's environment.
-// The configuration refuses to start with it, and this catches the edit before
-// anybody starts anything.
+// The migration credential must not be in the control plane's environment. The
+// configuration refuses to start with it; this catches the edit before anything starts.
 func TestTheControlPlaneIsNotGivenTheOwnerCredential(t *testing.T) {
 	for _, topology := range topologies {
 		t.Run(topology.file, func(t *testing.T) {
@@ -226,9 +215,8 @@ func TestTheControlPlaneIsNotGivenTheOwnerCredential(t *testing.T) {
 	}
 }
 
-// FastRecon is a one-shot job started with per-run overrides, not a daemon.
-// Listing it here would shape the stack around a service that has nothing to
-// listen to.
+// FastRecon is a one-shot job started with per-run overrides, not a daemon; listing
+// it would shape the stack around a service that listens to nothing.
 func TestTheScannerIsNotAService(t *testing.T) {
 	for _, topology := range topologies {
 		t.Run(topology.file, func(t *testing.T) {
@@ -244,17 +232,13 @@ func TestTheScannerIsNotAService(t *testing.T) {
 	}
 }
 
-// The rendering service holds no credential, and that is checked rather than
-// intended.
-//
-// It executes JavaScript controlled by the target, so anything it holds is
-// something a page it renders can try to reach. Everything it needs arrives in
-// the scan request, which is what makes "holds nothing" a shape rather than a
-// promise: there is no variable to leak because there is no variable.
+// The rendering service holds no credential, checked rather than intended. It
+// executes JavaScript the target controls, so anything it holds is reachable by a page
+// it renders. Everything it needs arrives in the scan request, making "holds nothing"
+// a shape, not a promise: there is no variable to leak.
 func TestTheRenderingSideHoldsNoCredential(t *testing.T) {
-	// Names that would carry one. Matched on the name rather than the value,
-	// because the value is an interpolation at this point and reading it here
-	// would test the shell rather than the file.
+	// Names that would carry one, matched on the name: the value is still an
+	// interpolation here, and reading it would test the shell, not the file.
 	secretish := []string{"password", "secret", "token", "key", "url", "dsn", "credential"}
 
 	for _, topology := range topologies {
@@ -293,17 +277,13 @@ func TestTheRenderingSideHoldsNoCredential(t *testing.T) {
 	}
 }
 
-// The console holds no database credential, and it is checked here rather than
-// intended.
+// The console holds no database credential, checked rather than intended. That is
+// why the interface is its own process: server templates would put its rendering in
+// the process holding the database credentials, and a process that renders pages and
+// writes the inventory is one bug from being the whole system.
 //
-// That is the whole reason the interface is a process of its own rather than
-// pages served by the control plane: server templates would put the rendering
-// of the interface inside the process holding the database credentials, and a
-// process that renders pages and can write to the inventory is one bug away
-// from being the whole system.
-//
-// It reaches the control plane over HTTP with the organization's token, like
-// any other API client, so the only variable it needs is an address.
+// It reaches the control plane over HTTP with the organization's token like any API
+// client, so its only variable is an address.
 func TestTheConsoleHoldsNoDatabaseCredential(t *testing.T) {
 	forbidden := []string{"PASSWORD", "SECRET", "SIGNING_KEY", "DATABASE", "POSTGRES", "DSN"}
 
@@ -332,9 +312,8 @@ func TestTheConsoleHoldsNoDatabaseCredential(t *testing.T) {
 	}
 }
 
-// ORIGIN is set, and the reason it is checked in the file is that its absence
-// does not fail at startup in every deployment shape: it fails at the first
-// form, which is the worst moment and the hardest one to attribute.
+// ORIGIN is set, checked in the file because its absence does not fail at startup in
+// every deployment shape but at the first form: the worst moment and hardest to attribute.
 func TestTheConsoleIsGivenAnOrigin(t *testing.T) {
 	for _, topology := range topologies {
 		t.Run(topology.file, func(t *testing.T) {
@@ -348,9 +327,9 @@ func TestTheConsoleIsGivenAnOrigin(t *testing.T) {
 	}
 }
 
-// The console is on the control network and never on the rendering one. It is
-// the one component besides the control plane that holds a credential, and the
-// browser side is the one component that must reach nothing.
+// The console is on the control network and never the rendering one: it is the one
+// component besides the control plane holding a credential, and the browser side must
+// reach nothing.
 func TestTheConsoleSharesNoNetworkWithTheRenderingSide(t *testing.T) {
 	for _, topology := range topologies {
 		t.Run(topology.file, func(t *testing.T) {
@@ -365,13 +344,11 @@ func TestTheConsoleSharesNoNetworkWithTheRenderingSide(t *testing.T) {
 	}
 }
 
-// Nothing in the production file publishes a port. The reverse proxy reaches
-// the two services that answer a hostname over a network it already sits on,
-// and a published port there is a second way in that no route, no middleware
-// and no certificate applies to.
+// Nothing in the production file publishes a port. The reverse proxy reaches the two
+// hostname-answering services over a network it already sits on, and a published port
+// would be a second way in with no route, middleware or certificate applying.
 //
-// The local file publishes several on purpose, which is why this is asked of
-// one file rather than of both.
+// The local file publishes several on purpose, hence one file asked, not both.
 func TestTheProductionFilePublishesNoPort(t *testing.T) {
 	parsed := load(t, "compose.prod.yaml")
 
@@ -383,12 +360,10 @@ func TestTheProductionFilePublishesNoPort(t *testing.T) {
 	}
 }
 
-// Every RECON_ setting the example offers reaches the control plane.
-//
-// The process reads any RECON_ variable on its own, but compose hands a
-// container only the keys its environment names, so a setting added to the
-// example and not here is a line somebody edits in .env to no effect. That is
-// how verification.report_timeout first shipped.
+// Every RECON_ setting the example offers reaches the control plane. The process reads
+// any RECON_ variable, but compose hands a container only the keys it names, so a
+// setting added to the example and not here is a .env edit to no effect (how
+// verification.report_timeout first shipped).
 func TestEverySettingTheExampleOffersReachesTheControlPlane(t *testing.T) {
 	raw, err := os.ReadFile("../../.env.example")
 	if err != nil {

@@ -13,57 +13,32 @@ import (
 
 // The live feed of discoveries.
 //
-// Polling with a cursor rather than LISTEN/NOTIFY, and the argument that
-// decides is not cost but the nature of the data: discovery already arrives in
-// batches. A run posts one report, so sub second latency describes nothing
-// real, and paying a notification per asset to show a batch faster than it
-// exists would be optimizing against the producer.
-//
-// What LISTEN would have cost, written down because it is the option that looks
-// modern: a NOTIFY in the ingestion transaction is another round trip on the
-// hottest write path, NOTIFY is global so a subscriber receives every
-// organization's channels, and LISTEN pins a connection, so an open tab costs a
-// pool connection.
+// Polling with a cursor, not LISTEN/NOTIFY. Discovery already arrives in
+// batches (a run posts one report), so sub-second latency describes nothing
+// real. LISTEN would also add a NOTIFY round trip to the hottest write path,
+// NOTIFY is global so a subscriber would receive every organization's channels,
+// and LISTEN pins a pool connection per open tab.
 
-// FeedCap is how many discoveries one round emits.
-//
-// The first run of a program produces thousands of assets, and a feed emitting
-// all of them at the rate they arrive makes the tab unusable at the exact
-// moment there is most to see.
+// FeedCap is how many discoveries one round emits. A program's first run
+// produces thousands, and emitting them at arrival rate makes the tab unusable
+// when there is most to see.
 const FeedCap = 50
 
-// FeedLag is how far behind the present the feed reads.
-//
-// The cursor orders on first_seen, and that column is stamped by the
-// application inside the ingestion transaction rather than at commit. The two
-// orders are not the same: a run that stamps T1 and takes ten seconds to commit
-// lands after a run that stamped T2 > T1 and committed immediately, so a tick in
-// between emits the second, advances the cursor past T2, and never sees the
-// first. Nothing about that is visible; the assets are in the inventory and
-// simply never appeared in the feed.
-//
-// So the feed reads up to now minus this, which gives every transaction that
-// stamped before that instant time to have committed. The bound has to exceed
-// the longest ingestion transaction, and the consequence if it does not is the
-// silent skip above rather than an error.
-//
-// What it costs is latency, and it is the cheapest thing here to spend: a run
-// posts one report, so discovery arrives in batches and sub second latency
-// describes nothing real.
+// FeedLag is how far behind the present the feed reads. The cursor orders on first_seen,
+// stamped by the application inside the ingestion transaction, not at commit: a run stamping
+// T1 that takes ten seconds to commit lands after one stamping T2 > T1, so a tick in between
+// advances the cursor past T2 and never sees the first, silently. The feed therefore reads up
+// to now minus this, which must exceed the longest ingestion transaction; the cost is latency,
+// the cheapest thing to spend here.
 const FeedLag = 30 * time.Second
 
-// FeedOverflowCap bounds the count of what a round left behind.
-//
-// The count is over the tail of the same index, so it is cheap on an ordinary
-// tick and unbounded on a first import of half a million assets. Bounded, the
-// tick says "500 or more" instead of spending two seconds computing a number
-// nobody reads differently past the first hundred.
+// FeedOverflowCap bounds the count of what a round left behind. The count scans
+// the index tail: cheap on a normal tick, unbounded on a first import of half a
+// million assets. Capped, the tick says "500 or more".
 const FeedOverflowCap = 500
 
-// Discovery is one line of the feed: what appeared, and why.
-//
-// Enough for a row, not a card. The rest is one click away, and reading more
-// here would put the asset view's cost on a loop that runs every few seconds.
+// Discovery is one line of the feed: what appeared, and why. Enough for a row;
+// more would put the asset view's cost on a loop running every few seconds.
 type Discovery struct {
 	AssetID     uuid.UUID `json:"asset_id"`
 	ProgramID   uuid.UUID `json:"program_id"`
@@ -74,29 +49,22 @@ type Discovery struct {
 	ScopeStatus string    `json:"scope_status"`
 	FirstSeen   time.Time `json:"first_seen"`
 	Source      string    `json:"discovery_source"`
-	// Step is the last step of the lineage, which is the one that produced this
-	// asset. The whole chain belongs on the asset view; here it answers "why"
-	// in one line.
+	// Step is the last lineage step, the one that produced this asset. The whole
+	// chain belongs on the asset view.
 	Step *string `json:"step,omitempty"`
 }
 
-// Tick is one round of the feed.
-//
-// A batch rather than one message per discovery. One message per asset would
-// put the cap in the wrong place: a round that found four hundred assets would
-// emit four hundred messages of which the client keeps the last fifty, and the
-// overflow the round is supposed to announce would have no message to travel
-// in.
+// Tick is one round of the feed, as a batch. One message per asset would put the
+// cap in the wrong place: four hundred messages of which the client keeps fifty,
+// and no message to carry the overflow.
 type Tick struct {
 	Discoveries []Discovery `json:"discoveries"`
-	// Overflow is what the cap left out, answered rather than dropped.
+	// Overflow is what the cap left out.
 	Overflow int `json:"overflow,omitempty"`
-	// OverflowAtLeast says the count itself was capped, so the number is a
-	// floor. A page rendering "500 more" where there are forty thousand is the
-	// silent truncation this whole document refuses.
+	// OverflowAtLeast says the count itself was capped, so the number is a floor.
 	OverflowAtLeast bool `json:"overflow_at_least,omitempty"`
-	// Cursor is the id of the message. The client hands it back as
-	// Last-Event-ID on reconnection, so resumption costs no server side state.
+	// Cursor is the message id. The client hands it back as Last-Event-ID, so
+	// resuming needs no server-side state.
 	Cursor string `json:"cursor"`
 }
 
@@ -109,11 +77,8 @@ type FeedCursor struct {
 // Zero reports whether a walk has no position yet.
 func (c FeedCursor) Zero() bool { return c.AssetID == uuid.Nil }
 
-// String encodes it as an event id.
-//
-// One line, no whitespace, which the SSE framing needs, and opaque for the same
-// reason the list's cursor is: a cursor a client can build is one a client will
-// build by hand, and then the ordering key cannot change.
+// String encodes it as an event id: one line without whitespace (SSE framing),
+// and opaque for the same reason as the list's cursor.
 func (c FeedCursor) String() string {
 	if c.Zero() {
 		return ""
@@ -122,11 +87,9 @@ func (c FeedCursor) String() string {
 		[]byte(c.FirstSeen.UTC().Format(time.RFC3339Nano)+" "+c.AssetID.String()))
 }
 
-// ParseFeedCursor reads one back.
-//
-// The prefix is what stops a list cursor from being accepted here. The two
-// encode the same pair and mean different columns, so without it a client that
-// mixed them would get a walk that silently starts in the wrong place.
+// ParseFeedCursor reads one back. The prefix stops a list cursor being accepted
+// here: they encode the same pair for different columns, and mixing them would
+// start the walk in the wrong place silently.
 func ParseFeedCursor(encoded string) (FeedCursor, error) {
 	if encoded == "" {
 		return FeedCursor{}, nil
@@ -154,20 +117,14 @@ func ParseFeedCursor(encoded string) (FeedCursor, error) {
 	return FeedCursor{FirstSeen: at, AssetID: asset}, nil
 }
 
-// Discoveries reads one round.
-//
-// Ascending and keeping the oldest, which is what makes the cursor advance past
-// them. Keeping the newest would leave the cursor where it was and re-read the
-// same head of the queue on the next tick, and the feed would stall on a first
-// run rather than draining it.
-//
-// No query on observation here either. It reads asset and asset_current, like
-// the list.
+// Discoveries reads one round. Ascending, keeping the oldest, so the cursor
+// advances; keeping the newest would re-read the same head and stall on a first
+// run. It reads asset and asset_current like the list, never observation.
 func Discoveries(
 	ctx context.Context, q Querier, org uuid.UUID, cursor FeedCursor, now time.Time,
 ) (Tick, error) {
 	tick := Tick{Discoveries: []Discovery{}, Cursor: cursor.String()}
-	// The watermark, and the reason it exists is above FeedLag.
+	// The watermark; see FeedLag.
 	upTo := now.Add(-FeedLag)
 
 	rows, err := q.Query(ctx, `
@@ -203,10 +160,8 @@ func Discoveries(
 	}
 
 	if len(tick.Discoveries) == 0 {
-		// A round that found nothing emits nothing, and the cursor stays where
-		// it was. Advancing it on an empty round would hand out an id that
-		// never named a discovery, and a client resuming from it would be
-		// resuming from a position the server invented.
+		// A round that found nothing emits nothing and the cursor stays: advancing it
+		// would hand out an id that never named a discovery.
 		return tick, nil
 	}
 
@@ -224,11 +179,8 @@ func Discoveries(
 	return tick, nil
 }
 
-// backlog counts what a full round left behind, bounded.
-//
-// Under the same watermark as the round itself, so the number describes what
-// the next tick will actually deliver rather than counting rows this feed is
-// deliberately not looking at yet.
+// backlog counts what a full round left behind, bounded. Under the same
+// watermark as the round, so it describes what the next tick will deliver.
 func backlog(
 	ctx context.Context, q Querier, org uuid.UUID, after FeedCursor, upTo time.Time,
 ) (int, bool, error) {
@@ -258,28 +210,18 @@ func backlog(
 	return count, count >= FeedOverflowCap, nil
 }
 
-// Head is where a feed with no cursor starts.
-//
-// At the present rather than at the beginning of the inventory. A tab opening
-// on a feed is asking what is happening now, and starting from the first asset
-// ever recorded would spend the first minutes of every connection replaying an
-// inventory the list already shows.
+// Head is where a feed with no cursor starts: the present. A tab opening on a
+// feed asks what is happening now; replaying the inventory would repeat the list.
 func Head(now time.Time) FeedCursor {
-	// The identifier is the largest possible one, so an asset landing in the
-	// same microsecond as the connection opens falls below the bound rather
-	// than arriving as a discovery that predates the tab.
+	// The largest possible id, so an asset landing in the connection's microsecond
+	// falls below the bound instead of arriving as a discovery predating the tab.
 	return FeedCursor{FirstSeen: now, AssetID: uuid.Max}
 }
 
-// lastStep reads the step that produced an asset out of its lineage.
-//
-// The lineage is a chain of objects, newest last, and each one carries a step
-// beside whatever else the producer recorded. Only the name is read here: the
-// rest is the asset view's, which has room for it.
-//
-// Anything the chain holds that is not one of those leaves the field absent
-// rather than rendering a structure into a row. The lineage is written by
-// whatever discovered the asset, so this is a read of somebody else's shape.
+// lastStep reads the step that produced an asset from its lineage: a chain of
+// objects, newest last, each with a step. Only the name is read; the rest is the
+// asset view's. Anything else leaves the field absent, since the chain is
+// written by whatever discovered the asset and this reads someone else's shape.
 func lastStep(raw []byte) *string {
 	if len(raw) == 0 {
 		return nil

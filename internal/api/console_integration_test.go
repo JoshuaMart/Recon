@@ -18,11 +18,9 @@ import (
 	"github.com/JoshuaMart/recon/internal/auth"
 )
 
-// raw drives one console route and hands back the body untouched.
-//
-// Distinct from call, which decodes into a map: half the assertions below are
-// about a field being absent, and a map cannot tell an absent key from one
-// decoded into a zero value.
+// raw drives one console route and returns the body untouched. Unlike call, which
+// decodes into a map, it can tell an absent key from a zero value, which half the
+// assertions below need.
 func (h *harness) raw(t *testing.T, method, path, token string, body any) (*http.Response, []byte) {
 	t.Helper()
 
@@ -73,9 +71,8 @@ func decode[T any](t *testing.T, payload []byte) T {
 	return out
 }
 
-// A rule write reclassifies in the same transaction, and the due dates move
-// with the verdict. Two transactions leave a window where the system scans what
-// was just taken away from it.
+// A rule write reclassifies in the same transaction, and the due dates move with the
+// verdict; two transactions leave a window scanning what was just taken away.
 func TestAScopeWriteMovesTheDueDatesWithIt(t *testing.T) {
 	h := newHarness(t)
 	token := h.console(t)
@@ -142,9 +139,8 @@ func TestAScopeWriteMovesTheDueDatesWithIt(t *testing.T) {
 		t.Errorf("asset.scope_status = %s, want it in step with the projection", identity)
 	}
 
-	// Now the other direction. An exclude takes an asset out, and the due dates
-	// have to go with it: one that keeps them goes on being scanned outside the
-	// authorization.
+	// The other direction: an exclude takes an asset out and its due dates must go, or it
+	// keeps being scanned outside the authorization.
 	resp, payload = h.raw(t, http.MethodPost,
 		"/programs/"+h.program.String()+"/rules", token, map[string]any{
 			"kind": "exclude", "matcher": "fqdn", "pattern": "www.target.test",
@@ -170,9 +166,8 @@ func TestAScopeWriteMovesTheDueDatesWithIt(t *testing.T) {
 	}
 }
 
-// A rule the perimeter cannot compile is refused, and it writes nothing. A rule
-// sitting in the table that no reclassification can read makes every later
-// write fail, and the one that broke it is long gone by then.
+// A rule the perimeter cannot compile is refused and writes nothing: one sitting in
+// the table that no reclassification can read makes every later write fail.
 func TestAFailedRuleWritesNothing(t *testing.T) {
 	h := newHarness(t)
 	token := h.console(t)
@@ -226,9 +221,8 @@ func TestAStaleVersionAppliesNothing(t *testing.T) {
 		t.Fatalf("status %d: %s", resp.StatusCode, payload)
 	}
 
-	// The same version again is a caller that based a decision on a state that
-	// no longer exists. It is a refusal and not a syntax error, so it has to
-	// say which.
+	// The same version again is a caller deciding on a stale state: a refusal, not a
+	// syntax error, so it must say which.
 	resp, payload = h.raw(t, http.MethodPatch, "/programs/"+h.program.String(), token, map[string]any{
 		"name": "renamed twice", "version": current.Version, "rate_limit_rps": 9,
 	})
@@ -246,9 +240,8 @@ func TestAStaleVersionAppliesNothing(t *testing.T) {
 		t.Errorf("the programme reads %q at %d rps, so the refused write applied part of itself", name, rate)
 	}
 
-	// And an edit with no version at all is refused before it reaches the
-	// database. Defaulting to the current one would make the whole column
-	// decorative.
+	// An edit with no version is refused before reaching the database; defaulting to the
+	// current one would make the column decorative.
 	resp, _ = h.raw(t, http.MethodPatch, "/programs/"+h.program.String(), token, map[string]any{
 		"name": "no version",
 	})
@@ -326,9 +319,8 @@ func TestTheProgrammeCountersAreAskedFor(t *testing.T) {
 		t.Errorf("in scope = %v, want 1", counted[0].AssetsInScope)
 	}
 
-	// The detail answers them without being asked, and the switcher's reason not
-	// to does not apply: this is one programme somebody navigated to on purpose,
-	// and the size of the perimeter is what the screen opens with.
+	// The detail answers them unasked: the switcher's reason not to does not apply to
+	// one programme someone navigated to, whose perimeter size the screen opens with.
 	programID, ok := plain[0]["id"].(string)
 	if !ok {
 		t.Fatalf("the list carried no identifier: %+v", plain[0])
@@ -348,11 +340,9 @@ func TestTheProgrammeCountersAreAskedFor(t *testing.T) {
 	}
 }
 
-// A perimeter with nothing in it has a size, and it is nought.
-//
-// The group by returns no row for a programme with no asset, so the counts have
-// to be defaulted rather than left absent: an omitted field reads on the screen
-// as a number nobody computed, which is a different statement from zero.
+// A perimeter with nothing in it has a size, nought. The group by returns no row for
+// an empty programme, so counts are defaulted: an omitted field reads as a number
+// nobody computed, not zero.
 func TestAnEmptyProgrammeCountsNought(t *testing.T) {
 	h := newHarness(t)
 	token := h.console(t)
@@ -462,18 +452,14 @@ func (h *harness) asset(t *testing.T, id uuid.UUID, key, status string, schedule
 	           VALUES ($1, $2, $3, 'fqdn', $4, $4, 'test', $5, now(), now())`,
 		id, h.org, h.program, key, status)
 
-	// All three due dates, not just one. A fixture that leaves two of them null
-	// lets an exclusion that clears only the first pass the assertion below:
-	// the other two read null either way, and two thirds of the guard proves
-	// nothing. Found by removing one branch and watching the test stay green.
+	// All three due dates, not one: a fixture leaving two null lets an exclusion clearing
+	// only the first pass, since the others read null either way (found by removing one
+	// branch and watching the test stay green).
 	//
-	// They are written with the harness clock and not with now(). The readers
-	// compare them against h.now(), which is this process's clock, while now()
-	// is the container's, and the two disagree by however much the runtime's VM
-	// has drifted. When the database is ahead, an asset the fixture meant to be
-	// due reads as scheduled ahead, and the queue test fails saying the
-	// application counted it wrong. This is the fault scope.md describes, in
-	// the fixture rather than in the code it exercises.
+	// They use the harness clock, not now(): readers compare against h.now(), this
+	// process's clock, while now() is the container's, and the two drift. With the
+	// database ahead, a fixture meant to be due reads as scheduled ahead and the queue
+	// test blames the application.
 	due := "NULL, NULL, NULL"
 	if scheduled {
 		due = "$6, $6, $6"
@@ -486,13 +472,9 @@ func (h *harness) asset(t *testing.T, id uuid.UUID, key, status string, schedule
 		id, h.org, h.program, key, status, h.clock.now)
 }
 
-// A service discovered and never probed is found by a filter on the port its key
-// carries.
-//
-// The port is promoted at creation rather than waited for from an observation,
-// which is what makes this true: a service that nothing has answered on is
-// exactly the interesting case, and a filter that only worked after a probe
-// would hide the assets somebody came looking for.
+// A service discovered and never probed is found by the port its key carries. The
+// port is promoted at creation, since an unanswered service is the interesting case
+// and a filter working only after a probe would hide it.
 func TestAnUnprobedServiceIsFoundByItsPort(t *testing.T) {
 	h := newHarness(t)
 	token := h.console(t)
@@ -535,9 +517,8 @@ func TestAnUnprobedServiceIsFoundByItsPort(t *testing.T) {
 	}
 }
 
-// The enrichment state is served rather than deduced, because the console cannot
-// tell "no database configured" from "configured with no match" by looking at the
-// data: no asset carries an ASN in either case.
+// The enrichment state is served, not deduced: the console cannot tell "no database"
+// from "configured, no match", as no asset carries an ASN either way.
 func TestTheDeploymentSaysWhetherItEnriches(t *testing.T) {
 	h := newHarness(t)
 
@@ -566,12 +547,9 @@ func TestTheDeploymentSaysWhetherItEnriches(t *testing.T) {
 	}
 }
 
-// The queue carries what the platform called each execution.
-//
-// Without it the logs of a run that went wrong are unfindable, which is the
-// whole of that column's purpose. It has to come back on the read rather than
-// only on the answer that started the run: the answer lives for one request,
-// and somebody looking for an execution's logs is looking after a reload.
+// The queue carries the platform's name for each execution, or a failed run's logs
+// are unfindable. It must come back on the read, not only the answer that started the
+// run, which lives for one request while someone looks after a reload.
 func TestTheQueueCarriesTheExecutionIdentifier(t *testing.T) {
 	h := newHarness(t)
 	token := h.console(t)
@@ -606,14 +584,10 @@ func TestTheQueueCarriesTheExecutionIdentifier(t *testing.T) {
 	}
 }
 
-// An include that names a thing declares it, and the thing joins the ordinary
-// cycle.
-//
-// An apex says where enumeration starts and a run finds what is under it. The
-// other two name something that already exists: a host to probe, a path to
-// render. Before this they were classifiers with nothing to classify, so the
-// rule read as in force over an inventory it had never put anything into, and
-// the three queues stayed at zero under a programme that looked configured.
+// An include naming a thing declares it, and it joins the ordinary cycle. An apex says
+// where enumeration starts; the other two name something existing (a host to probe, a
+// path to render). Before, they classified nothing, so the rule read as in force over
+// an inventory it never filled and the three queues stayed at zero.
 func TestAnIncludeThatNamesAThingCreatesIt(t *testing.T) {
 	h := newHarness(t)
 	token := h.console(t)
@@ -627,9 +601,8 @@ func TestAnIncludeThatNamesAThingCreatesIt(t *testing.T) {
 		t.Fatalf("status %d: %s", resp.StatusCode, payload)
 	}
 
-	// The host exists, it is in scope, and it carries a due date. That last one
-	// is what the whole thing is for: a verification run selects on it, and
-	// without it nothing ever goes and looks.
+	// The host exists, is in scope and has a due date, which is the point: a verification
+	// run selects on it, and without it nothing ever looks.
 	var status string
 	var full, resolve *time.Time
 	var source string
@@ -683,9 +656,8 @@ func TestAnIncludeThatNamesAThingCreatesIt(t *testing.T) {
 		if kind != want.kind {
 			t.Errorf("%s is a %s, want a %s", want.key, kind, want.kind)
 		}
-		// Every link of the chain is in scope, which is the answer to whether an
-		// included URL puts its host in the perimeter. It has to be: a path is
-		// not reachable without the name it is served from.
+		// Every link of the chain is in scope: a path is unreachable without its host, so an
+		// included URL puts its host in the perimeter.
 		if status != "in_scope" {
 			t.Errorf("%s classified %s, want in_scope", want.key, status)
 		}

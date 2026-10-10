@@ -1,9 +1,7 @@
 // Command controlplane serves the API and runs the background loops.
 //
-// It holds the application credential and never the owner's: role separation
-// buys nothing if whoever reaches execution here finds both in the same
-// environment. The configuration refuses to start if it is given both, which
-// is where that property is enforced rather than in a comment.
+// It holds the application credential, never the owner's. The configuration
+// refuses to start if given both, which is where that is enforced.
 package main
 
 import (
@@ -40,9 +38,9 @@ import (
 )
 
 func main() {
-	// A distroless image has no shell and no curl, so the container's health
-	// check is the binary asking itself. It reads the same configuration, which
-	// means a probe cannot drift from what the process actually listens on.
+	// A distroless image has no shell or curl, so the health check is the binary
+	// asking itself. It reads the same configuration, so a probe cannot drift from
+	// what the process listens on.
 	if len(os.Args) == 2 && os.Args[1] == "-health" {
 		if err := probe(); err != nil {
 			fmt.Fprintf(os.Stderr, "controlplane: %v\n", err)
@@ -68,11 +66,9 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// Two pools, and that is the whole of the isolation being structural: the
-	// role a component connects with is chosen here, once, rather than case by
-	// case in the code. Everything a request does runs on the first; the loops
-	// that serve every tenant in one tick run on the second and say so by the
-	// role they hold.
+	// Two pools make the isolation structural: the role is chosen here once, not
+	// case by case. Requests run on the first; the loops serving every tenant in a
+	// tick run on the second and say so by the role they hold.
 	appPool, err := store.Open(ctx, cfg.Database.URL, cfg.Database.MaxConns, cfg.Database.ConnectTimeout)
 	if err != nil {
 		return err
@@ -80,8 +76,7 @@ func run() error {
 	defer appPool.Close()
 	scoped := store.NewScoped(appPool)
 
-	// Its own bound, and a smaller one. Both pools reading one setting means a
-	// deployment tuned for N backends quietly opens 2N.
+	// Its own, smaller bound: one shared setting would quietly open 2N backends.
 	system, err := store.Open(ctx, cfg.Database.SystemURL, cfg.Database.SystemMaxConns,
 		cfg.Database.ConnectTimeout)
 	if err != nil {
@@ -111,32 +106,28 @@ func run() error {
 	scheduler := runs.New(signer, cfg.Verification, log, runs.WithPlatform(platform))
 	ingestor := ingest.New(enricher, scheduler.Cadence(), log)
 
-	// Started unconditionally, and before anything can write: a partition job
-	// behind a toggle is an ingestion outage three months later.
+	// Unconditional and before anything can write: a partition job behind a toggle
+	// is an ingestion outage three months later.
 	go maintenance.New(sqlcgen.New(system), cfg.Maintenance.Interval, log).Run(ctx)
-	// The other loop that must not be optional. A run nothing expires holds
-	// its targets forever, and the assets it froze are invisible to every
-	// later tick.
+	// Also not optional: an unexpired run holds its targets forever, hiding them
+	// from every later tick.
 	go runs.NewSweeper(scheduler, sqlcgen.New(system), cfg.Verification.SweepInterval, log).Run(ctx)
-	// The pass that provisions enumeration, distinct from the one on due dates.
+	// Provisions enumeration, distinct from the pass on due dates.
 	go runs.NewCadence(system, scheduler, cfg.Verification.SweepInterval, log).Run(ctx)
-	// And the one on due dates, which is what turns a schedule into a run. The
-	// two answer different questions: enumeration asks what exists under a
-	// perimeter, this asks what still answers. Without it a due date is written
-	// by every ingestion and nothing ever reads it, so the inventory is verified
-	// exactly when somebody presses a button.
+	// The pass on due dates, which turns a schedule into a run. Enumeration asks
+	// what exists under a perimeter, this asks what still answers. Without it
+	// every ingestion writes a due date nobody reads, and verification happens only
+	// when someone presses a button.
 	go runs.NewDuePass(system, scheduler, cfg.Verification.SweepInterval, log).Run(ctx)
-	// The candidate lane, which exists because of what it does not wait for. A
-	// Certificate Transparency candidate is due a minute after it is created,
-	// and one live verification run holds its slot for a whole deadline: on the
-	// pass above, a candidate arriving mid sweep waits half an hour for a check
-	// the aggressive curve wanted at sixty seconds.
+	// The candidate lane exists for what it does not wait for. A CT candidate is due
+	// a minute after creation, but a live verification run holds its slot for a whole
+	// deadline, so on the pass above it would wait half an hour for a check wanted
+	// at sixty seconds.
 	go runs.NewCandidatePass(system, scheduler, cfg.Verification.SweepInterval, log).Run(ctx)
 
-	// The one loop that asks a question about somebody else's domain, and the
-	// only outbound work in the control plane. It resolves an apex and nothing
-	// else: no connection, no request, no render. An interval of zero turns it
-	// off, for a deployment that would rather make no outbound query at all.
+	// The only outbound work in the control plane, and the only loop asking about
+	// someone else's domain. It resolves an apex: no connection, request or render.
+	// Interval zero turns it off.
 	if cfg.External.Interval > 0 {
 		go external.New(system, external.NewDNS(cfg.External.Timeout),
 			cfg.External.Interval, cfg.External.Batch, log).Run(ctx)
@@ -145,13 +136,13 @@ func run() error {
 			"will only be found where the host is in this inventory")
 	}
 
-	// The only asynchronous half of the alert path. Producing an event is
-	// ingestion's job, in its transaction; this can lag without consequence.
+	// The asynchronous half of the alert path; producing events is ingestion's job,
+	// in its transaction, so this can lag harmlessly.
 	//
-	// The configured channel becomes the single row that carries it, and only
-	// where exactly one organization exists: a configuration file cannot name a
-	// tenant. The loop retries that until there is one, because the
-	// organization is created by a command outside this process.
+	// The configured channel becomes the single row carrying it, only where exactly
+	// one organization exists (a configuration file cannot name a tenant). The loop
+	// retries until there is one, as the organization is created by a command outside
+	// this process.
 	notifier := notify.New(system, notify.NewSender(cfg.Notify.Timeout, nil), cfg.Notify.Batch, log)
 	go notify.NewLoop(notifier, cfg.Notify.Interval, cfg.Notify.UnobservableAlert, notify.ConfigChannel{
 		URL:         cfg.Notify.WebhookURL,
@@ -159,10 +150,9 @@ func run() error {
 		MinPriority: cfg.Notify.MinPriority,
 	}).Run(ctx)
 
-	// The browser loop, and the one thing here that is optional. A deployment
-	// with no rendering service is a deployment that only probes: the assets
-	// keep their due dates and nothing pretends to have looked at them, which
-	// is the honest shape rather than a loop failing every minute.
+	// The browser loop, the one optional thing here. Without a rendering service a
+	// deployment only probes: assets keep their due dates and nothing pretends to
+	// have looked, instead of a loop failing every minute.
 	if cfg.Render.URL != "" {
 		budget := render.NewBudget(cfg.Render.Cost, nil)
 		client := fingerprint.New(cfg.Render.URL, cfg.Render.Timeout, nil)
@@ -177,10 +167,9 @@ func run() error {
 		log.WarnContext(ctx, "no rendering service configured, nothing will be rendered")
 	}
 
-	// The Certificate Transparency matcher, optional for the same reason the
-	// browser is. A deployment with no feed configured still walks every
-	// perimeter on the discovery cadence; what it gives up is the freshness
-	// advantage, and saying so is better than a loop dialling nothing.
+	// The CT matcher, optional like the browser. Without a feed, perimeters are still
+	// walked on the discovery cadence; only the freshness advantage is lost, and
+	// saying so beats a loop dialling nothing.
 	if cfg.CT.URL != "" {
 		matcher := ct.New(system, scoped, ingestor, ct.Options{
 			Interval:  cfg.CT.Interval,
@@ -224,11 +213,9 @@ func run() error {
 	}
 }
 
-// startPlatform is what actually starts a run definition.
-//
-// A deployment with none defines runs and starts nothing, which is the
-// development shape and a legitimate one: the console shows the definition and
-// a person runs the image.
+// startPlatform is what starts a run definition. With none, runs are defined
+// and not started: the legitimate development shape, where a person runs the
+// image from the console's definition.
 func startPlatform(cfg *config.Config, log *slog.Logger) (runs.Platform, error) {
 	switch cfg.Runner.Provider {
 	case config.RunnerScaleway:
@@ -281,99 +268,88 @@ func routes(
 ) http.Handler {
 	mux := http.NewServeMux()
 
-	// Where a run's report lands. It authenticates before reading anything
-	// else, and the run comes from the credential rather than from the body.
+	// Where a run's report lands. It authenticates before reading anything else, and
+	// the run comes from the credential, not the body.
 	mux.Handle("POST /reports", api.NewReports(scoped, system, signer, ingestor, cfg.Verification.ReportTimeout, log))
 
 	// The only thing a run is given about the inventory, scoped to that run.
 	mux.Handle("GET /runs/{run}/targets", api.NewTargets(scoped, system, signer, log))
 
 	// The console surface. Every route goes through one authorization layer
-	// that produces a principal, even while there is one kind of caller.
+	// producing a principal, even with a single kind of caller.
 	guard := api.NewGuard(system, log)
 	programs := api.NewPrograms(scoped, scheduler, ingestor, cfg.Runner.Timeout, log)
 	mux.Handle("POST /programs/{program}/runs", guard.Require(auth.ActionManageJobs, programs.StartRun))
-	// Closing a run is the other half of starting one, and the same privilege.
+	// Closing a run is the other half of starting one, with the same privilege.
 	mux.Handle("POST /runs/{run}/cancel", guard.Require(auth.ActionManageJobs, programs.CancelRun))
-	// Entering an asset by hand is an assertion about the perimeter, which is
-	// a different privilege from writing what a scanner found.
+	// Entering an asset by hand asserts the perimeter, a different privilege from
+	// writing what a scanner found.
 	mux.Handle("POST /programs/{program}/assets", guard.Require(auth.ActionManageScope, programs.EnterAssets))
 
-	// An import is an assertion about the perimeter, like the form above and
-	// unlike a report, so it holds manage_scope and not ingest. A credential
-	// that could import could otherwise widen the mandate it spends a budget
-	// on, which is the whole reason those two actions are separate.
+	// An import asserts the perimeter like the form above, so it holds manage_scope,
+	// not ingest; otherwise a credential able to import could widen the mandate it
+	// spends a budget on.
 	mux.Handle("POST /programs/{program}/imports/bbot", guard.Require(auth.ActionManageScope, programs.ImportBBOT))
 
-	// The two render triggers that are API entry points. They hold manage_jobs
-	// rather than ingest: something holding ingest could otherwise schedule
-	// renders of its choosing and spend a programme's budget on targets it
-	// picked.
+	// The two API render triggers hold manage_jobs, not ingest: ingest could
+	// otherwise schedule chosen renders and spend a programme's budget.
 	renders := api.NewRenders(scoped, cfg.Render.ReplanSpread, log)
 	mux.Handle("POST /assets/{asset}/render", guard.Require(auth.ActionManageJobs, renders.Request))
 	mux.Handle("POST /renders/replan", guard.Require(auth.ActionManageJobs, renders.Replan))
 
-	// The inventory itself. read_assets and never ingest: a run holds ingest
-	// and everything it needs is in its definition, so a compromised one cannot
-	// exfiltrate a perimeter.
+	// The inventory: read_assets, never ingest. A run holds ingest and has all it
+	// needs in its definition, so a compromised one cannot exfiltrate a perimeter.
 	assets := api.NewAssets(scoped, enriched, log)
 	mux.Handle("POST /assets/search", guard.Require(auth.ActionReadAssets, assets.Search))
-	// The folded list, which is the one the console renders. A route of its own
-	// rather than a flag, because the two hand out cursors that mean different
-	// columns and swapping them has to be a refusal.
+	// The folded list the console renders. A route of its own, not a flag: the two
+	// cursors mean different columns and swapping them must be refused.
 	mux.Handle("POST /assets/hosts", guard.Require(auth.ActionReadAssets, assets.Hosts))
 	mux.Handle("POST /assets/facets", guard.Require(auth.ActionReadAssets, assets.Facets))
 	mux.Handle("POST /assets/export", guard.Require(auth.ActionReadAssets, assets.Export))
-	// The one read path that touches the journal, on one asset and on demand.
+	// The one read path touching the journal, on one asset on demand.
 	mux.Handle("GET /assets/{asset}", guard.Require(auth.ActionReadAssets, assets.Get))
-	// What the search accepts and what this deployment can do, served rather
-	// than deduced. A console that learns its vocabulary against 400s learns it
-	// wrong, and one that deduces the enrichment state from missing data
-	// guesses.
+	// What the search accepts and what this deployment can do, served rather than
+	// deduced: a console learning its vocabulary from 400s learns it wrong.
 	mux.Handle("GET /assets/fields", guard.Require(auth.ActionReadAssets, assets.Fields))
 
-	// The live feed. Polling with a cursor, so nothing pins a connection
-	// between rounds and the tenant filter is the one every other read uses.
+	// The live feed. Polling with a cursor, so nothing pins a connection and the
+	// tenant filter is the one every read uses.
 	feed := api.NewFeed(scoped, log)
 	mux.Handle("GET /feed", guard.Require(auth.ActionReadAssets, feed.Stream))
 
-	// Perimeters, rules and the queue. The reads are the inventory's action and
-	// the writes are the scope one: entering a perimeter is an assertion about
-	// what may be scanned, which is a different privilege from reading what was
-	// found.
+	// Perimeters, rules and the queue. Reads use the inventory's action, writes the
+	// scope one: entering a perimeter asserts what may be scanned, a different
+	// privilege from reading what was found.
 	console := api.NewConsole(scoped, ingestor, log)
 	mux.Handle("GET /programs", guard.Require(auth.ActionReadAssets, console.ListPrograms))
 	mux.Handle("GET /programs/{program}", guard.Require(auth.ActionReadAssets, console.GetProgram))
 	mux.Handle("POST /programs", guard.Require(auth.ActionManageScope, console.CreateProgram))
 	mux.Handle("PATCH /programs/{program}", guard.Require(auth.ActionManageScope, console.UpdateProgram))
-	// The rule routes are nested and not reachable on their own. A rule
-	// identifier alone would need its own ownership check, and a second place
-	// deciding who may touch what is a second place to get it wrong.
+	// Rule routes are nested and not reachable alone: a bare rule id would need its
+	// own ownership check, and a second place deciding who may touch what is a
+	// second place to get it wrong.
 	mux.Handle("POST /programs/{program}/rules", guard.Require(auth.ActionManageScope, console.CreateRule))
 	mux.Handle("PATCH /programs/{program}/rules/{rule}", guard.Require(auth.ActionManageScope, console.UpdateRule))
 	// Read from a console, never from what consumes it.
 	mux.Handle("GET /queue", guard.Require(auth.ActionReadAssets, console.Queue))
-	// What Certificate Transparency has delivered under a programme's apexes.
-	// A read of the inventory rather than of the perimeter: it answers what
-	// arrived, not what is authorised.
+	// What CT has delivered under a programme's apexes. A read of the inventory, not
+	// the perimeter: what arrived, not what is authorised.
 	mux.Handle("GET /programs/{program}/coverage", guard.Require(auth.ActionReadAssets, console.Coverage))
 
-	// Liveness. It touches nothing, because a probe that queries the database
-	// turns a slow database into a restarted process.
+	// Liveness touches nothing: a probe querying the database turns a slow database
+	// into a restarted process.
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
-	// Readiness, which is the one that asks. Separate from the above so that
-	// the two questions have two answers.
+	// Readiness is the one that asks, separate so the two questions have two answers.
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 
-		// Both pools, because a request needs both. The system one is what
-		// turns a credential into an organization, so a broken one 500s every
-		// authenticated call while a process pinging only the other keeps
-		// reporting itself ready and stays in the rotation.
+		// Both pools, as a request needs both. The system pool turns a credential into an
+		// organization, so a broken one 500s every authenticated call while a process
+		// pinging only the other stays "ready" and in rotation.
 		for name, ping := range map[string]func(context.Context) error{
 			"database":        scoped.Ping,
 			"system_database": system.Ping,

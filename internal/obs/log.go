@@ -1,8 +1,6 @@
-// Package obs holds logging and, later, metrics.
-//
-// Logs are structured and carry a correlation id end to end. That is here from
-// the start rather than added when it is first missed: grafting correlation
-// onto an existing pipeline means touching every write path.
+// Package obs holds logging and, later, metrics. Logs are structured with a
+// correlation id end to end, from the start: grafting correlation onto an existing
+// pipeline touches every write path.
 package obs
 
 import (
@@ -12,12 +10,11 @@ import (
 	"strings"
 )
 
-// correlationKey is unexported so that nothing outside this package can put a
-// value under it by accident.
+// correlationKey is unexported so nothing outside can put a value under it by accident.
 type correlationKey struct{}
 
-// WithCorrelation returns a context carrying an id that every log line written
-// from it will report.
+// WithCorrelation returns a context carrying an id that every log line written from
+// it reports.
 func WithCorrelation(ctx context.Context, id string) context.Context {
 	if id == "" {
 		return ctx
@@ -31,10 +28,8 @@ func Correlation(ctx context.Context) string {
 	return id
 }
 
-// NewLogger builds the process logger.
-//
-// It writes to the given writer, which is stderr everywhere in production:
-// stdout is reserved so that a document a machine consumes stays parseable.
+// NewLogger builds the process logger. It writes to the given writer, stderr in
+// production: stdout is reserved so a document a machine consumes stays parseable.
 func NewLogger(w io.Writer, level, format string) *slog.Logger {
 	opts := &slog.HandlerOptions{Level: parseLevel(level)}
 
@@ -47,8 +42,8 @@ func NewLogger(w io.Writer, level, format string) *slog.Logger {
 	return slog.New(&correlated{Handler: handler})
 }
 
-// correlated attaches the context's correlation id to every record, so that no
-// call site has to remember to pass it.
+// correlated attaches the context's correlation id to every record, so no call site
+// has to remember it.
 type correlated struct{ slog.Handler }
 
 func (c *correlated) Handle(ctx context.Context, record slog.Record) error {

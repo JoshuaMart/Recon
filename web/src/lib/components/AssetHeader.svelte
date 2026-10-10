@@ -13,15 +13,9 @@
 	const { asset, favicon }: Props = $props();
 
 	/**
-	 * The identity band, and it replaces the card the asset view used to repeat.
-	 *
-	 * The first plan was for the detail page to render the same card as the list, from the same
-	 * component, so that the display rules lived in one place. What that
-	 * produced on screen was the same eight zones twice within four hundred pixels: once
-	 * as a row somebody had just clicked, once as the header of the page they landed on.
-	 * The asset view keeps the rule and moves it: the card decides how an asset reads in a
-	 * **list**, this decides how it reads when it is the subject, and the sentences the
-	 * two must never contradict each other on live in $lib/format.
+	 * The identity band, replacing the list's card, which the asset view repeated (the same eight zones
+	 * twice within four hundred pixels). The card decides how an asset reads in a list, this when it is
+	 * the subject; sentences the two must not contradict live in $lib/format.
 	 */
 	const name = $derived(identity(asset));
 	const verdict = $derived(verdictOf(asset));
@@ -48,11 +42,9 @@
 				>{name.head}{#if name.path}<span class="path">{name.path}</span>{/if}</span
 			>
 			{#if openable}
-				<!-- The three attributes are not style. This console links to pages that are
-				     hostile by hypothesis: `noopener` stops the opened page reaching
-				     window.opener and navigating the console's own tab to a fake login,
-				     `noreferrer` keeps the console URL out of the target's Referer, and
-				     `_blank` leaves this page where it was. -->
+				<!-- The three attributes are not style. This console links to pages hostile by hypothesis:
+				`noopener` stops the opened page reaching window.opener and navigating this tab to a fake login,
+				`noreferrer` keeps the console URL out of the target's Referer, `_blank` leaves this page put. -->
 				<a
 					class="launch"
 					href={openable}
@@ -100,9 +92,8 @@
 				Open
 			</a>
 		{:else}
-			<!-- Nothing probes a name over http, and a service that never answered
-			     established no scheme. Offering a link built from a guess would be the
-			     interface inventing a fact, so it says why there is none. -->
+			<!-- Nothing probes a name over http, and a service that never answered established no scheme. A
+			link built from a guess would be the interface inventing a fact, so it says why there is none. -->
 			<span class="btn off" title="No probe has established an address for this asset">No address to open</span>
 		{/if}
 		{#if hostHref}

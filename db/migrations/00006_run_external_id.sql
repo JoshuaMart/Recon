@@ -1,13 +1,9 @@
--- What the platform called the execution.
+-- What the platform called the execution. A run row is Recon's record of asking; this is the
+-- platform's record of running. Two identifiers, from two systems at two moments, and the
+-- second may never arrive: the run is committed before anything starts, so a platform
+-- refusing on a quota leaves a row the deadline sweeper owns, not nothing.
 --
--- A run row is Recon's record of asking; this is the platform's record of
--- running. They are two identifiers because they are created by two systems at
--- two moments, and the second one may never arrive: the run is written and
--- committed before anything is started, so that a platform refusing on a quota
--- leaves a row the deadline sweeper owns rather than nothing at all.
---
--- Without it, the logs of a run that went wrong are unfindable. That is the
--- whole of its purpose, and it is enough of one.
+-- Without it, the logs of a failed run are unfindable, which is its whole purpose.
 
 -- +goose Up
 

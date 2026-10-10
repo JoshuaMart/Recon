@@ -15,39 +15,27 @@ import (
 
 // Formats an export can be written in.
 const (
-	// FormatJSONL is the lossless one, one line per asset, attributes and
-	// lineage included. It is the one for feeding another system.
+	// FormatJSONL is the lossless one, a line per asset with attributes and lineage,
+	// for feeding another system.
 	FormatJSONL = "jsonl"
-	// FormatCSV is the one that opens in a spreadsheet, and it flattens. The
-	// loss is named here rather than discovered by somebody looking for a
-	// favicon in a column.
+	// FormatCSV opens in a spreadsheet and flattens; the loss is named here so nobody
+	// discovers it looking for a favicon in a column.
 	FormatCSV = "csv"
-	// FormatURLs is the one for feeding web tools: one measured, openable URL
-	// per line. Services whose scheme has not been observed are omitted rather
-	// than guessed from their port.
+	// FormatURLs feeds web tools: one measured, openable URL per line. Services whose
+	// scheme was not observed are omitted, not guessed from their port.
 	FormatURLs = "urls"
 )
 
-// exportPage is how many rows one round trip carries.
-//
-// The walk reuses the list's pagination key page by page, writing as it goes.
-// An OFFSET on a million rows costs a scan of everything before it on every
-// page, and materializing the result before sending it holds the whole inventory
-// in memory for a file nobody reads until it is finished.
+// exportPage is how many rows one round trip carries. The walk reuses the list's
+// pagination key, writing as it goes: OFFSET rescans everything before it on
+// each page, and materializing first holds the whole inventory in memory.
 const exportPage = 500
 
-// Export walks the filtered result and writes it as it goes.
-//
-// The same AST, the same organization clause and the same table as the list.
-// There is no export query, which would be a second set of rules to keep in
-// sync with the first.
-//
-// begin is called once, after the first page has come back and before anything
-// is written, and it hands back the writer. That indirection is the whole point:
-// a caller that had already committed to a status could not turn a failure on
-// the very first statement into one, and the client would read a zero byte file
-// as an empty inventory. An absence must not read as data, and a failure must
-// not read as an absence.
+// Export walks the filtered result and writes it as it goes, with the list's AST,
+// organization clause and table (a separate export query would be a second set of rules).
+// begin is called once, after the first page returns and before anything is written, and
+// hands back the writer: a failure on the first statement can still become an error status,
+// so a client does not read a zero-byte file as an empty inventory.
 func Export(
 	ctx context.Context, q Querier, org uuid.UUID, filter Node, format string, limit int,
 	begin func() io.Writer,
@@ -66,9 +54,8 @@ func Export(
 	cursor := Cursor{}
 	for {
 		page := exportPage
-		// A limit can be asked for; it is never imposed. A truncated export
-		// that says nothing is the worst of the three possible behaviours,
-		// ahead of the slow export and ahead of the refusal.
+		// A limit can be asked for, never imposed: a silently truncated export is worse
+		// than a slow one or a refusal.
 		if format != FormatURLs && limit > 0 && limit-written < page {
 			page = limit - written
 		}
@@ -76,9 +63,8 @@ func Export(
 			break
 		}
 
-		// Display off. The list removes a badge and never data, and an export
-		// applying a display filter would do exactly what that rule forbids
-		// while making it invisible.
+		// Display off: the list removes a badge, never data, and a display filter here
+		// would break that rule invisibly.
 		answer, err := List(ctx, q, org, Request{
 			Filter: filter, Limit: page, Cursor: cursor, Display: false,
 		})
@@ -86,8 +72,7 @@ func Export(
 			return written, err
 		}
 
-		// Nothing has been sent yet on the first pass, so a failure above is
-		// still a status the caller can answer with.
+		// Nothing has been sent on the first pass, so a failure above is still a status.
 		if out == nil {
 			out = begin()
 			switch format {
@@ -120,8 +105,8 @@ func Export(
 				}
 			}
 			written++
-			// URL exports can skip many rows. Keep their database pages large, but
-			// stop as soon as the requested number of emitted lines is reached.
+			// URL exports can skip many rows: keep database pages large, stop once the
+			// requested number of lines is emitted.
 			if format == FormatURLs && limit > 0 && written == limit {
 				return written, nil
 			}
@@ -143,11 +128,9 @@ func Export(
 	return written, nil
 }
 
-// exportURL projects a web asset onto the address somebody can open.
-//
-// It deliberately follows the same identity rule as the console: a declared URL
-// keeps its path, while a service is its measured scheme plus its host and port.
-// A port never implies a scheme. IPv6 literals need brackets in an authority.
+// exportURL projects a web asset onto an openable address, with the console's
+// identity rule: a declared URL keeps its path, a service is measured scheme plus
+// host and port. A port never implies a scheme; IPv6 literals need brackets.
 func exportURL(row Row) string {
 	switch row.Kind {
 	case "url":
@@ -175,11 +158,9 @@ func exportURL(row Row) string {
 	return *row.Scheme + "://" + host
 }
 
-// csvHeader is what flattens.
-//
-// Promoted columns, joined technologies, volatility. No attributes and no
-// lineage, because a nested object in a cell is neither readable nor usable, and
-// naming the loss here is better than leaving somebody to find it.
+// csvHeader is what flattens: promoted columns, joined technologies, volatility.
+// No attributes or lineage, since a nested object in a cell is neither readable
+// nor usable.
 var csvHeader = []string{
 	"asset_id", "kind", "key", "host", "port", "scheme", "lifecycle", "scope_status",
 	"status_code", "final_url", "title", "server", "ip", "asn", "asn_org", "country",

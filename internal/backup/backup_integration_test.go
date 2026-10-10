@@ -1,16 +1,13 @@
 //go:build integration
 
-// Milestone 0: a backup is restored into an empty database from the configured
-// archive destination, and the content is identical.
+// A backup is restored into an empty database from the configured archive destination,
+// with identical content. The destination is configuration (a path locally, a bucket in
+// production), so this runs on a laptop; an assertion that cannot go green until the end
+// of a project is one everyone learns to skip.
 //
-// The archive destination is configuration, a path locally and a bucket in
-// production, which is what lets this run on a laptop instead of waiting for a
-// production host to exist. An assertion that cannot go green until the end of
-// a project is one everyone learns to skip.
-//
-// The discriminating case is the second batch of rows. They are written *after*
-// the base backup, so they exist only in the archived WAL: a restore that
-// replayed nothing would still return the first batch and look correct.
+// The discriminating case is the second batch of rows, written after the base backup so
+// they exist only in the archived WAL: a restore replaying nothing would still return
+// the first batch and look correct.
 package backup_test
 
 import (
@@ -45,10 +42,9 @@ func TestARestoreFromTheArchiveReturnsWhatWasWrittenAfterTheBaseBackup(t *testin
 
 	primary := startPrimary(t, ctx, volume)
 
-	// The archive directory has to exist and be writable by postgres before the
-	// first archive_command fires, or every segment fails to ship and the only
-	// sign is a line in the log. A fresh volume mounts owned by root, so this
-	// step is the deployment's, not the database's.
+	// The archive directory must exist and be writable by postgres before the first
+	// archive_command fires, or every segment fails to ship with only a log line to show
+	// it. A fresh volume mounts root-owned, so this step is the deployment's.
 	runAs(t, ctx, primary, "root", []string{
 		"sh", "-c",
 		"mkdir -p " + archive + "/wal && chown -R postgres " + archive,

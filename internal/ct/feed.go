@@ -11,31 +11,27 @@ import (
 	"github.com/coder/websocket"
 )
 
-// maxFrameBytes bounds one message.
-//
-// The feed is a public aggregator carrying certificates anybody can get logged,
-// so its output is influenced by somebody else and needs a ceiling like any
-// other such input. Measured on the lite stream: median 1.7 kB, p99 2.4 kB,
-// widest 7.9 kB over four thousand certificates. A megabyte is two orders of
-// magnitude of headroom and still refuses a stream that decided to send a
-// gigabyte.
+// maxFrameBytes bounds one message. The feed is a public aggregator carrying
+// certificates anyone can get logged, so its output is influenced by others and
+// needs a ceiling. Measured on the lite stream: median 1.7 kB, p99 2.4 kB, widest
+// 7.9 kB over 4000 certificates. A megabyte leaves two orders of magnitude of
+// headroom and still refuses a gigabyte.
 const maxFrameBytes = 1 << 20
 
 // Feed dials the aggregator and drives the matcher with what it sends.
 //
-// It reconnects, and a reconnection is a gap that nothing backfills: the
-// aggregator keeps no history on Recon's behalf, so whatever passed while the
-// socket was down is lost and resuming starts at the present. That is why the
-// matcher records the minutes it was alive rather than trying to reconstruct
-// the ones it was not, and why periodic enumeration is not redundant with this.
+// A reconnection is a gap nothing backfills: the aggregator keeps no history for
+// Recon, so what passed while the socket was down is lost and resuming starts at
+// the present. Hence the matcher records the minutes it was alive instead of
+// reconstructing the others, and periodic enumeration is not redundant.
 type Feed struct {
 	url     string
 	matcher *Matcher
 	log     *slog.Logger
 
-	// Backoff bounds how fast a broken feed is redialled. A dropped socket is
-	// usually the aggregator restarting, so the first retry is quick and the
-	// ceiling is what stops a dead endpoint being dialled in a tight loop.
+	// Backoff bounds how fast a broken feed is redialled. A drop is usually the
+	// aggregator restarting, so the first retry is quick; the ceiling stops a dead
+	// endpoint being dialled in a tight loop.
 	minBackoff time.Duration
 	maxBackoff time.Duration
 }
@@ -60,10 +56,8 @@ func (f *Feed) Run(ctx context.Context) {
 			return
 		}
 
-		// A session that lasted is a working endpoint that dropped, not a
-		// broken one: it starts again from the short delay. Without this a feed
-		// that reconnects every few hours would creep up to the ceiling and
-		// stay there.
+		// A session that lasted is a working endpoint that dropped: it restarts from the
+		// short delay, or a feed reconnecting every few hours would creep to the ceiling.
 		if f.matcher.now().Sub(started) > f.maxBackoff {
 			backoff = f.minBackoff
 		}
@@ -102,9 +96,8 @@ func (f *Feed) session(ctx context.Context) error {
 
 		var frame Frame
 		if err := json.Unmarshal(data, &frame); err != nil {
-			// One unreadable message is not a reason to drop a working socket,
-			// and it is counted rather than logged per occurrence: at a few
-			// thousand frames a second, a log line each would be the outage.
+			// One unreadable message is no reason to drop a working socket. Counted, not
+			// logged: at thousands of frames a second a line each would be the outage.
 			f.matcher.undecodable()
 			continue
 		}
@@ -112,11 +105,9 @@ func (f *Feed) session(ctx context.Context) error {
 	}
 }
 
-// Loop reloads the apex set and flushes the counters on a tick.
-//
-// One ticker for both, because they are the same moment by design: the counters
-// are accumulated in memory and written when the set is refreshed, which is
-// what makes a write per certificate unnecessary.
+// Loop reloads the apex set and flushes the counters on a tick. One ticker for
+// both: counters accumulate in memory and are written when the set refreshes,
+// which avoids a write per certificate.
 type Loop struct {
 	matcher  *Matcher
 	interval time.Duration
@@ -131,11 +122,9 @@ func NewLoop(matcher *Matcher) *Loop {
 	return &Loop{matcher: matcher, interval: interval}
 }
 
-// Run ticks until the context ends.
-//
-// The first reload happens before the first tick, because a matcher with an
-// empty set matches nothing: waiting a whole interval would mean a minute of
-// certificates arriving against a perimeter this process has not read yet.
+// Run ticks until the context ends. The first reload precedes the first tick: an
+// empty set matches nothing, so waiting an interval would let a minute of
+// certificates pass against an unread perimeter.
 func (l *Loop) Run(ctx context.Context) {
 	l.once(ctx)
 
@@ -145,9 +134,8 @@ func (l *Loop) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			// The window in memory is written on the way out, so a clean
-			// shutdown loses nothing. A crash still does, which is what the
-			// flush being a metric rather than the journal allows.
+			// The in-memory window is written on the way out, so a clean shutdown loses
+			// nothing. A crash still does, which the flush being a metric allows.
 			l.flush(context.WithoutCancel(ctx))
 			return
 		case <-ticker.C:

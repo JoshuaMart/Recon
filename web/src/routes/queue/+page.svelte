@@ -12,18 +12,11 @@
 	/** Nothing scheduled anywhere. Said once, rather than as four rows of zeroes. */
 	const quiet = $derived(lines.every((line) => line.due + line.later + line.in_run === 0));
 
-	// Named after what each schedule does rather than after its column, except
-	// where the system already has a word for it.
-	//
-	// "Render" was the first spelling of the fingerprint queue and it was one
-	// name too many: the column is next_fingerprint_at, the observation layer is
-	// fingerprint, and the service is the Fingerprinter, so a fourth word on the
-	// one screen somebody reads to work out why nothing is moving is a word they
-	// have to translate first. It was asked about the day it was first seen.
-	//
-	// "Full probe" keeps its own name for the opposite reason: the column is
-	// next_full_at and "full" alone says nothing, where the queue is a resolution
-	// followed by a port scan and an http probe.
+	// Named after what each schedule does, not its column, except where the system already has a word.
+	// "Render" was one name too many for the fingerprint queue (column next_fingerprint_at, layer
+	// fingerprint, service Fingerprinter): a fourth word on the screen read to find why nothing moves.
+	// "Full probe" keeps its own name: the column next_full_at says nothing, where the queue is a
+	// resolution, a port scan and an http probe.
 	const labels: Record<string, string> = {
 		fingerprint: 'Fingerprint',
 		full: 'Full probe',
@@ -283,9 +276,8 @@
 	}
 
 	/*
-	 * Right aligned so the counts line up, but not flush: this column is followed
-	 * by another, and a zeroed right padding put a four digit count against the
-	 * word next to it. The header did the same, and read as one word.
+	 * Right-aligned so counts line up, but not flush: another column follows, and zero right padding
+	 * put a four-digit count against the next word, read as one word (the header too).
 	 */
 	.num {
 		text-align: right;

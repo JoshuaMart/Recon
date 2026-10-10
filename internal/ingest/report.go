@@ -1,17 +1,13 @@
-// Package ingest turns a scanner's report into inventory.
-//
-// It is where every conclusion is re-derived. A scanner is untrusted by
-// assumption, so what it says about a target is read as evidence and what the
-// inventory records is decided here: the scope, the outcome, and which assets
-// a finding implies.
+// Package ingest turns a scanner's report into inventory. Every conclusion is
+// re-derived here: a scanner is untrusted, so what it says is evidence, and the
+// scope, outcome and implied assets are decided in this package.
 package ingest
 
 import "time"
 
-// Report is the scanner's document, schema 1.0.
-//
-// It is transcribed rather than imported: the scanner ships on its own cycle,
-// and a shared type would make its refactor an outage here.
+// Report is the scanner's document, schema 1.0. It is transcribed, not imported:
+// the scanner ships on its own cycle and a shared type would make its refactor an
+// outage here.
 type Report struct {
 	SchemaVersion string     `json:"schema_version"`
 	Run           RunInfo    `json:"run"`
@@ -26,9 +22,8 @@ type Report struct {
 type RunInfo struct {
 	ID     string `json:"id"`
 	Domain string `json:"domain"`
-	// Input is "domain" or "targets", and it is what says whether a missing
-	// host means anything: enumeration is authoritative on presence, never on
-	// absence.
+	// Input is "domain" or "targets" and says whether a missing host means anything:
+	// enumeration is authoritative on presence, never absence.
 	Input              string    `json:"input"`
 	Scope              string    `json:"scope"`
 	Stages             []string  `json:"stages"`
@@ -39,21 +34,18 @@ type RunInfo struct {
 	TruncatedByTimeout bool      `json:"truncated_by_timeout"`
 	Version            string    `json:"version"`
 	Environment        string    `json:"environment"`
-	// Degraded names what this run could not guarantee. A run that says it ran
-	// degraded produces no informative failure: a resolver pool that could not
-	// be validated turns every dead host into a live one, or every live host
-	// into a timeout, and those are the two signals a death is read from.
+	// Degraded names what this run could not guarantee. A degraded run produces no
+	// informative failure: a resolver pool that could not be validated turns dead
+	// hosts live or live hosts into timeouts, the two signals a death is read from.
 	//
-	// It sits inside the run rather than beside it in the document, which is
-	// where the scanner puts it. That distinction is invisible to a test that
-	// builds this structure in Go and only exists once a real document is
-	// decoded, which is what the round trip test is for.
+	// It sits inside the run, as the scanner puts it. A test building this structure
+	// in Go cannot see the difference; only decoding a real document does, which is
+	// what the round trip test is for.
 	Degraded []string `json:"degraded,omitempty"`
 }
 
-// Source records what one enumeration source contributed. Every source appears
-// whether it succeeded or not, which is what makes a silently empty one
-// visible.
+// Source records what one enumeration source contributed. Every source appears,
+// succeeded or not, which makes a silently empty one visible.
 type Source struct {
 	Name       string `json:"name"`
 	Status     string `json:"status"`
@@ -75,8 +67,8 @@ type Stats struct {
 	HTTPServices int `json:"http_services"`
 }
 
-// Host statuses. A host the run never reached comes back as discovered, and it
-// produces no observation at all: silence is not a measurement.
+// Host statuses. A host the run never reached is discovered and produces no
+// observation: silence is not a measurement.
 const (
 	StatusDiscovered = "discovered"
 	StatusLive       = "live"
@@ -84,9 +76,8 @@ const (
 	StatusWildcard   = "wildcard"
 )
 
-// Reasons a host ended up dead. nxdomain and no_answer are deliberately
-// distinct: a name that exists without an address, an MX-only host, is not a
-// name that does not exist.
+// Reasons a host ended up dead. nxdomain and no_answer differ: a name that
+// exists without an address (an MX-only host) is not a name that does not exist.
 const (
 	ReasonNXDomain = "nxdomain"
 	ReasonNoAnswer = "no_answer"
@@ -106,36 +97,31 @@ type Host struct {
 	Sources []string `json:"sources,omitempty"`
 	CDN     []CDN    `json:"cdn,omitempty"`
 	Ports   []Port   `json:"ports,omitempty"`
-	// Scan is what the sweep actually tried. It is the only thing that lets
-	// the tcp layer conclude anything: a report listing open ports says
-	// nothing when the list is empty, and "nothing else is open" and "nothing
-	// else was tried" are the two readings that decide between a death and a
-	// silence. Absent until the scanner carries it, and absent is handled.
+	// Scan is what the sweep tried, the only thing letting the tcp layer conclude
+	// anything: an empty open-port list means both "nothing else is open" and
+	// "nothing else was tried". Absent until the scanner carries it; absence is handled.
 	Scan *Scan `json:"scan,omitempty"`
 }
 
-// Scan is the port sweep's own accounting for one host, summed over every
-// address the host resolved to.
+// Scan is the port sweep's accounting for one host, summed over every address it
+// resolved to.
 //
-// The four buckets have to add up to Scanned, and that is not bookkeeping. A
-// probe that failed on a local limit, running out of file descriptors, says
-// nothing about the target and is neither refused nor filtered; a sweep that
-// dropped it silently would leave "every port refused" true over a set of
-// ports that was never actually tried.
+// The four buckets must add up to Scanned, which is not bookkeeping: a probe that
+// failed on a local limit (out of file descriptors) says nothing about the target
+// and is neither refused nor filtered, and dropping it silently would leave "every
+// port refused" true over ports never tried.
 type Scan struct {
 	Scanned  int `json:"scanned"`
 	Open     int `json:"open"`
 	Refused  int `json:"refused"`
 	Filtered int `json:"filtered"`
-	// Unknown is what the observer could not measure, as opposed to what the
-	// target did.
+	// Unknown is what the observer could not measure, as opposed to what the target did.
 	Unknown int `json:"unknown"`
 }
 
-// Accounted reports whether the buckets cover the sweep.
-//
-// A report whose counts do not add up is one this cannot read, and reading it
-// anyway would conclude a death over ports nobody can account for.
+// Accounted reports whether the buckets cover the sweep. A report whose counts do
+// not add up is unreadable; reading it anyway would conclude a death over ports
+// nobody can account for.
 func (s Scan) Accounted() bool {
 	return s.Scanned > 0 && s.Open+s.Refused+s.Filtered+s.Unknown == s.Scanned
 }
@@ -188,18 +174,15 @@ type Excluded struct {
 	Pattern string `json:"pattern"`
 }
 
-// degradedCodes a run may report. The list is meant to grow one code at a
-// time, and a consumer that does not know one still sees that the run was
-// degraded, which is enough to refuse to conclude a death from it.
+// degradedCodes a run may report. The list grows one code at a time, and a
+// consumer not knowing one still sees "degraded", enough to refuse to conclude a
+// death.
 const (
 	DegradedResolversUnvalidated = "resolvers_unvalidated"
 	DegradedWildcardZonesCapped  = "wildcard_zones_capped"
 )
 
-// RanDegraded reports whether this run may conclude a death.
-//
-// What it guards is a verdict produced by an observer that could not vouch for
-// itself. Truncation is the other direction and is already respected by the
-// walk: a host the run did not reach comes back as discovered and produces no
-// observation at all.
+// RanDegraded reports whether this run may conclude a death. It guards a verdict
+// from an observer that could not vouch for itself; truncation is the other
+// direction and already respected, as an unreached host produces no observation.
 func (r Report) RanDegraded() bool { return len(r.Run.Degraded) > 0 }

@@ -15,36 +15,25 @@ import (
 
 // The asset view, and the one read path that touches the journal.
 //
-// Principle 1 does not say nobody reads observations. It says the interface
-// queries asset_current and that observations serve history and diff. A
-// timeline of changes is history, and it is the one thing the projection cannot
-// carry since by construction it keeps only a current state.
-//
-// What stays true is the substance of the rule: the list and the facets never
-// touch the journal. They are what runs over a million rows and on every
-// keystroke. This opens on one asset, on demand, and reads an index that
-// already exists.
+// The interface queries asset_current; observations serve history and diff. A
+// timeline is history, which the projection cannot carry as it keeps only the
+// current state. The list and facets, which run over a million rows and on every
+// keystroke, never touch the journal; this opens on one asset, on demand, over
+// an existing index.
 
-// TimelineWindow is how far back the view reads.
-//
-// A constant rather than a parameter. A caller able to ask for the whole
-// journal of an asset probed hourly for a year is a caller able to ask for the
-// query this bound exists to prevent.
+// TimelineWindow is how far back the view reads. A constant: a caller able to
+// request an hourly-probed asset's whole year is able to request the query this
+// bound prevents.
 const TimelineWindow = 90 * 24 * time.Hour
 
-// TimelineCap is how many entries one layer contributes.
-//
-// It is reported when it cuts, and the window never is. The two absences are
-// not the same absence: the cap cutting means there is more inside the window
-// this page is not showing, which is a fact about this render. The window is a
-// property of the view rather than of the asset.
+// TimelineCap is how many entries one layer contributes. A cut is reported but
+// the window never is: the cap hides entries inside the window, a fact about
+// this render, while the window is a property of the view.
 const TimelineCap = 50
 
-// ErrNoAsset is an identifier that names nothing this tenant can see.
-//
-// One error for "no such asset" and for "another organization's asset", because
-// the two must be indistinguishable: the difference between them enumerates
-// what exists.
+// ErrNoAsset is an identifier naming nothing this tenant can see. "No such asset"
+// and "another organization's asset" are one error, since telling them apart
+// enumerates what exists.
 var ErrNoAsset = errors.New("no such asset")
 
 // Evidence is the last observation of one layer, whole.
@@ -52,9 +41,8 @@ type Evidence struct {
 	Layer   string `json:"layer"`
 	Outcome string `json:"outcome"`
 	Source  string `json:"source"`
-	// ObservedAt and LastConfirmedAt are two sentences. One is when this state
-	// began, the other is the last probe that found it unchanged. Side by side
-	// and unnamed they read as stale data, so both are written.
+	// ObservedAt is when this state began; LastConfirmedAt is the last probe that
+	// found it unchanged. Unlabeled side by side they read as stale data.
 	ObservedAt      time.Time `json:"observed_at"`
 	LastConfirmedAt time.Time `json:"last_confirmed_at"`
 	ProducerVersion *string   `json:"producer_version,omitempty"`
@@ -69,17 +57,16 @@ type Change struct {
 	HeldUntil       time.Time `json:"held_until"`
 	Outcome         string    `json:"outcome"`
 	ProducerVersion *string   `json:"producer_version,omitempty"`
-	// Diff is absent on the oldest entry read for a layer, and that is not
-	// "nothing changed". It is the first row inside the window, so what it
-	// moved from is outside it, and the screen has to say which.
+	// Diff is absent on the oldest entry read for a layer. That is not "nothing
+	// changed": it is the first row in the window, so what it moved from is outside
+	// it, and the screen says so.
 	Diff *Diff `json:"diff,omitempty"`
 }
 
 // Diff is what the comparison said about one transition.
 type Diff struct {
-	// Class carries the Notifier's reading rather than a second one. A
-	// revelation is not an alert: the instrument sees better and the target did
-	// not move.
+	// Class carries the Notifier's reading, not a second one. A revelation is not an
+	// alert: the instrument sees better and the target did not move.
 	Class                   string        `json:"class"`
 	PreviousProducerVersion *string       `json:"previous_producer_version,omitempty"`
 	Fields                  []diff.Change `json:"fields"`
@@ -89,10 +76,10 @@ type Diff struct {
 const (
 	// ClassReal is the world moving.
 	ClassReal = "real_change"
-	// ClassDetection is the observer moving, which the fingerprint layer is the
-	// only one that can claim. The scanner's version is stamped on the other
-	// three too, so applying it there would read a newly opened port as a
-	// detection improvement for one pass after every scanner upgrade.
+	// ClassDetection is the observer moving, claimable only by the fingerprint
+	// layer. The scanner version is stamped on the other three too, so a new
+	// open port would read as a detection improvement for a pass after every
+	// scanner upgrade.
 	ClassDetection = "detection_improved"
 )
 
@@ -101,21 +88,18 @@ type Detail struct {
 	Asset    Row        `json:"asset"`
 	Evidence []Evidence `json:"evidence"`
 	Timeline []Change   `json:"timeline"`
-	// Truncated names the layers the cap cut, because "the timeline was
-	// truncated" on a page with four panels does not say which one to distrust.
+	// Truncated names the layers the cap cut; "truncated" on a four-panel page does
+	// not say which to distrust.
 	Truncated  []string          `json:"truncated_layers,omitempty"`
 	WindowFrom time.Time         `json:"window_from"`
 	Favicons   map[string]string `json:"favicons,omitempty"`
 }
 
-// One reads a single asset's projection.
-//
-// The same columns as the list, so the header of this page and the row it was
-// opened from cannot disagree.
+// One reads a single asset's projection with the list's columns, so this page's
+// header and the row it was opened from cannot disagree.
 func One(ctx context.Context, q Querier, org, asset uuid.UUID) (Row, error) {
-	// Display on. This page shows the same badges the row showed, and a value
-	// the denylist removed from a row must not reappear here as if it had been
-	// worth one all along.
+	// Display on: the same badges as the row. A value the denylist removed from a
+	// row must not reappear here as if it had always been worth one.
 	sql := "SELECT" + selectColumns + " FROM asset_current " + Alias + lineageJoin +
 		fmt.Sprintf(pivotJoin, 3) +
 		" WHERE " + Alias + ".org_id = $1 AND " + Alias + ".asset_id = $2"
@@ -139,12 +123,9 @@ func One(ctx context.Context, q Querier, org, asset uuid.UUID) (Row, error) {
 	return row, nil
 }
 
-// Get reads one asset with its evidence and its timeline.
-//
-// now is a parameter rather than time.Now(), for the reason every date
-// comparison in this repository takes one: the window is computed by the
-// application and compared against timestamps the database wrote, and a
-// comparison that mixes two clocks depends on them agreeing.
+// Get reads one asset with its evidence and timeline. now is a parameter: the
+// window is computed by the application and compared with timestamps the
+// database wrote, and mixing two clocks depends on them agreeing.
 func Get(ctx context.Context, q Querier, org, asset uuid.UUID, now time.Time) (Detail, error) {
 	row, err := One(ctx, q, org, asset)
 	if err != nil {
@@ -165,10 +146,9 @@ func Get(ctx context.Context, q Querier, org, asset uuid.UUID, now time.Time) (D
 	}
 	detail.Truncated = cut
 
-	// The evidence is the newest entry of each layer, and the timeline is every
-	// entry with what moved on the way in. Both come out of the same read: a
-	// second query for the head of each layer would be four more round trips
-	// for rows already in hand.
+	// Evidence is the newest entry of each layer, the timeline every entry with what
+	// moved on the way in. One read serves both; a second query for each layer's
+	// head would be four more round trips.
 	seen := map[string]bool{}
 	for i, entry := range entries {
 		if entry.beyond {
@@ -194,10 +174,9 @@ func Get(ctx context.Context, q Querier, org, asset uuid.UUID, now time.Time) (D
 			Outcome:         entry.outcome,
 			ProducerVersion: entry.version,
 		}
-		// The row that follows in this ordering is the previous state of the
-		// same layer, since the journal is deduplicated on write: two
-		// consecutive rows of one (asset, layer) are two distinct states by
-		// construction, so each row is a change.
+		// The next row in this ordering is the layer's previous state. The journal is
+		// deduplicated on write, so two consecutive rows of one (asset, layer) are
+		// distinct states and each is a change.
 		if previous, found := older(entries, i); found {
 			change.Diff = compare(previous, entry)
 		}
@@ -223,15 +202,14 @@ type entry struct {
 	previousVersion *string
 	raw             any
 	data            map[string]any
-	// beyond marks the one row past the cap. It is read so the last displayed
-	// entry of a cut layer has something to compare against, and never
-	// displayed: without it that entry would say "not compared" where the
-	// previous state is right there, one row away.
+	// beyond marks the one row past the cap. It is read as the comparison partner of
+	// the last displayed entry and never displayed; otherwise that entry would say
+	// "not compared" with the previous state one row away.
 	beyond bool
 }
 
-// older finds the previous state of the same layer, which is the next row of
-// that layer in an ordering already newest first.
+// older finds the previous state of the same layer: the next row of that layer
+// in a newest-first ordering.
 func older(entries []entry, from int) (entry, bool) {
 	for i := from + 1; i < len(entries); i++ {
 		if entries[i].layer == entries[from].layer {
@@ -241,19 +219,15 @@ func older(entries []entry, from int) (entry, bool) {
 	return entry{}, false
 }
 
-// compare calls the same function the Notifier calls, on the same pair.
-//
-// Writing a second comparator for the screen would give an interface showing a
-// different change from the alert received yesterday, and that is the kind of
-// divergence nobody notices until they have to explain which of the two is
-// right.
+// compare calls the same function the Notifier calls, on the same pair. A
+// second comparator would show a different change from yesterday's alert, a
+// divergence nobody notices until they must explain which is right.
 func compare(previous, current entry) *Diff {
 	changes := diff.Compare(previous.data, current.data)
 	if len(changes) == 0 {
-		// Two consecutive rows that compare equal. Deduplication makes this
-		// rare rather than impossible, since it compares the whole payload and
-		// the diff ignores the scan counters, so a row that only moved those is
-		// a new state with nothing to show for it.
+		// Two consecutive rows that compare equal. Deduplication compares the whole
+		// payload while the diff ignores scan counters, so a row that only moved those
+		// is a new state with nothing to show. Rare, not impossible.
 		return nil
 	}
 
@@ -265,11 +239,9 @@ func compare(previous, current entry) *Diff {
 	return out
 }
 
-// journal reads the window, capped per layer, and says which layers it cut.
-//
-// One statement with a window function rather than one per layer. The cap is
-// read as cap+1 so the cut is known from the rows themselves, which is the same
-// trick the list uses to know it has a next page without counting.
+// journal reads the window, capped per layer, and says which layers it cut. One
+// statement with a window function, not one per layer. The cap is read as cap+1
+// so the cut is known from the rows, as the list knows it has a next page.
 func journal(
 	ctx context.Context, q Querier, org, asset uuid.UUID, from time.Time,
 ) ([]entry, []string, error) {
@@ -304,9 +276,8 @@ func journal(
 			return nil, nil, fmt.Errorf("read a journal row: %w", err)
 		}
 		if rank > TimelineCap {
-			// The extra row is the proof there is more. It stays in the slice
-			// as the comparison partner of the last displayed entry, and the
-			// flag is what keeps it off the page.
+			// The extra row proves there is more. It stays in the slice as the last
+			// displayed entry's comparison partner; the flag keeps it off the page.
 			cutBy[row.layer] = true
 			row.beyond = true
 		}

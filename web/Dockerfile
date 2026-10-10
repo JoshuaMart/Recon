@@ -1,6 +1,5 @@
-# The console. A Dockerfile of its own rather than a stage of the Go one,
-# because nothing is shared: a different runtime, a different package manager,
-# and a dependency tree with no overlap.
+# The console. Its own Dockerfile, not a stage of the Go one: nothing is shared (different
+# runtime, package manager and dependency tree).
 
 FROM node:22-alpine AS build
 WORKDIR /app
@@ -18,13 +17,12 @@ FROM node:22-alpine
 WORKDIR /app
 ENV NODE_ENV=production
 
-# Only what the node adapter serves, and it is genuinely all of it: the adapter
-# bundles what the server needs into build/, so there is no node_modules here.
-# Every dependency of this project is a devDependency, so a prune would have
-# left an empty directory anyway, and `pnpm prune` aborts without a TTY, which
+# Only what the node adapter serves, which is all of it: the adapter bundles what the server
+# needs into build/, so there is no node_modules here. Every dependency is a devDependency, so
+# a prune would leave an empty directory anyway, and `pnpm prune` aborts without a TTY, which
 # is how that was noticed.
 #
-# The sources, the tooling and the tests stay in the build stage.
+# Sources, tooling and tests stay in the build stage.
 COPY --from=build /app/build ./build
 COPY --from=build /app/package.json ./
 
@@ -34,8 +32,7 @@ USER node
 
 EXPOSE 3000
 
-# ORIGIN is deliberately not defaulted. Without it the node adapter refuses
-# every legitimate POST, and the console refuses to start rather than letting
-# that appear at the first form. A default here would be a default everybody
-# inherits and nobody notices being wrong.
+# ORIGIN is deliberately not defaulted. Without it the node adapter refuses every legitimate
+# POST, and the console refuses to start instead of showing it at the first form. A default
+# would be inherited by everyone and noticed wrong by nobody.
 CMD ["node", "build/index.js"]

@@ -22,10 +22,8 @@ import (
 	"github.com/JoshuaMart/recon/internal/store"
 )
 
-// answers is a resolver that knows what a test decided.
-//
-// The alternative is a test that depends on somebody's expired domain staying
-// expired, which goes red on a Tuesday for a reason nobody can act on.
+// answers is a resolver that knows what a test decided, avoiding a test that depends on
+// someone's expired domain staying expired.
 type answers struct {
 	gone  map[string]bool
 	fails map[string]bool
@@ -166,19 +164,17 @@ func TestAnExpiredThirdPartyDomainIsFoundAndToldOnce(t *testing.T) {
 		t.Fatalf("the sweep produced %v, want the expired host alone", found)
 	}
 
-	// The apex and only the apex. Resolving the host itself would answer a
-	// different question: a name that no longer resolves under a domain that is
-	// still registered is a dangling subdomain at somebody else's, which is not
-	// re-registrable and not this finding.
+	// The apex and only the apex. Resolving the host asks another question: a dead name under
+	// a still-registered domain is a dangling subdomain at someone else's, not re-registrable
+	// and not this finding.
 	for _, asked := range resolver.asked {
 		if strings.Count(asked, ".") != 1 {
 			t.Errorf("the sweep resolved %q, which is not an apex", asked)
 		}
 	}
 
-	// A second tick finds the same domain still gone and says nothing. The
-	// verdict lives on the asset, so the emission is on the transition without
-	// a second mechanism for it.
+	// A second tick finds the domain still gone and says nothing. The verdict lives on the
+	// asset, so emission is on the transition with no second mechanism.
 	if err := sweep(t, h, resolver).Once(ctx); err != nil {
 		t.Fatalf("second sweep: %v", err)
 	}
@@ -202,10 +198,8 @@ func TestAnExpiredThirdPartyDomainIsFoundAndToldOnce(t *testing.T) {
 	}
 }
 
-// TestAHostInTheSameInventoryIsTheOtherHalvesBusiness.
-//
-// It has a lifecycle of its own, so resolving it would be asking a resolver a
-// question this system already measures, and it would answer differently.
+// A host in the same inventory has a lifecycle of its own; resolving it would ask a
+// resolver what this system already measures, and answer differently.
 func TestAHostInTheSameInventoryIsTheOtherHalvesBusiness(t *testing.T) {
 	h := newHarness(t)
 
@@ -224,14 +218,10 @@ func TestAHostInTheSameInventoryIsTheOtherHalvesBusiness(t *testing.T) {
 	}
 }
 
-// TestAResolverHavingABadMinuteIsNotAnExpiry, in both directions.
-//
-// A timeout, a refusal or a broken resolver are not an authoritative "no such
-// domain", so one must not create a finding. And it is not an authoritative
-// "still registered" either, so one must not erase a finding already recorded:
-// dropping the entry and re-adding it on the next successful tick reads as a
-// new finding, and the same critical alert goes out again for a host that has
-// been dead all week.
+// In both directions. A timeout, refusal or broken resolver is not an authoritative "no
+// such domain", so it creates no finding; nor an authoritative "still registered", so it
+// erases none: dropping and re-adding an entry reads as a new finding, and the same
+// critical alert goes out for a host dead all week.
 func TestAResolverHavingABadMinuteIsNotAnExpiry(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -283,12 +273,9 @@ func TestAResolverHavingABadMinuteIsNotAnExpiry(t *testing.T) {
 	}
 }
 
-// TestTheWalkGoesPastOnePage.
-//
-// A fixed cap with a fixed order sweeps the same lowest identifiers on every
-// tick, so anything past it is permanently invisible: an expired domain
-// referenced only by a high identifier is never resolved and never told, and
-// nothing anywhere says so.
+// A fixed cap in a fixed order sweeps the same lowest identifiers every tick, so
+// anything past it is permanently invisible: an expired domain referenced only by a high
+// identifier is never resolved or told, and nothing says so.
 func TestTheWalkGoesPastOnePage(t *testing.T) {
 	h := newHarness(t)
 
@@ -310,11 +297,8 @@ func TestTheWalkGoesPastOnePage(t *testing.T) {
 	}
 }
 
-// A verdict that says what it already said is not written.
-//
-// In steady state that is every asset carrying an external host, so writing
-// them all would be thousands of transactions and thousands of dead row
-// versions every tick, to store what was already there.
+// A verdict repeating itself is not written. In steady state that is every asset with an
+// external host: thousands of transactions and dead row versions per tick for what is there.
 func TestASettledVerdictIsNotRewritten(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -363,9 +347,9 @@ func TestAnArchivedAssetIsNotFollowed(t *testing.T) {
 	}
 }
 
-// The apex is read through the public suffix list, because "the last two
-// labels" is right for example.com and wrong for example.co.uk, and resolving a
-// public suffix always succeeds, so every finding under it would disappear.
+// The apex comes from the public suffix list: "the last two labels" fits example.com and
+// not example.co.uk, and resolving a public suffix always succeeds, so findings under it
+// would disappear.
 func TestTheApexIsReadThroughThePublicSuffixList(t *testing.T) {
 	t.Parallel()
 

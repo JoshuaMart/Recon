@@ -36,12 +36,10 @@ type Migrator struct {
 	log      *slog.Logger
 }
 
-// NewMigrator opens a connection as the owner and prepares the runner.
-//
-// The caller closes it. A session-level advisory lock is held for the duration
-// of a run, so that two instances starting at once never migrate in parallel:
-// the second waits and then finds nothing to do, rather than applying the same
-// statement twice.
+// NewMigrator opens a connection as the owner and prepares the runner. The caller
+// closes it. A session-level advisory lock is held for the run so two instances
+// starting at once never migrate in parallel: the second waits and finds nothing
+// to do.
 func NewMigrator(url string, log *slog.Logger) (*Migrator, error) {
 	migrations, err := fs.Sub(db.Migrations, "migrations")
 	if err != nil {
@@ -52,9 +50,8 @@ func NewMigrator(url string, log *slog.Logger) (*Migrator, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
-	// The advisory lock is session-scoped, so it has to be taken and released
-	// on the same connection. More than one would let the lock be held by a
-	// session that the pool hands to somebody else.
+	// The advisory lock is session-scoped, so it must be taken and released on one
+	// connection; more than one could leave it held by a session the pool hands on.
 	conn.SetMaxOpenConns(1)
 
 	locker, err := lock.NewPostgresSessionLocker()
@@ -143,7 +140,6 @@ func (m *Migrator) report(ctx context.Context, results []*goose.MigrationResult)
 	}
 }
 
-// register keeps the pgx driver linked in. The import above is what registers
-// it with database/sql, and a linter that removes unused imports would
-// otherwise take the driver with it.
+// register keeps the pgx driver linked in: the import registers it with
+// database/sql, and a linter removing unused imports would take the driver along.
 var _ = stdlib.GetDefaultDriver

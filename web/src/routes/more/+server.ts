@@ -4,15 +4,9 @@ import type { FlatPage, GroupedPage } from '$lib/types';
 import { json, type RequestHandler } from '@sveltejs/kit';
 
 /**
- * One more page of the list, as JSON.
- *
- * The same query as the page's own load, minus the facets and the capabilities:
- * a continuation narrows nothing, so the sidebar it would recompute is the
- * sidebar already on screen. Asking for it again would triple the cost of a
- * button whose whole job is to add fifty rows.
- *
- * The token stays here, like everywhere else. What reaches the browser is the
- * page, and the credential is read from the cookie on this side of the proxy.
+ * One more page of the list, as JSON: the page's load query minus facets and capabilities. A
+ * continuation narrows nothing, so its sidebar is the one on screen, and asking again would triple the
+ * cost of a button that adds fifty rows. The credential is read from the cookie on this side.
  */
 export const GET: RequestHandler = async ({ locals, url, fetch }) => {
 	const token = locals.token!;

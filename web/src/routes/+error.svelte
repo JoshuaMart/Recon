@@ -2,9 +2,8 @@
 	import { page } from '$app/state';
 
 	/**
-	 * A refused query carries the path of the offending clause, which is why the
-	 * compiler returns a typed error at all: the message can point at the filter
-	 * somebody just added rather than at the request. So it is shown as it came.
+	 * A refused query carries the path of the offending clause, which is why the compiler returns a typed
+	 * error: the message can point at the filter just added, not the request. So it is shown as it came.
 	 */
 	const refused = $derived(page.status === 400);
 </script>

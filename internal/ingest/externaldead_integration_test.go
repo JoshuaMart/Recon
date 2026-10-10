@@ -1,10 +1,8 @@
 //go:build integration
 
-// The internal half of external_host_dead, in both directions.
-//
-// Covering one direction covers about half the cases, and which half depends on
-// the order two unrelated events happened in, which is not a property anybody
-// can predict or explain.
+// The internal half of external_host_dead, in both directions. Covering one direction
+// covers about half the cases, which half depending on the order of two unrelated
+// events, which nobody can predict.
 package ingest_test
 
 import (
@@ -69,10 +67,9 @@ func TestAPageStartingToPointAtADeadHostIsTold(t *testing.T) {
 		t.Fatalf("the render produced %v, want the dead internal host alone", found)
 	}
 
-	// A render that reports the same page again says nothing. It rides the
-	// insert path for the same reason the takeover finding does: a reference
-	// that stays is re-derived from every pass, and critical escapes the
-	// windows, so telling it from anywhere else would re-alert forever.
+	// A render reporting the same page again says nothing. It rides the insert path like the
+	// takeover finding: a reference that stays is re-derived every pass and critical escapes
+	// the windows, so telling it elsewhere would re-alert forever.
 	c.now = c.now.Add(time.Hour)
 	if _, err := ing.Render(context.Background(), h.queries, h.target(t), page); err != nil {
 		t.Fatalf("second render: %v", err)
@@ -82,11 +79,9 @@ func TestAPageStartingToPointAtADeadHostIsTold(t *testing.T) {
 	}
 }
 
-// TestAHostDyingUnderAPageThatPointsAtItIsTold is the direction only the
-// transition can see.
-//
-// Nothing in a payload comparison says that somebody else's page points at this
-// name, and the render that recorded the reference happened before the death.
+// The direction only the transition can see: nothing in a payload comparison says
+// someone else's page points at this name, and the render recording the reference
+// preceded the death.
 func TestAHostDyingUnderAPageThatPointsAtItIsTold(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))

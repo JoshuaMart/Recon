@@ -3,15 +3,9 @@ import { claimed } from './queue';
 import type { Program, Run } from './types';
 
 /**
- * An authorisation that has closed, or is about to.
- *
- * The automatic active to suspended transition at expiry comes with an alert
- * seven days out. Neither exists yet, so the screens say it rather than letting a
- * programme look active while its authorisation has run out.
- *
- * Here rather than in the list it was written for, because the detail makes the
- * same claim about the same date: two copies of a threshold this specific
- * diverge on the day somebody edits one of them.
+ * An authorisation that has closed, or is about to. The automatic active-to-suspended transition at
+ * expiry, and a seven-day alert, do not exist yet, so the screens say it rather than let a programme
+ * look active with its authorisation run out. Shared with the detail, which makes the same claim.
  */
 export function authorisation(
 	to: string | undefined,
@@ -39,12 +33,10 @@ export interface RunStatus {
 }
 
 /**
- * What the last discovery run of a program says about it.
- *
- * The distinction the whole thing turns on is the queue's: a run with no
- * `started_at` is not a scan to wait for, it is a provisioning that never reached
- * a scanner. `expired` is named rather than folded into "finished", because a run
- * the deadline sweeper closed produced nothing and a finished one did.
+ * What a program's last discovery run says about it. The queue's distinction decides: a run with
+ * no `started_at` is a provisioning that never reached a scanner, not a scan to wait for.
+ * `expired` is named, not folded into "finished": a run the deadline sweeper closed produced
+ * nothing, a finished one did.
  */
 export function runStatus(run: Run | null | undefined): RunStatus | null {
 	if (!run) return null;
@@ -61,12 +53,10 @@ export function runStatus(run: Run | null | undefined): RunStatus | null {
 }
 
 /**
- * How much of what a program knows about, it is allowed to touch.
- *
- * The remainder is not one thing: an asset sits outside the perimeter because a
- * rule excludes it, or because no rule settles it at all and it is kept and never
- * probed. The bar draws the gap and says nothing about which half it is, which is
- * why the row spells both numbers out beside it.
+ * How much of what a program knows about it may touch. The remainder is not one thing: an asset
+ * is outside the perimeter because a rule excludes it, or because no rule settles it and it is
+ * kept and never probed. The bar draws the gap and names neither half, hence the row spells both
+ * numbers out beside it.
  */
 export function coverage(program: Program): number {
 	const known = program.assets ?? 0;

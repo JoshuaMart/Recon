@@ -7,14 +7,12 @@ import (
 	"github.com/JoshuaMart/recon/internal/ingest"
 )
 
-// The report type is transcribed rather than shared, so the scanner can ship on
-// its own cycle. The price of that decision is that a field can move inside the
-// document without anything here failing to compile, and every test that builds
-// this structure in Go is blind to it.
+// The report type is transcribed, not shared, so the scanner ships on its own cycle. The
+// price: a field can move inside the document without anything here failing to compile,
+// and every test building this structure in Go is blind to it.
 //
-// So one test decodes a real document. This one is written against the
-// scanner's own struct definitions at schema 1.1, and it is the only place a
-// field's position in the document is asserted at all.
+// So one test decodes a real document, written against the scanner's own struct
+// definitions at schema 1.1; it is the only place a field's position is asserted.
 const document = `{
   "schema_version": "1.1",
   "run": {

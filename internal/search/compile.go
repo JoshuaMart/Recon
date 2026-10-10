@@ -26,15 +26,11 @@ func (b *builder) bind(value any) string {
 	return "$" + strconv.Itoa(len(b.args))
 }
 
-// Compile turns a tree into SQL for one organization.
-//
-// The organization is emitted here, outside the tree, on every compilation
-// including that of an empty one. It is not a clause the caller can express,
-// because a filter the caller can express is a filter the caller can forget,
-// and this query does not live in the static query files so the tenant guard
-// does not see it. What holds instead, in order of strength: this clause is
-// structural and a test requires it on every compilation; then row-level
-// security, which is the only guarantee the compiler cannot remove from itself.
+// Compile turns a tree into SQL for one organization. The organization is emitted here,
+// outside the tree, on every compilation including an empty one: a clause the caller can
+// express is one the caller can forget, and this query is not in the static query files, so
+// the tenant guard does not see it. Defence in order of strength: this structural clause
+// (required by a test), then row-level security, which the compiler cannot remove.
 func Compile(org uuid.UUID, node Node) (Compiled, error) {
 	if org == uuid.Nil {
 		return Compiled{}, refuse("a query was compiled with no organization")
@@ -55,9 +51,9 @@ func Compile(org uuid.UUID, node Node) (Compiled, error) {
 
 func (b *builder) node(n Node, depth int) (string, error) {
 	switch n.Op {
-	// The zero value, which is what a caller that filters on nothing passes.
-	// Reaching the leaf path with it would refuse the most common request in
-	// the system, and refuse it with a message about an empty operator.
+	// The zero value, passed by a caller filtering on nothing. Reaching the leaf
+	// path would refuse the most common request with a message about an empty
+	// operator.
 	case "":
 		if depth > 0 {
 			return "", refuse("a clause with no operator")
@@ -73,11 +69,10 @@ func (b *builder) node(n Node, depth int) (string, error) {
 			return "", err
 		}
 		if inner == "" {
-			// Unreachable while a nested empty group is a refusal, and kept so
-			// that relaxing that rule cannot quietly turn a negation into its
-			// opposite: an empty group means "no constraint", which is true,
-			// and dropping the NOT around it would answer the whole inventory
-			// where the honest answer is nothing at all.
+			// Unreachable while a nested empty group is refused. Kept so relaxing that rule
+			// cannot turn a negation into its opposite: an empty group means "no
+			// constraint", and dropping the NOT would answer the whole inventory instead of
+			// nothing.
 			return "", refuse("a negation with nothing to negate")
 		}
 		return "NOT (" + inner + ")", nil
@@ -98,32 +93,25 @@ func (b *builder) group(n Node, joiner string, depth int) (string, error) {
 	}
 
 	if len(parts) == 0 {
-		// At the root an empty group is not an error: it is what an interface
-		// sends before anybody has clicked a facet, and the whole tenant is the
-		// right answer.
+		// At the root an empty group is not an error: it is what an interface sends
+		// before any facet is clicked, and the whole tenant is right.
 		//
-		// Anywhere else it is a refusal, because there is no reading of it that
-		// is not a guess. An empty AND is TRUE by identity and an empty OR is
-		// FALSE, so "or(port=443, and())" means the whole inventory while
-		// "and(port=443, or())" means nothing at all, and a console that
-		// cleared the last facet out of a group meant neither. Refusing names
-		// the group; picking one silently answers a different question.
+		// Elsewhere it is refused, because every reading is a guess. An empty AND is
+		// TRUE and an empty OR is FALSE, so "or(port=443, and())" means everything and
+		// "and(port=443, or())" nothing, while a console that cleared a group's last
+		// facet meant neither. Refusing names the group.
 		if depth > 0 {
 			return "", refuse("a %q group with nothing in it", n.Op)
 		}
 		return "", nil
 	}
-	// Parenthesised, because SQL binds AND tighter than OR and the tree does
-	// not. Joined flat, "and(a, or(b, c))" is "a AND b OR c", which PostgreSQL
-	// reads as "(a AND b) OR c": the OR branch escapes every condition beside
-	// it and answers a question nobody asked.
+	// Parenthesised, because SQL binds AND tighter than OR and the tree does not.
+	// Flat, "and(a, or(b, c))" is "(a AND b) OR c", and the OR branch escapes every
+	// condition beside it.
 	//
-	// The failure is silent and it widens. "port 443, and 200 or 301" comes
-	// back as everything carrying a 301 on any port, which looks like a result
-	// rather than like an error, and the only way to notice is to read the SQL.
-	// The organization is not among the conditions it escapes: Compile wraps
-	// the whole tree before joining the tenant clause to it, so this widens
-	// within a tenant and never across two.
+	// The failure is silent and widens: "port 443, and 200 or 301" returns every
+	// 301 on any port, which looks like a result. It widens within a tenant only,
+	// as Compile wraps the tree before joining the tenant clause.
 	joined := strings.Join(parts, " "+joiner+" ")
 	if len(parts) > 1 {
 		joined = "(" + joined + ")"
@@ -152,13 +140,11 @@ func (b *builder) leaf(n Node) (string, error) {
 		if !ok {
 			return "", refuse("%q takes true or false", n.Field)
 		}
-		// A nullable boolean has three states and exists is what asks about the
-		// third. It reads the same as it does over the attributes object, "is
-		// there a value for this", against a column instead of a key.
+		// A nullable boolean has three states, and exists asks about the third ("is
+		// there a value"), as over the attributes object.
 		//
-		// It is also the only way to ask. A negation does not reach it, because
-		// NOT (NULL = true) is NULL and a null predicate excludes the row: the
-		// state and its negation are both unexpressible without this.
+		// It is also the only way to ask: NOT (NULL = true) is NULL and excludes the
+		// row, so the state and its negation are otherwise unexpressible.
 		if n.Op == OpExists {
 			if value {
 				return entry.expr + " IS NOT NULL", nil
@@ -173,11 +159,9 @@ func (b *builder) leaf(n Node) (string, error) {
 	}
 }
 
-// containment is the only shape the JSONB fields compile to.
-//
-// The object is built in Go and bound as one parameter, so a value chosen by
-// the caller is a value and never a fragment. It covers a scalar key and an
-// array key alike, which is what the GIN index answers.
+// containment is the only shape the JSONB fields compile to. The object is built
+// in Go and bound as one parameter, so a caller's value is never a fragment. It
+// covers scalar and array keys, which the GIN index answers.
 func (b *builder) containment(entry field, n Node) (string, error) {
 	value, ok := n.Value.(string)
 	if !ok || value == "" {
@@ -216,8 +200,7 @@ func (b *builder) array(entry field, n Node) (string, error) {
 		if !ok || value == "" {
 			return "", refuse("%q takes a non-empty string", n.Field)
 		}
-		// Containment rather than ANY, because that is what the GIN index on
-		// the column answers.
+		// Containment, not ANY: it is what the GIN index answers.
 		return entry.expr + " @> ARRAY[" + b.bind(value) + "]::text[]", nil
 
 	case OpIn:
@@ -291,14 +274,10 @@ func (b *builder) number(entry field, n Node) (string, error) {
 	return entry.expr + " " + comparison(n.Op) + " " + b.bind(number), nil
 }
 
-// identifier compiles an equality or a membership over a uuid column.
-//
-// The value is checked here and still bound and cast at the placeholder. The
-// cast alone was the first version and it is not enough: a malformed identifier
-// reaches PostgreSQL, fails there with 22P02, and comes back to the caller as a
-// 500 and a line in our log, when it is a typo in a filter somebody hand
-// edited. A refusal names the field, and a refusal is what the whole registry
-// is built to answer with.
+// identifier compiles an equality or membership over a uuid column. The value
+// is checked here and also bound and cast: the cast alone let a malformed id
+// reach PostgreSQL, fail with 22P02 and return a 500 for a hand-edited typo. A
+// refusal names the field.
 func (b *builder) identifier(entry field, n Node) (string, error) {
 	switch n.Op {
 	case OpIn:
@@ -354,16 +333,11 @@ func (b *builder) text(entry field, n Node) (string, error) {
 		if !ok || value == "" {
 			return "", refuse("%q takes a non-empty string", n.Field)
 		}
-		// A text_pattern_ops index accelerates a prefix. The query of an ASM
-		// inventory is a suffix, ".target.com", and a LIKE '%.target.com' can
-		// use no index at all. The expression index on reverse(key) turns one
-		// into the other.
-		//
-		// The escaping happens after reversing, and that order is the whole
-		// trap. Escaping first puts each backslash after the character it was
-		// meant to protect, so "_" stays a live wildcard and a trailing
-		// backslash escapes the "%" appended below: the search silently becomes
-		// an equality, and no test sees it unless a value contains a wildcard.
+		// text_pattern_ops accelerates a prefix, but an ASM query is a suffix (".target.com"), which
+		// LIKE '%.target.com' cannot index; the expression index on reverse(key) turns one into the
+		// other. Escape after reversing: escaping first puts each backslash after the character it
+		// protected, so "_" stays a wildcard and a trailing backslash escapes the appended "%",
+		// silently turning the search into an equality (no test notices without a wildcard value).
 		return "reverse(" + entry.expr + ") LIKE " + b.bind(escapeLike(reverse(value))+"%"), nil
 
 	case OpContains:
@@ -371,10 +345,9 @@ func (b *builder) text(entry field, n Node) (string, error) {
 		if !ok || value == "" {
 			return "", refuse("%q takes a non-empty string", n.Field)
 		}
-		// A leading wildcard, so no index answers this one and the registry says
-		// so where it grants the operator. ILIKE rather than LIKE: the column
-		// holds a normalized name, and somebody who types "API" in a search
-		// field is asking the same question as somebody who types "api".
+		// A leading wildcard, so no index answers it; the registry says so where it
+		// grants the operator. ILIKE because the column holds a normalized name and
+		// "API" asks what "api" does.
 		return entry.expr + " ILIKE " + b.bind("%"+escapeLike(value)+"%"), nil
 
 	default:
@@ -411,12 +384,9 @@ func escapeLike(value string) string {
 	return out.String()
 }
 
-// reverse mirrors a string by rune.
-//
-// By rune rather than by byte, because reverse() in PostgreSQL reverses
-// characters. Reversing bytes here would produce a pattern that matches nothing
-// on any name carrying a non-ASCII character, and an internationalized domain
-// name is exactly the sort of thing an inventory holds without anybody noticing.
+// reverse mirrors a string by rune, as PostgreSQL's reverse() works on
+// characters. Reversing bytes would match nothing on any non-ASCII name, such as
+// an internationalized domain.
 func reverse(value string) string {
 	runes := []rune(value)
 	for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
@@ -428,8 +398,7 @@ func reverse(value string) string {
 func asInt(value any) (int, error) {
 	switch typed := value.(type) {
 	case float64:
-		// Through float64 because the tree arrives as JSON, where every number
-		// is one.
+		// Through float64: the tree arrives as JSON, where every number is one.
 		if typed != float64(int(typed)) {
 			return 0, fmt.Errorf("not a whole number")
 		}

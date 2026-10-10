@@ -7,20 +7,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// QueryCounter counts round trips.
-//
-// The ingestion budget is stated per observation and asserted rather than
-// estimated, because the number is what keeps a first asset reaching the
-// database quickly: at a millisecond of latency, the difference between two
-// statements per observation and seven is the difference between a batch
-// costing two hundred milliseconds of waiting and seven hundred.
-//
-// It is a tracer rather than a wrapper so that nothing in the write path has to
-// know it is being measured.
-// It counts what pgx reports as a query, and a COPY is not one of those: pgx
-// traces it through a different hook entirely. That is worth knowing rather than
-// discovering, because it is how the measured figure fell by a third the day two
-// writes moved onto the copy path, without the work changing at all.
+// QueryCounter counts round trips. The ingestion budget is stated per observation and
+// asserted, not estimated: at a millisecond of latency, two statements per observation versus
+// seven is 200 versus 700 ms of waiting per batch. It is a tracer so nothing in the write path
+// knows it is measured. It counts what pgx reports as a query; a COPY is traced through
+// another hook, which dropped the figure by a third when two writes moved onto the copy path.
 type QueryCounter struct{ n atomic.Int64 }
 
 // TraceQueryStart counts one.

@@ -1,9 +1,7 @@
-// Package enrich derives infrastructure facts from an address.
-//
-// It runs at ingestion, in the control plane, and never in a scanner: the
-// databases weigh tens of megabytes, and shipping them to every run would
-// impose that on every cold start. A run reports the address it connected to;
-// this turns it into an operator and a place.
+// Package enrich derives infrastructure facts from an address. It runs at
+// ingestion in the control plane, never in a scanner: the databases weigh tens of
+// megabytes, which every cold start would pay. A run reports the address it
+// connected to and this turns it into an operator and a place.
 package enrich
 
 import (
@@ -16,8 +14,8 @@ import (
 	"github.com/oschwald/maxminddb-golang/v2"
 )
 
-// Result is what an address yields. Every field is optional: a database can
-// know the operator and not the city, which is the common case on cloud ranges.
+// Result is what an address yields. Every field is optional: a database can know
+// the operator and not the city, the common case on cloud ranges.
 type Result struct {
 	ASN     int
 	ASNOrg  string
@@ -26,28 +24,24 @@ type Result struct {
 	City    string
 }
 
-// Empty reports whether the lookup found nothing at all, which is a different
-// answer from the deployment not being able to look.
+// Empty reports whether the lookup found nothing, which differs from the
+// deployment being unable to look.
 func (r Result) Empty() bool {
 	return r.ASN == 0 && r.ASNOrg == "" && r.Country == "" && r.Region == "" && r.City == ""
 }
 
-// Enricher is what ingestion holds.
-//
-// Configured is part of the interface rather than an implementation detail
-// because the console cannot deduce it: "not configured" and "configured with
-// no match" both give an asset with no operator, and a screen that showed an
-// empty panel for the first would send somebody looking for a fault that is
-// not there.
+// Enricher is what ingestion holds. Configured is part of the interface because
+// the console cannot deduce it: "not configured" and "configured, no match" both
+// give an asset with no operator, and an empty panel for the first sends someone
+// looking for a fault.
 type Enricher interface {
 	Configured() bool
 	Lookup(addr netip.Addr) Result
 	Close() error
 }
 
-// Nothing is the default. A deployment with no database is a normal
-// deployment, not a broken one, so this is a working implementation rather
-// than a nil to check for at every call site.
+// Nothing is the default: a deployment with no database is normal, so this is a
+// working implementation and not a nil to check at every call site.
 func Nothing() Enricher { return nothing{} }
 
 type nothing struct{}
@@ -57,18 +51,15 @@ func (nothing) Lookup(netip.Addr) Result { return Result{} }
 func (nothing) Close() error             { return nil }
 
 // Paths names the databases. Either may be empty: the operator is far more
-// actionable than the city, and a deployment carrying only the ASN database is
-// a reasonable one.
+// actionable than the city, and an ASN-only deployment is reasonable.
 type Paths struct {
 	City string
 	ASN  string
 }
 
-// Open loads what the paths name.
-//
-// An empty Paths returns Nothing without an error. A path that is set and
-// unreadable is an error: somebody configured it, so failing silently would
-// leave them with an inventory that quietly has no operators in it.
+// Open loads what the paths name. An empty Paths returns Nothing without error; a
+// set but unreadable path is an error, as failing silently would leave an
+// inventory quietly without operators.
 func Open(paths Paths) (Enricher, error) {
 	if strings.TrimSpace(paths.City) == "" && strings.TrimSpace(paths.ASN) == "" {
 		return Nothing(), nil
@@ -117,9 +108,8 @@ type maxmind struct {
 
 func (m *maxmind) Configured() bool { return m.city != nil || m.asn != nil }
 
-// The subset of the record this model uses. Decoding into a narrow struct
-// rather than a map is what keeps a database update from silently changing
-// what gets stored.
+// The subset of the record this model uses. A narrow struct, not a map, keeps a
+// database update from silently changing what is stored.
 type cityRecord struct {
 	Country struct {
 		ISOCode string `maxminddb:"iso_code"`
@@ -142,8 +132,8 @@ func (m *maxmind) Lookup(addr netip.Addr) Result {
 	if !addr.IsValid() {
 		return out
 	}
-	// An address in a private range has no operator and no place, and asking
-	// wastes a lookup on every scan of an internal target.
+	// A private-range address has no operator or place; asking wastes a lookup on
+	// every scan of an internal target.
 	if addr.IsPrivate() || addr.IsLoopback() || addr.IsLinkLocalUnicast() {
 		return out
 	}
@@ -162,15 +152,11 @@ func (m *maxmind) Lookup(addr netip.Addr) Result {
 		var record cityRecord
 		if result := m.city.Lookup(addr); result.Found() {
 			if err := result.Decode(&record); err == nil {
-				// Deliberately no fallback to registered_country. An anycast
-				// address carries that field and nothing else, so the fallback
-				// would fire exactly on the addresses whose location means the
-				// least: 1.1.1.1 registers as Australia and is served from
-				// everywhere. The country exists to spot an asset sitting
-				// somewhere unusual for its programme, and feeding it a
-				// registration would be inventing the signal it looks for.
-				//
-				// An absent country is absent, which is exact.
+				// Deliberately no fallback to registered_country. An anycast address carries only
+				// that field, so the fallback would fire on exactly the addresses whose location
+				// means least (1.1.1.1 registers as Australia and is served from everywhere). The
+				// country exists to spot assets somewhere unusual for their programme, and a
+				// registration would invent that signal. An absent country is exact.
 				out.Country = record.Country.ISOCode
 				out.City = record.City.Names["en"]
 				if len(record.Subdivisions) > 0 {

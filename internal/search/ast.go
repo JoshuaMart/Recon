@@ -1,13 +1,9 @@
-// Package search compiles a structured query into parameterized SQL.
-//
-// An AST rather than a parser. The structured representation is defined first
-// and a textual query language comes later and produces the same tree, which
-// avoids freezing a syntax before anybody knows what actually gets filtered.
-//
-// Two rules hold everywhere in here. A field name never reaches SQL as text: it
-// is a key in a registry carrying the expression, the type and the permitted
-// operators, so an unknown field is a refusal rather than a query. And values
-// are parameters, without exception.
+// Package search compiles a structured query into parameterized SQL. An AST rather than a
+// parser: the structured form comes first and a textual language can later produce the same
+// tree, without freezing a syntax before anyone knows what gets filtered. Two rules hold
+// throughout: a field name never reaches SQL as text (it is a key in a registry carrying the
+// expression, type and permitted operators, so an unknown field is a refusal), and values are
+// parameters, without exception.
 package search
 
 import (
@@ -41,11 +37,9 @@ const (
 	OpInCIDR   = "in_cidr"
 )
 
-// Node is one clause or one group of them.
-//
-// One type rather than two, because the tree is decoded from JSON a console
-// sends and a decoder that has to guess which of two shapes it is holding is a
-// decoder that guesses wrong on the malformed case.
+// Node is one clause or one group. One type, since the tree is decoded from
+// console JSON and a decoder guessing between two shapes guesses wrong on
+// malformed input.
 type Node struct {
 	Op      string `json:"op"`
 	Field   string `json:"field,omitempty"`
@@ -53,11 +47,9 @@ type Node struct {
 	Clauses []Node `json:"clauses,omitempty"`
 }
 
-// Error is a refusal a caller can act on.
-//
-// It is the same type for an unknown field, an unknown operator and a value of
-// the wrong shape, because the answer to the outside is the same: this query is
-// not one the registry describes.
+// Error is a refusal a caller can act on. One type for an unknown field,
+// operator or wrongly shaped value, since the answer is the same: the registry
+// does not describe this query.
 type Error struct{ reason string }
 
 func (e *Error) Error() string { return e.reason }
@@ -66,11 +58,9 @@ func refuse(format string, args ...any) error {
 	return &Error{reason: fmt.Sprintf(format, args...)}
 }
 
-// Parse reads a tree and refuses anything the registry does not describe.
-//
-// Refusing at decode time rather than at compile time is deliberate: a console
-// that sends a field nobody knows gets one answer naming it, rather than an
-// empty result set it will read as an empty inventory.
+// Parse reads a tree and refuses anything the registry does not describe. It
+// refuses at decode time so a console sending an unknown field gets one answer
+// naming it, not an empty result it reads as an empty inventory.
 func Parse(raw []byte) (Node, error) {
 	if len(strings.TrimSpace(string(raw))) == 0 {
 		return Node{Op: OpAnd}, nil
@@ -88,12 +78,9 @@ func Parse(raw []byte) (Node, error) {
 	return node, nil
 }
 
-// maxDepth bounds the tree.
-//
-// Not a stylistic limit. The compiler walks it recursively, so an attacker
-// sending ten thousand nested "not" clauses would exhaust the stack of the
-// process rather than be refused, and the depth a real query reaches is single
-// digits.
+// maxDepth bounds the tree. Not stylistic: the compiler recurses, so ten
+// thousand nested "not" clauses would exhaust the stack instead of being
+// refused. Real queries stay in single digits.
 const maxDepth = 16
 
 // maxClauses bounds one group.
@@ -112,11 +99,9 @@ func (n Node) validate(depth int) error {
 		if len(n.Clauses) > maxClauses {
 			return refuse("a group carries %d clauses, and the bound is %d", len(n.Clauses), maxClauses)
 		}
-		// A group with nothing in it is only meaningful at the root, where it
-		// is the request an interface sends before anybody has clicked a
-		// facet. Nested, an empty AND is TRUE by identity and an empty OR is
-		// FALSE, so the same shape means the whole inventory in one parent and
-		// nothing at all in the other, and whoever sent it meant neither.
+		// An empty group is only meaningful at the root, the request sent before any
+		// facet is clicked. Nested, an empty AND is TRUE and an empty OR is FALSE, so
+		// the same shape means everything in one parent and nothing in the other.
 		if depth > 0 && len(n.Clauses) == 0 {
 			return refuse("a %q group with nothing in it", n.Op)
 		}
@@ -137,10 +122,9 @@ func (n Node) validate(depth int) error {
 		if len(n.Clauses) > 0 {
 			return refuse("%q is a leaf and carries clauses", n.Op)
 		}
-		// The one place a field name is checked, and it is checked against the
-		// registry rather than against a pattern. An organization filter the
-		// caller can express is one the caller can forget, which is why org_id
-		// is not in there at all.
+		// The one place a field name is checked, against the registry and not a
+		// pattern. org_id is not there at all: a tenant filter the caller can express is
+		// one the caller can forget.
 		entry, known := registry[n.Field]
 		if !known {
 			return refuse("no field named %q", n.Field)

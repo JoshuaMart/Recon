@@ -24,25 +24,21 @@ import (
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
-// maxReportBytes bounds a report body.
-//
-// A large perimeter produces a large document, so this is generous. It is not
-// absent, because the one thing a run must not be able to do is exhaust the
-// process that reads it.
+// maxReportBytes bounds a report body. A large perimeter makes a large document,
+// so it is generous, but a run must not be able to exhaust the reading process.
 const maxReportBytes = 64 << 20
 
-// supportedSchemaMajor is the report contract this understands. A minor bump
-// adds fields, which the unknown-field counter already handles; a major one
-// removes or repurposes them, which nothing here could notice.
+// supportedSchemaMajor is the report contract understood. A minor bump adds
+// fields (the unknown-field counter handles it); a major one removes or
+// repurposes them, which nothing here could notice.
 const supportedSchemaMajor = "1"
 
 // Reports ingests what a run produced.
 type Reports struct {
 	db *store.Scoped
-	// system resolves the run's organization and nothing else. A run token
-	// names a run rather than a tenant, so this is the lookup that discovers
-	// the one the write is scoped to: once per report, never once per
-	// observation, so the round trip budget of the write path does not move.
+	// system resolves the run's organization only. A run token names a run, not a
+	// tenant, so this discovers the one the write is scoped to: once per report, so
+	// the write path's round trip budget does not move.
 	system   *pgxpool.Pool
 	signer   *auth.Signer
 	ingestor *ingest.Ingestor
@@ -63,18 +59,15 @@ func NewReports(
 	}
 }
 
-// ServeHTTP accepts one report.
-//
-// The order of the checks is the contract. The run is read from the token's
-// claims and never from the body: reading it from the body first would let
-// anyone probe an organization's run states by the shape of the answer.
+// ServeHTTP accepts one report. The order of the checks is the contract: the run
+// comes from the token's claims, never the body, or the shape of the answer would
+// let anyone probe an organization's run states.
 func (h *Reports) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	runID, err := h.authenticate(r)
 	if err != nil {
-		// One answer to the outside for a missing, wrong or expired
-		// credential. Which one it was belongs in a log, not in a reply.
+		// One answer for a missing, wrong or expired credential; which belongs in a log.
 		h.log.WarnContext(ctx, "report refused", "reason", err)
 		fail(w, http.StatusUnauthorized, "unauthorized", "the credential is missing, wrong or expired")
 		return
@@ -87,22 +80,20 @@ func (h *Reports) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The report type is transcribed rather than shared so the scanner can
-	// evolve on its own cycle. That only holds if a major version this does
-	// not know is refused: a document reusing field names under new meanings
-	// would be ingested under the old ones and write wrong inventory in
-	// silence.
+	// The report type is transcribed so the scanner can evolve on its own cycle,
+	// which only holds if an unknown major version is refused: reused field names
+	// with new meanings would be ingested under the old ones and write wrong
+	// inventory silently.
 	if major, _, _ := strings.Cut(report.SchemaVersion, "."); major != supportedSchemaMajor {
 		fail(w, http.StatusBadRequest, "schema_unsupported",
 			fmt.Sprintf("report schema %q is not %s.x", report.SchemaVersion, supportedSchemaMajor))
 		return
 	}
 
-	// From here the work belongs to the report, not to the connection that
-	// brought it. A large report outlasted the scanner's patience: it hung up,
-	// the context was cancelled, the transaction rolled back, and every retry
-	// repeated the same work to the same end. A retry now waits on the run row
-	// the first attempt holds, and finds the run completed.
+	// From here the work belongs to the report, not the connection. A large report
+	// outlasted the scanner's patience: it hung up, the context cancelled, the
+	// transaction rolled back, and every retry repeated the work. A retry now waits
+	// on the run row the first attempt holds, and finds the run completed.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), h.timeout)
 	defer cancel()
 	began := h.now()
@@ -139,9 +130,9 @@ func (h *Reports) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A run in a terminal state rejects any later report bearing its id. That
-	// is the effective revocation: a signed token cannot be recalled, so it
-	// stays valid and stops being useful.
+	// A run in a terminal state rejects any later report with its id. That is the
+	// effective revocation: a signed token cannot be recalled, so it stays valid and
+	// stops being useful.
 	if run.State == "completed" || run.State == "failed" || run.State == "expired" {
 		fail(w, http.StatusConflict, "run_closed",
 			fmt.Sprintf("this run is %s and accepts nothing further", run.State))
@@ -161,9 +152,9 @@ func (h *Reports) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A late report is accepted and marked as such. The data is still valid:
-	// the run may simply have been re-dispatched, and deduplication merges the
-	// two. Refusing it would throw away work that was actually done.
+	// A late report is accepted and marked. The data is valid (the run may have been
+	// re-dispatched, and deduplication merges), and refusing it would discard work
+	// done.
 	late := run.Deadline.Valid && h.now().After(run.Deadline.Time)
 
 	summary, err := h.ingestor.Report(ctx, q, ingest.Run{
@@ -190,10 +181,9 @@ func (h *Reports) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	summary.Late = late
 	encoded, err := json.Marshal(struct {
 		ingest.Summary
-		// What the run said about itself, kept beside what it wrote. Running
-		// out of time is data rather than an error, and a run that delivered
-		// nine hundred hosts before its deadline must stay distinguishable
-		// from one that crashed on the first.
+		// What the run said about itself, beside what it wrote. Running out of time is
+		// data, not an error: nine hundred hosts before the deadline must differ from a
+		// crash on the first.
 		Completed          bool     `json:"completed"`
 		TruncatedByTimeout bool     `json:"truncated_by_timeout"`
 		Degraded           []string `json:"degraded,omitempty"`
@@ -258,15 +248,14 @@ func (h *Reports) programRefuses(run sqlcgen.RunForIngestRow) (string, bool) {
 }
 
 // perimeter reads the rules in force and, on a verification run, the frozen
-// target list. A discovery run has none, because it is the one allowed to find
-// things.
+// target list. A discovery run has none.
 func (h *Reports) perimeter(
 	ctx context.Context, q *sqlcgen.Queries, run sqlcgen.RunForIngestRow,
 ) (*scope.Set, map[string]struct{}, error) {
 	rows, err := q.ListScopeRules(ctx, sqlcgen.ListScopeRulesParams{
 		ProgramID: run.ProgramID,
-		// The instant is a parameter rather than now(): a date comparison
-		// never mixes the application's clock with the database's.
+		// The instant is a parameter so a date comparison never mixes the application's
+		// clock with the database's.
 		At: stamp(h.now()),
 	})
 	if err != nil {
@@ -287,12 +276,10 @@ func (h *Reports) perimeter(
 		return nil, nil, fmt.Errorf("compile scope: %w", err)
 	}
 
-	// Discovery is the only kind with no list, because it is the one allowed to
-	// find things. Written as "not discovery" rather than "is verification":
-	// the candidate lane freezes a list and is handed a targets URL exactly
-	// like a verification run, and reading the second form left its reports
-	// unchecked against the list they were given, which is precisely the
-	// scanner-chooses-its-own-perimeter hole the frozen list exists to close.
+	// Discovery is the only kind with no list. Written "not discovery" rather than "is
+	// verification": the candidate lane freezes a list and gets a targets URL like a
+	// verification run, and the second form left its reports unchecked against that
+	// list, the scanner-chooses-its-own-perimeter hole the frozen list closes.
 	if run.Kind == runs.KindDiscovery {
 		return set, nil, nil
 	}
@@ -308,12 +295,8 @@ func (h *Reports) perimeter(
 	return set, targets, nil
 }
 
-// A run that delivered a report is completed, whatever its scope reached.
-//
-// This used to close a truncated run as failed, contradicting the sentence that
-// stood above it. Running out of time is data rather than an error: the report
-// was delivered and it is valid, it is simply not exhaustive, and a scheduler
-// reading "failed" would re-run work whose results it already holds. `failed`
-// and `expired` belong to a run that delivered nothing, and the deadline
-// sweeper owns those. What the run said about its own completeness is recorded
-// in the summary, where it stays legible.
+// A run that delivered a report is completed, whatever its scope reached. Running
+// out of time is data: the report is valid, just not exhaustive, and a scheduler
+// reading "failed" would re-run work whose results it holds. `failed` and
+// `expired` belong to a run that delivered nothing, owned by the deadline sweeper.
+// How complete the run says it was is in the summary.

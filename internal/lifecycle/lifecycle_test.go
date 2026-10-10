@@ -31,9 +31,8 @@ func TestThreeInformativeFailuresOverADayAreADeath(t *testing.T) {
 	}
 }
 
-// The floor is the assertion, not the count. Without it the threshold is not a
-// threshold: the backoff curve can deliver three failures inside ninety
-// minutes, which is not long enough to tell an outage from a disappearance.
+// The floor is the assertion, not the count: the backoff curve can deliver three
+// failures inside ninety minutes, too short to tell an outage from a disappearance.
 func TestThreeInformativeFailuresInNinetyMinutesAreNot(t *testing.T) {
 	counters := run(45*time.Minute, lifecycle.OutcomeFail, lifecycle.OutcomeFail, lifecycle.OutcomeFail)
 
@@ -45,9 +44,9 @@ func TestThreeInformativeFailuresInNinetyMinutesAreNot(t *testing.T) {
 	}
 }
 
-// The one signal that must never conclude anything. A timeout is
-// indistinguishable from a filter or a ban, and an inventory that reads it as a
-// death archives every host behind a firewall that started dropping.
+// The one signal that must never conclude anything: a timeout is indistinguishable
+// from a filter or ban, and reading it as death archives every host behind a firewall
+// that started dropping.
 func TestARepeatedTimeoutNeverProducesADeath(t *testing.T) {
 	counters := run(24*time.Hour,
 		lifecycle.OutcomeError, lifecycle.OutcomeError, lifecycle.OutcomeError,
@@ -80,9 +79,9 @@ func TestOneSuccessIsTheWholeOfTheRecoveryRule(t *testing.T) {
 	}
 }
 
-// A timeout between two nxdomains is not proof the name came back, so it must
-// not reset the run. Only a success does, which is the reading that makes
-// "consecutive" mean what the threshold needs it to mean.
+// A timeout between two nxdomains is not proof the name came back, so it must not
+// reset the run. Only a success does, which makes "consecutive" mean what the
+// threshold needs.
 func TestATimeoutDoesNotEraseAFailureRun(t *testing.T) {
 	counters := run(12*time.Hour,
 		lifecycle.OutcomeFail, lifecycle.OutcomeError, lifecycle.OutcomeFail, lifecycle.OutcomeFail)
@@ -95,10 +94,9 @@ func TestATimeoutDoesNotEraseAFailureRun(t *testing.T) {
 	}
 }
 
-// The case that forces the most-severe rule. On a fronted asset whose origin is
-// dead, dns resolves and tcp connects because the edge answers for both. Under
-// any rule where a success somewhere restores the asset, the only death signal
-// available behind a CDN is thrown away.
+// The case forcing the most-severe rule: with a dead origin behind a fronted asset,
+// dns and tcp succeed at the edge. If a success elsewhere restored the asset, the only
+// death signal behind a CDN would be lost.
 func TestADeadOriginBehindALiveEdgeStillDies(t *testing.T) {
 	edge := run(24*time.Hour, lifecycle.OutcomeOK)
 	origin := run(12*time.Hour, lifecycle.OutcomeFail, lifecycle.OutcomeFail, lifecycle.OutcomeFail)
@@ -119,26 +117,24 @@ func TestALayerNothingMeasuredHasNoOpinion(t *testing.T) {
 	}
 }
 
-// Archived is out of the scheduler and comes back on rediscovery. An archived
-// asset carries no due date, so the only observation that can reach one is an
-// enumeration finding it again, which is exactly what rediscovery is here.
+// Archived is out of the scheduler and returns on rediscovery. It has no due date, so
+// only an enumeration finding it again can reach it.
 func TestArchivedComesBackOnASuccessAndOnNothingElse(t *testing.T) {
 	if !lifecycle.Revived(lifecycle.Archived, lifecycle.OutcomeOK) {
 		t.Fatal("a success on an archived asset is a rediscovery, and nothing else can ever reach it")
 	}
 
-	// A failure is not a rediscovery. An observation that measured nothing, or
-	// one that measured a death, must not pull an asset back into a queue it
-	// left.
+	// A failure is not a rediscovery: an observation that measured nothing, or a death,
+	// must not pull an asset back into a queue it left.
 	for _, outcome := range []string{lifecycle.OutcomeError, lifecycle.OutcomeFail} {
 		if lifecycle.Revived(lifecycle.Archived, outcome) {
 			t.Errorf("%q reopened an archived asset", outcome)
 		}
 	}
 
-	// And the reading is on the observation, never on the counters. A layer
-	// holds the state of its last conclusive measurement, so an archived asset
-	// still carrying a healthy layer would be revived by a timeout.
+	// And the reading is on the observation, never the counters: a layer keeps its last
+	// conclusive state, so an archived asset with a healthy layer would be revived by a
+	// timeout.
 	healthy := run(0, lifecycle.OutcomeOK)
 	if state := lifecycle.Decide(lifecycle.Archived, true, lifecycle.Reach{}, healthy); state != lifecycle.Archived {
 		t.Fatalf("a stale healthy layer reopened an archived asset as %q", state)
@@ -155,9 +151,8 @@ func TestACurveClampsRatherThanWraps(t *testing.T) {
 	}
 }
 
-// Proportional rather than additive: the two curves span four orders of
-// magnitude, and fifteen minutes of jitter on a one minute rung deletes the
-// rung.
+// Proportional, not additive: the curves span four orders of magnitude, and fifteen
+// minutes of jitter deletes a one-minute rung.
 func TestJitterNeverSwallowsAShortRung(t *testing.T) {
 	cadence := lifecycle.DefaultCadence()
 
@@ -192,10 +187,9 @@ func TestACandidateBudgetRunsOut(t *testing.T) {
 	}
 }
 
-// A backoff curve is a confirmation rate, and it is written for the cheap rung.
-// Applying it unchanged to the expensive one asks for a hundred connections per
-// host four times an hour, on an asset that can be failing on a layer where the
-// target is answering and the sweep costs everything it says.
+// A backoff curve is a confirmation rate written for the cheap rung. Unchanged on the
+// expensive one it means a hundred connections per host four times an hour, on an asset
+// failing on a layer where the target answers and the sweep costs everything.
 func TestTheExpensiveRungHasAFloorAndTheCheapOneDoesNot(t *testing.T) {
 	cadence := lifecycle.DefaultCadence()
 
@@ -216,9 +210,8 @@ func TestTheExpensiveRungHasAFloorAndTheCheapOneDoesNot(t *testing.T) {
 	}
 }
 
-// Neither observer gets a result. The asset is neither alive nor dead, and it
-// never passes through flapping on the way: it is not an unstable asset but an
-// unmeasurable one.
+// Neither observer gets a result: the asset is unmeasurable, not unstable, and never
+// passes through flapping.
 func TestNeitherObserverGettingThroughIsNotADeath(t *testing.T) {
 	healthy := run(0, lifecycle.OutcomeOK)
 	blind := lifecycle.Reach{HTTP: -3, Fingerprint: -3}
@@ -227,10 +220,8 @@ func TestNeitherObserverGettingThroughIsNotADeath(t *testing.T) {
 		t.Fatalf("an asset neither observer reaches is %q", state)
 	}
 
-	// Both must have tried. A streak at zero is an observer that never ran
-	// rather than one that fails, and reading it as a failure would tip every
-	// asset the renderer has not reached yet into a state that means something
-	// else entirely.
+	// Both must have tried. A streak at zero is an observer that never ran, and reading it
+	// as failing would tip every asset the renderer has not reached into another state.
 	half := lifecycle.Reach{HTTP: -9, Fingerprint: 0}
 	if state := lifecycle.Decide(lifecycle.Active, true, half, healthy); state == lifecycle.Unobservable {
 		t.Fatal("an asset the renderer never ran on was called unobservable")
@@ -244,10 +235,9 @@ func TestNeitherObserverGettingThroughIsNotADeath(t *testing.T) {
 	}
 }
 
-// A death that was observed is not a silence. An edge reporting that its origin
-// is gone is an informative failure even though the probe learned nothing about
-// the service, so such an asset ends inactive even if the renderer fails at the
-// same moment.
+// An observed death is not a silence: an edge reporting its origin gone is an
+// informative failure though the probe learned nothing about the service, so the asset
+// ends inactive even if the renderer fails at the same moment.
 func TestADeathBeatsUnmeasurability(t *testing.T) {
 	dead := run(12*time.Hour, lifecycle.OutcomeFail, lifecycle.OutcomeFail, lifecycle.OutcomeFail)
 	blind := lifecycle.Reach{HTTP: -4, Fingerprint: -4}
@@ -257,11 +247,9 @@ func TestADeathBeatsUnmeasurability(t *testing.T) {
 	}
 }
 
-// Four regimes, and the two middle ones are why this is a table. When the raw
-// client is blocked the renderer is the only detector left and has to run at a
-// detector's rate; when the renderer is the one blocked, paying for a browser
-// every three weeks to be turned away again is the expensive way to learn
-// nothing.
+// Four regimes, the two middle ones making this a table. With the raw client blocked
+// the renderer is the only detector and runs at a detector's rate; with the renderer
+// blocked, paying for a browser every three weeks to be turned away learns nothing.
 func TestEachRegimeHasItsOwnRenderCadence(t *testing.T) {
 	cadence := lifecycle.DefaultCadence()
 	yes, no := true, false
@@ -275,9 +263,8 @@ func TestEachRegimeHasItsOwnRenderCadence(t *testing.T) {
 		{"the renderer is the only detector", lifecycle.Regime{HTTP: &no, Fingerprint: &yes}, cadence.RenderSole},
 		{"the renderer is the one blocked", lifecycle.Regime{HTTP: &yes, Fingerprint: &no}, cadence.RenderRecovery},
 		{"neither", lifecycle.Regime{HTTP: &no, Fingerprint: &no}, cadence.RenderBlind},
-		// Undefined is not false. An asset whose observers have not agreed
-		// three times running has no regime, and treating that as a failure
-		// would put every freshly rendered service on the alert cadence.
+		// Undefined is not false: observers that have not agreed three times yet give no
+		// regime, and failure would put every fresh service on the alert cadence.
 		{"undefined", lifecycle.Regime{}, cadence.Fingerprint},
 	}
 
@@ -293,13 +280,10 @@ func TestEachRegimeHasItsOwnRenderCadence(t *testing.T) {
 	}
 }
 
-// The corrected milestone assertion, read off the curve rather than off a
-// running system.
-//
-// "A candidate that goes live is detected within the hour" is false after the
-// first hour and deliberately so: the curve widens to six hours and then a day,
-// because the density is bought where it pays. What it does promise is the
-// first hour, and this is that promise in arithmetic.
+// Read off the curve, not a running system. "A candidate going live is detected within
+// the hour" is false after the first hour, deliberately: the curve widens to six hours
+// then a day, buying density where it pays. It promises the first hour, and this is
+// that promise in arithmetic.
 func TestTheCandidateCurveChecksSeveralTimesInsideTheFirstHour(t *testing.T) {
 	var elapsed time.Duration
 	checks := 0
@@ -314,9 +298,8 @@ func TestTheCandidateCurveChecksSeveralTimesInsideTheFirstHour(t *testing.T) {
 		}
 	}
 
-	// One minute, six, twenty one. A service going live in its first hour is
-	// found within twenty minutes of doing so, and the assertion the roadmap
-	// carried would have been failed by the design it sits next to.
+	// One minute, six, twenty-one: a service going live in its first hour is found within
+	// twenty minutes, which the roadmap's earlier assertion would have failed.
 	if checks < 3 {
 		t.Errorf("the curve schedules %d checks inside the first hour, and probing often "+
 			"during it is where the freshness advantage actually is", checks)
@@ -343,10 +326,9 @@ func TestACandidateIsGivenUpOnAtItsBudgetAndNotBefore(t *testing.T) {
 	}
 }
 
-// The two exits belong to the kinds the budget can archive. A service is a
-// candidate until something addresses the service, and a dead layer is
-// something addressing it: holding one here would close an exit nothing else
-// opens, and the death would never be emitted.
+// The two exits belong to the kinds the budget can archive. A service is a candidate
+// until something addresses it, and a dead layer does: holding one here would close an
+// exit nothing else opens and the death would never be emitted.
 func TestOnlyAScheduledCandidateKeepsItsTwoExits(t *testing.T) {
 	dead := lifecycle.Counters{State: lifecycle.LayerDead, Informative: 3}
 

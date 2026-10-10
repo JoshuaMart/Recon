@@ -1,15 +1,11 @@
--- The index the live feed walks.
+-- The index the live feed walks. The feed orders on (first_seen, asset_id) and nothing else
+-- does (the list and its cursor use last_seen, the due-date passes their own columns).
+-- Without it the feed scans the tenant every tick, the one shape a polling loop must not have.
 --
--- The feed orders on (first_seen, asset_id) and nothing else in the system
--- does: the list and its cursor order on last_seen, and the due date passes
--- order on their own columns. Without this the feed is a scan of the tenant on
--- every tick, which is the one shape a polling loop must not have.
---
--- first_seen is mutable and that is exactly what makes this cursor safe. The
--- upsert writes LEAST(old, new), so the column can only move backwards, and an
--- asset moving backwards becomes older than a cursor already passed: it is
--- neither re-emitted nor missed. The day something makes first_seen move
--- forward, this feed starts skipping discoveries in silence.
+-- first_seen is mutable, which is what makes the cursor safe: the upsert writes LEAST(old,
+-- new), so it only moves backwards, and an asset doing so becomes older than a cursor already
+-- passed, neither re-emitted nor missed. The day something moves first_seen forward, the feed
+-- starts skipping discoveries silently.
 
 -- +goose Up
 

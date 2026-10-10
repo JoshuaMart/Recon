@@ -1,11 +1,9 @@
--- The model. This is the most irreversible migration of the project, which is
--- why the phase that writes it does nothing else first.
+-- The model, the most irreversible migration of the project.
 --
--- Two conventions hold throughout. Enumerations are text with a named CHECK
--- rather than an enum type: these lists still move, and altering an enum is a
--- migration where editing a constraint is a line. And org_id is on every
--- business table from the first day, because the columns are what is urgent,
--- not the policy that will read them.
+-- Two conventions hold throughout. Enumerations are text with a named CHECK, not an enum
+-- type: the lists still move, and altering an enum is a migration where editing a
+-- constraint is a line. And org_id is on every business table from day one, as the columns
+-- are urgent and the policy reading them is not.
 
 -- +goose Up
 
@@ -15,9 +13,8 @@ CREATE TABLE org (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 
--- Identity through a join table, never a tenant column on the user: somebody
--- has to be able to belong to several organizations without a migration of the
--- authentication layer.
+-- Identity through a join table, never a tenant column on the user, so someone can belong to
+-- several organizations without migrating the authentication layer.
 CREATE TABLE app_user (
     id         uuid PRIMARY KEY,
     email      text UNIQUE NOT NULL,
@@ -31,10 +28,9 @@ CREATE TABLE membership (
     PRIMARY KEY (user_id, org_id)
 );
 
--- A token belongs to the organization, not to a person: one modelled as a
--- person's becomes unmanageable when they leave, and unusable for machine
--- access. Only the hash is stored, so the value is printed once and never
--- recoverable.
+-- A token belongs to the organization, not a person: one modelled as a person's is
+-- unmanageable when they leave and unusable for machine access. Only the hash is stored, so
+-- the value is printed once and unrecoverable.
 CREATE TABLE api_token (
     id         uuid PRIMARY KEY,
     org_id     uuid NOT NULL REFERENCES org(id) ON DELETE CASCADE,
@@ -77,10 +73,9 @@ CREATE TABLE program (
 );
 CREATE INDEX program_org_idx ON program (org_id, state);
 
--- A rule has a period of validity, not an existence. Removing one is setting
--- its valid_to, never a DELETE: an asset classified out of scope by a rule
--- that has since been closed stays reclassifiable, and one can still explain
--- why it was classified that way.
+-- A rule has a validity period, not an existence. Removing one sets valid_to, never a
+-- DELETE: an asset classified out of scope by a since-closed rule stays reclassifiable and
+-- explainable.
 CREATE TABLE scope_rule (
     id         uuid PRIMARY KEY,
     org_id     uuid NOT NULL REFERENCES org(id) ON DELETE CASCADE,
@@ -109,10 +104,9 @@ CREATE TABLE asset (
     -- The canonical form. Deduplication depends entirely on it, which is why
     -- one function in the application owns it and SQL never parses it.
     key              text NOT NULL,
-    -- Derivable from the key, therefore written at creation rather than
-    -- waited for from an observation. Deriving it in SQL later would be a
-    -- second implementation of key parsing, and split_part is wrong on the
-    -- first IPv6 key.
+    -- Derivable from the key, so written at creation, not awaited from an observation. Deriving
+    -- it later in SQL would be a second implementation of key parsing, and split_part is wrong
+    -- on the first IPv6 key.
     host             text,
     parent_asset_id  uuid REFERENCES asset(id),
     discovery_source text NOT NULL,
@@ -123,9 +117,8 @@ CREATE TABLE asset (
     CONSTRAINT asset_kind_known CHECK (kind IN ('fqdn', 'ip', 'service', 'url')),
     CONSTRAINT asset_scope_known CHECK (scope_status IN ('in_scope', 'out_of_scope', 'unknown')),
     CONSTRAINT asset_seen_ordered CHECK (last_seen >= first_seen),
-    -- An asset is never its own parent. The case is not theoretical: a
-    -- response seen on a service descends from the port that produced it, and
-    -- two events that used to be two kinds became one asset.
+    -- An asset is never its own parent. Not theoretical: a response seen on a service descends
+    -- from the port that produced it, and two events once distinct became one asset.
     CONSTRAINT asset_not_its_own_parent CHECK (parent_asset_id IS DISTINCT FROM id),
     UNIQUE (program_id, kind, key)
 );
@@ -133,9 +126,9 @@ CREATE INDEX asset_org_program_idx ON asset (org_id, program_id);
 CREATE INDEX asset_parent_idx ON asset (parent_asset_id) WHERE parent_asset_id IS NOT NULL;
 CREATE INDEX asset_discovery_path_idx ON asset USING gin (discovery_path);
 
--- The immutable journal. Deduplicated on write, so two consecutive rows of one
--- (asset, layer) are two distinct states by construction, which is what makes
--- the diff trivial and the timeline a list of changes rather than of probes.
+-- The immutable journal, deduplicated on write: two consecutive rows of one (asset, layer)
+-- are distinct states by construction, so the diff is trivial and the timeline lists
+-- changes, not probes.
 CREATE TABLE observation (
     id                    bigserial,
     org_id                uuid NOT NULL,
@@ -147,9 +140,8 @@ CREATE TABLE observation (
     source                text NOT NULL,
     layer                 text NOT NULL,
     outcome               text NOT NULL,
-    -- Two columns because one row outlives several versions: deduplication
-    -- deliberately does not compare the producer version, so the first pass
-    -- keeps its own and the last confirmation moves the other.
+    -- Two columns because one row outlives several versions: deduplication does not compare the
+    -- producer version, so the first pass keeps its own and the last confirmation moves the other.
     producer_version      text,
     last_producer_version text,
     data                  jsonb NOT NULL,
@@ -167,14 +159,14 @@ CREATE TABLE observation (
 CREATE INDEX observation_chain_idx ON observation (asset_id, layer, observed_at DESC);
 CREATE INDEX observation_run_idx ON observation (run_id) WHERE run_id IS NOT NULL;
 
--- No DEFAULT partition. A row whose month is missing must fail loudly: that is
--- the only signal the creation mechanism has broken, and a default partition
--- would absorb it silently while having to be scanned on every later attach.
+-- No DEFAULT partition. A row whose month is missing must fail loudly, the only signal the
+-- creation mechanism broke; a default partition would absorb it silently and need scanning on
+-- every later attach.
 SELECT ensure_monthly_partitions('observation', 2);
 
--- Per layer verdict and counters. Death is a property of a layer rather than
--- of an asset: a name that no longer resolves and a host whose ports all time
--- out are not the same finding, and one of the two proves nothing.
+-- Per-layer verdict and counters. Death belongs to a layer, not an asset: a name that no
+-- longer resolves and a host whose ports all time out are different findings, one proving
+-- nothing.
 CREATE TABLE asset_layer (
     asset_id                 uuid NOT NULL REFERENCES asset(id) ON DELETE CASCADE,
     org_id                   uuid NOT NULL,
@@ -247,9 +239,8 @@ CREATE TABLE asset_current (
     waf_vendor   text,
     technologies text[],
 
-    -- Volatility as seven daily buckets plus one of margin. No total is
-    -- stored, so nothing has to be decremented when a change expires and no
-    -- sweep of the inventory is needed for a display value.
+    -- Volatility as seven daily buckets plus one of margin. No total is stored, so nothing is
+    -- decremented as a change expires and no sweep is needed for a display value.
     change_buckets int[] NOT NULL DEFAULT '{0,0,0,0,0,0,0,0}',
     buckets_day    date,
 
@@ -260,9 +251,8 @@ CREATE TABLE asset_current (
     last_checked_at     timestamptz,
     last_fingerprint_at timestamptz,
     last_ok_at          timestamptz,
-    -- Null on an asset that has never changed, which the console reads as
-    -- "never". A date borrowed from its discovery would make every filter on
-    -- recency return everything just found.
+    -- Null on an asset that never changed, read by the console as "never". A date borrowed from
+    -- discovery would make every recency filter return everything just found.
     last_changed_at     timestamptz,
 
     CONSTRAINT asset_current_lifecycle_known CHECK (
@@ -285,9 +275,8 @@ CREATE INDEX asset_current_attributes_idx ON asset_current USING gin (attributes
 -- The list paginates on this, and a cursor needs a total order.
 CREATE INDEX asset_current_recent_idx ON asset_current (org_id, last_seen DESC, asset_id);
 
--- The query of an ASM inventory is a suffix, "everything under this domain",
--- which no ordinary index can serve. Reversing turns it into a prefix, and
--- reverse() is immutable, so it can be indexed.
+-- An ASM inventory asks suffixes ("everything under this domain"), which no ordinary index
+-- serves. Reversing makes it a prefix, and reverse() is immutable so it can be indexed.
 CREATE INDEX asset_current_key_reversed_idx ON asset_current (reverse(key) text_pattern_ops);
 
 -- Partial, so a row that has left the scheduler costs nothing to skip.
@@ -309,9 +298,8 @@ CREATE TABLE run (
     state        text NOT NULL DEFAULT 'pending',
     deadline     timestamptz NOT NULL,
     created_at   timestamptz NOT NULL DEFAULT now(),
-    -- Written by the first report. It is the only thing that separates a run
-    -- something has opened from one whose provisioning failed, and those two
-    -- call for opposite actions.
+    -- Written by the first report. It alone separates a run something opened from one whose
+    -- provisioning failed, which call for opposite actions.
     started_at   timestamptz,
     finished_at  timestamptz,
     target_count int,
@@ -323,15 +311,14 @@ CREATE TABLE run (
 );
 CREATE INDEX run_program_idx ON run (program_id, created_at DESC);
 
--- One discovery run per program at a time. It prevents a provisioning storm,
--- since last_discovery_at is written when the run is created rather than when
--- it completes, and it bounds concurrency where the budget cannot.
+-- One discovery run per program at a time. Prevents a provisioning storm (last_discovery_at
+-- is written at creation, not completion) and bounds concurrency where the budget cannot.
 CREATE UNIQUE INDEX run_one_live_discovery_idx ON run (program_id)
     WHERE kind = 'discovery' AND state IN ('pending', 'running');
 
--- The frozen target list of a verification run, and the whole of the
--- reservation mechanism: selection excludes assets already listed in a run
--- that has not finished, so the list expires when the run does.
+-- The frozen target list of a verification run and the whole reservation mechanism:
+-- selection excludes assets listed in a run that has not finished, so the list expires with
+-- the run.
 CREATE TABLE run_target (
     run_id   uuid NOT NULL REFERENCES run(id) ON DELETE CASCADE,
     asset_id uuid NOT NULL REFERENCES asset(id) ON DELETE CASCADE,

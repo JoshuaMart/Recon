@@ -5,11 +5,9 @@ import (
 	"time"
 )
 
-// Loop runs the pass on a tick.
-//
-// It holds no state between two of them, which is the whole reason the render
-// path needs no recovery mechanism: a pass that dies mid flight leaves every
-// due date exactly where it found it.
+// Loop runs the pass on a tick. It holds no state between ticks, which is why the
+// render path needs no recovery: a pass that dies mid-flight leaves every due date
+// where it found it.
 type Loop struct {
 	pass     *Pass
 	interval time.Duration

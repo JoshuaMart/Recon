@@ -30,10 +30,9 @@ FROM gcr.io/distroless/static-debian12:nonroot AS migrate
 COPY --from=builder /out/migrate /migrate
 ENTRYPOINT ["/migrate"]
 
-# The operational command line. It holds the owner credential, which is why it
-# is neither the control plane nor a route: an endpoint that creates an
-# organization could not be authenticated, since there is no tenant to attach
-# the caller to before one exists.
+# The operational command line. It holds the owner credential, so it is neither the control
+# plane nor a route: an endpoint creating an organization could not be authenticated, with no
+# tenant yet to attach the caller to.
 FROM gcr.io/distroless/static-debian12:nonroot AS recon
 COPY --from=builder /out/recon /recon
 ENTRYPOINT ["/recon"]

@@ -4,11 +4,8 @@
 	import type { Discovery, FeedTick } from '$lib/types';
 
 	/**
-	 * The live feed.
-	 *
-	 * An EventSource, so reconnection and Last-Event-ID are the browser's job. The
-	 * server made the cursor the event id precisely so that the resume needs nothing
-	 * on this side.
+	 * The live feed. An EventSource, so reconnection and Last-Event-ID are the browser's job; the
+	 * server made the cursor the event id so resuming needs nothing on this side.
 	 */
 	let rows = $state<Discovery[]>([]);
 	let overflow = $state(0);
@@ -17,11 +14,9 @@
 	let status = $state<'connecting' | 'live' | 'lost'>('connecting');
 	let opened = $state('');
 	/**
-	 * The clock behind "since", ticking on its own.
-	 *
-	 * `ago` is a pure function of two instants and `opened` is written once, so
-	 * without something moving the second one a tab left open for four hours still
-	 * read "since just now". A minute is the resolution the phrase has anyway.
+	 * The clock behind "since", ticking on its own. `ago` is a pure function of two instants and
+	 * `opened` is written once, so with nothing moving the second a tab left open four hours still
+	 * read "since just now". A minute is the phrase's resolution anyway.
 	 */
 	let now = $state(Date.now());
 
@@ -37,9 +32,8 @@
 	$effect(() => {
 		opened = new Date().toISOString();
 
-		// No cursor. A feed with none starts at the present, which is what a tab
-		// opening on a live feed is asking for: the assets already in the inventory
-		// are what the list next door is for.
+		// No cursor: a feed with none starts at the present, which a tab opening on a live feed asks for.
+		// The assets already in the inventory are the list next door's job.
 		const source = new EventSource('/feed/stream');
 
 		source.addEventListener('open', () => {
@@ -56,10 +50,8 @@
 		});
 
 		source.addEventListener('error', () => {
-			// EventSource reconnects on its own, so this is a state and not a failure.
-			// Saying "lost" rather than nothing is what separates a quiet feed from a
-			// broken one, which is the same distinction the cards make about absent
-			// data.
+			// EventSource reconnects on its own, so this is a state, not a failure. Saying "lost" rather than
+			// nothing separates a quiet feed from a broken one, as the cards do for absent data.
 			status = 'lost';
 		});
 
@@ -85,10 +77,9 @@
 	</header>
 
 	{#if overflow > 0}
-		<!-- An overflow never produces the absence of information. The count is
-		     shown rather than the rows dropped in silence, and it says when it is
-		     itself a floor: "500 more" where there are forty thousand would be the
-		     silent truncation this refuses. -->
+		<!-- An overflow never produces the absence of information. The count is shown, not rows dropped
+		silently, and says when it is itself a floor: "500 more" where there are forty thousand would be
+		the silent truncation this refuses. -->
 		<p class="overflow">
 			{overflow}{overflowFloor ? ' or more' : ''} more discoveries arrived than this feed shows. They are in the inventory.
 			<a href="/">Search it</a>.

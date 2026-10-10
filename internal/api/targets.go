@@ -16,17 +16,13 @@ import (
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
-// Targets serves a run its frozen list.
-//
-// It is the only thing a run is given about the inventory, and it is scoped to
-// the run: nothing it holds opens anything else. The credential is a signature
-// over the run, the purpose and an expiry, so a token minted to fetch a list
-// cannot be replayed to post a report.
+// Targets serves a run its frozen list, the only thing a run is given about the
+// inventory, scoped to the run. The credential is a signature over run, purpose
+// and expiry, so a token minted to fetch a list cannot be replayed to post a report.
 type Targets struct {
 	db *store.Scoped
-	// system resolves the run's organization, and nothing else. A run token
-	// names a run rather than a tenant, so this is the lookup that discovers
-	// the tenant the rest of the request is scoped to.
+	// system resolves the run's organization only. A run token names a run, not a
+	// tenant, so this lookup discovers the tenant the rest is scoped to.
 	system *pgxpool.Pool
 	signer *auth.Signer
 	now    func() time.Time
@@ -38,23 +34,19 @@ func NewTargets(db *store.Scoped, system *pgxpool.Pool, signer *auth.Signer, log
 	return &Targets{db: db, system: system, signer: signer, now: time.Now, log: log}
 }
 
-// ServeHTTP answers with one canonical host per line.
-//
-// Plain text rather than JSON, because the consumer is a scanner reading a
-// target file and the format has to be the one it already accepts. A blank
-// body is a valid answer only for a run that froze nothing, which cannot
-// happen: a run with no target is never created.
+// ServeHTTP answers with one canonical host per line. Plain text, because the
+// consumer is a scanner reading a target file. A blank body is valid only for a run
+// that froze nothing, which cannot happen: a run with no target is never created.
 func (h *Targets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// The run comes from the signature, and the path is checked against it.
-	// Reading the run from the path first would let anyone probe an
-	// organization's run states by the shape of the answer.
+	// The run comes from the signature and the path is checked against it; reading the
+	// path first would let anyone probe an organization's run states by the shape of
+	// the answer.
 	//
-	// The credential is a header rather than a query parameter, which is what
-	// the scanner's --targets-header flag exists for: a token in a URL is a
-	// token in every access log, proxy log and error message that ever prints
-	// that URL, and those outlive the run by a long way.
+	// The credential is a header, not a query parameter (the scanner's
+	// --targets-header exists for it): a token in a URL is in every access, proxy and
+	// error log that prints it, and those outlive the run.
 	token, scheme := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !scheme {
 		token = ""
@@ -71,10 +63,10 @@ func (h *Targets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// One statement, outside the transaction, on the pool that crosses tenants.
-	// Everything after it is scoped to what it returned, and the run is read
-	// again inside that transaction under the policy: a signature naming a run
-	// of another organization then finds nothing rather than being trusted.
+	// One statement, outside the transaction, on the pool crossing tenants. Everything
+	// after is scoped to what it returned, and the run is read again inside that
+	// transaction under the policy, so a signature naming another organization's run
+	// finds nothing instead of being trusted.
 	org, err := sqlcgen.New(h.system).OrgForRun(ctx, sqlcgen.OrgForRunParams{RunID: uuidTo(signed)})
 	if errors.Is(err, pgx.ErrNoRows) {
 		fail(w, http.StatusUnauthorized, "unauthorized", "the credential is missing, wrong or expired")
@@ -106,9 +98,8 @@ func (h *Targets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A run in a terminal state hands out nothing further. That is the
-	// effective revocation: a signed token cannot be recalled, so it stays
-	// valid and stops being useful.
+	// A run in a terminal state hands out nothing further: the effective revocation,
+	// as a signed token stays valid and stops being useful.
 	switch run.State {
 	case "completed", "failed", "expired":
 		fail(w, http.StatusConflict, "run_closed",
@@ -123,10 +114,9 @@ func (h *Targets) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reaching for the list is what says a scanner opened this run, as opposed
-	// to a provisioner having promised to. Those two call for opposite actions
-	// when somebody finds a run sitting there, and this is the only moment
-	// that separates them for a verification run.
+	// Reaching for the list says a scanner opened this run, not that a provisioner
+	// promised to. The two call for opposite actions on a stuck run, and this is the
+	// only moment separating them for a verification run.
 	if err := q.MarkRunRunning(ctx, sqlcgen.MarkRunRunningParams{
 		RunID: run.ID,
 		At:    stamp(h.now()),

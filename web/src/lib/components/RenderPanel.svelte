@@ -20,13 +20,10 @@
 	const faviconBadge = $derived(pivotOf(asset, 'favicon'));
 
 	/**
-	 * How many scripts are shown before the rest are folded.
-	 *
-	 * the three absences took script hashes off the card on a measurement — 464 badges for 50 rows,
-	 * 316 distinct values — and said in the same breath that they stay a pivot in the
-	 * search and in this view. A list with a counter is the granularity that was missing:
-	 * this screen shows one asset, so a dozen rows are readable where a dozen badges on
-	 * fifty rows were not.
+	 * How many scripts are shown before the rest fold. Script hashes left the card on a measurement (464
+	 * badges for 50 rows, 316 distinct values) and stay a pivot in search and this view. A list with a
+	 * counter is the missing granularity: this screen shows one asset, so a dozen rows are readable where
+	 * a dozen badges on fifty rows were not.
 	 */
 	const shown = 6;
 	let all = $state(false);

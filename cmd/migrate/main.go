@@ -1,10 +1,7 @@
-// Command migrate applies and rolls back the schema, as the owner role.
-//
-// It is a binary of its own rather than a step inside the control plane for
-// two reasons. A failed migration is then readable on its own, and the
-// application is gated on it by the deployment rather than by an ordering
-// somebody has to remember. It is also the only process besides the
-// operational CLI that holds the owner credential.
+// Command migrate applies and rolls back the schema, as the owner role. It is its
+// own binary so a failed migration is readable alone and the deployment gates the
+// application on it rather than on a remembered ordering. It and the operational CLI
+// are the only processes holding the owner credential.
 package main
 
 import (
@@ -70,10 +67,9 @@ func run() error {
 		fmt.Println(version)
 		return nil
 	case "seed":
-		// Reference data, reapplied on every deployment rather than by a
-		// one-off migration: the lists grow as new frameworks and edges
-		// appear. It runs here because it runs as the owner, and the
-		// application role has no write on those tables at all.
+		// Reference data, reapplied on every deployment rather than by a one-off migration,
+		// as the lists grow with new frameworks and edges. It runs here because it runs as
+		// the owner; the application role has no write on those tables.
 		conn, err := pgx.Connect(ctx, cfg.Database.MigrationURL)
 		if err != nil {
 			return fmt.Errorf("connect: %w", err)

@@ -12,12 +12,9 @@ import (
 	"github.com/JoshuaMart/recon/internal/auth"
 )
 
-// What the panel reads, and what it deliberately does not.
-//
-// There is no score. A coverage confidence collapsed into one figure is the
-// composite score this console is built without, and the argument is the same
-// one: a reader can tell "watched a month, no certificate" from "watched since
-// this morning", and a single number cannot.
+// What the panel reads, and what it does not: no score. One coverage confidence figure
+// is the composite score this console is built without, as a reader can tell "watched a
+// month, no certificate" from "watched since this morning" and a number cannot.
 func TestCoverageStatesTheNumbersAndNeverAScore(t *testing.T) {
 	h := newHarness(t)
 	token := h.console(t)

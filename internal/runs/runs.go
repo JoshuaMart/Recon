@@ -1,11 +1,10 @@
 // Package runs decides what to scan next, freezes it, and hands out the
 // definition an execution needs.
 //
-// There is no queue table and no lease column. Three due dates decide
-// eligibility, and the frozen target list of a run is the whole of the
-// reservation: selection skips what a live run already holds, and the
-// reservation expires when the run does. A run that dies takes nothing with it,
-// because due dates move only when a report is ingested.
+// There is no queue table and no lease column: a run's frozen target list is
+// its reservation, selection skips what a live run holds, and the reservation
+// expires with the run. Due dates only move when a report is ingested, so a
+// dead run takes nothing with it.
 package runs
 
 import (
@@ -30,49 +29,40 @@ import (
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
-// Kinds of run. The difference is the whole of the two mandates: one is given a
-// domain and allowed to find things, the other is given a list and is the only
-// shape in which a missing answer means anything.
+// Kinds of run. A discovery run is given a domain and may find things; a
+// verification run is given a list, the only case where a missing answer means
+// something.
 const (
 	KindDiscovery    = "discovery"
 	KindVerification = "verification"
-	// KindCandidate is the lane a Certificate Transparency candidate takes.
+	// KindCandidate is the lane for Certificate Transparency candidates.
 	//
-	// A third value rather than a second reservation scheme: the bound is
-	// already per kind, so this costs a partial unique index and a selection.
-	// It exists because one live verification run holds its slot for its whole
-	// deadline, and the aggressive curve rests on a candidate's first check
-	// happening at sixty seconds.
+	// A third kind rather than a second reservation scheme (the bound is already
+	// per kind). It exists because a verification run holds its slot for its whole
+	// deadline, while a candidate's first check is due at sixty seconds.
 	KindCandidate = "candidate"
 )
 
 // Errors a caller acts on.
 var (
-	// ErrNothingDue is not a failure. A tick that finds nothing to do is the
-	// normal state of a healthy inventory.
+	// ErrNothingDue is not a failure: it is the normal state of a healthy inventory.
 	ErrNothingDue = errors.New("nothing is due")
-	// ErrRunInFlight names a run somebody has to decide about, which is why it
-	// carries the run rather than a sentence.
+	// ErrRunInFlight carries the run itself, for someone to decide about.
 	ErrRunInFlight = errors.New("a run is already in flight")
 	// ErrNoPerimeter is a programme with no apex to enumerate.
 	ErrNoPerimeter = errors.New("the programme declares no apex")
 	// ErrRunNotFound is a run this organization does not have.
 	ErrRunNotFound = errors.New("no such run")
-	// ErrRunClosed is a run that already finished, one way or the other.
+	// ErrRunClosed is a run that already finished.
 	ErrRunClosed = errors.New("the run is already closed")
-	// ErrReportInProgress is a run whose report is being written. It is about
-	// to be completed, and closing it underneath would refuse work that was
-	// done.
+	// ErrReportInProgress is a run whose report is being written. Closing it now
+	// would refuse work that was done.
 	ErrReportInProgress = errors.New("the run's report is being written")
 )
 
-// InFlight is what a refusal has to say.
-//
-// Two situations call for opposite actions here: a run something has actually
-// opened is a run to wait for, and a run nobody has claimed is a run whose
-// provisioning failed. What separates them is StartedAt, written by the first
-// report, which is the only thing that says a scanner opened the run rather
-// than a provisioner having promised to.
+// InFlight is what a refusal says. A run a scanner opened is one to wait for;
+// one nobody claimed is a failed provisioning. StartedAt, written by the first
+// report, tells them apart.
 type InFlight struct {
 	ID        uuid.UUID
 	Kind      string
@@ -84,11 +74,10 @@ type InFlight struct {
 	Targets   int
 }
 
-// Age is how long the run has been around, which is the number a person reads
-// before deciding.
+// Age is how long the run has existed.
 func (f InFlight) Age(now time.Time) time.Duration { return now.Sub(f.CreatedAt) }
 
-// Claimed reports whether a scanner ever opened it.
+// Claimed reports whether a scanner ever opened the run.
 func (f InFlight) Claimed() bool { return f.StartedAt != nil }
 
 func (f InFlight) Error() string {
@@ -99,11 +88,9 @@ func (f InFlight) Error() string {
 	return fmt.Sprintf("run %s (%s, %s) is %s and %s", f.ID, f.Kind, f.Scope, f.State, claimed)
 }
 
-// Definition is everything an execution receives.
-//
-// Nothing it holds opens the inventory. The two credentials are HMACs over the
-// run, the purpose and an expiry, so there is nothing to store, nothing to
-// revoke and nothing to purge.
+// Definition is everything an execution receives. It opens nothing in the
+// inventory: both credentials are HMACs over run, purpose and expiry, so there
+// is nothing to store, revoke or purge.
 type Definition struct {
 	RunID       uuid.UUID
 	OrgID       uuid.UUID
@@ -112,66 +99,56 @@ type Definition struct {
 	Scope       string
 	Deadline    time.Time
 	TargetCount int
-	// Apex is the single root domain a discovery run enumerates, and it is
-	// empty on a verification.
+	// Apex is the single root domain a discovery run enumerates; empty on a
+	// verification.
 	//
-	// One domain and not the perimeter, because that is the unit the scanner
-	// takes: -d is one value where --exclude and --targets are repeatable, and
-	// the flags that accept several say so. A programme with several apexes
-	// gets one run each, which is also what makes a failed enumeration
-	// attributable: three identical pending rows name nothing.
+	// One domain, not the perimeter, because the scanner's -d takes one value. A
+	// programme with several apexes gets one run each, which also keeps a failed
+	// enumeration attributable.
 	Apex string
-	// Args is the whole invocation, and it is deliberately not split with Env.
+	// Args is the whole invocation, kept apart from Env.
 	//
-	// A start call replaces the definition's arguments wholesale and merges
-	// into its environment, which was measured rather than assumed. So a flag
-	// on the definition beats a variable sent here: a definition carrying
-	// "-d hackerone.com" would make every run scan that whatever the
-	// environment said, and nothing would look wrong. Sending the invocation as
-	// arguments removes that class of surprise entirely, and it makes the run
-	// record say what the run was actually asked to do.
+	// A start call replaces the definition's arguments but merges its environment
+	// (measured). A flag on the definition would therefore beat a variable sent
+	// here and silently pin every run to one domain.
 	Args []string
-	// Env is what the definition does not already carry. It merges, so the
-	// source API keys the definition holds survive: the control plane names
-	// secrets and never carries them.
+	// Env is what the definition does not already carry. It merges, so the source
+	// API keys the definition holds survive; the control plane names secrets, never
+	// carries them.
 	Env map[string]string
-	// ExternalID is what the platform called this execution, filled in once it
-	// has been started. It is the only handle on the logs of a run that went
-	// wrong.
+	// ExternalID is the platform's name for the execution, set once started. It is
+	// the only handle on the logs of a failed run.
 	ExternalID string
 }
 
 // Platform starts a run definition.
 //
-// The control plane starts, it never updates. The call that modifies a
-// definition replaces its whole environment map, so a control plane that wrote
-// there would wipe the source API keys the definition carries, and nothing
-// would fail: the next run would simply query fewer sources and find less.
+// The control plane starts, it never updates: the call that modifies a
+// definition replaces its whole environment, which would wipe the source API
+// keys without any error.
 type Platform interface {
-	// Start returns the platform's own identifier for the execution.
+	// Start returns the platform's identifier for the execution.
 	Start(ctx context.Context, def *Definition) (string, error)
-	// Status reads what became of an execution Start named.
+	// Status reads what became of an execution.
 	Status(ctx context.Context, externalID string) (Execution, error)
-	// Stop asks the platform to end an execution. An execution that already
-	// ended is not an error.
+	// Stop asks the platform to end an execution; one that already ended is not an
+	// error.
 	Stop(ctx context.Context, externalID string) error
 	// Name is what a log line calls this platform.
 	Name() string
 }
 
-// Execution is the platform's record of running, read back.
-//
-// Three facts and no more, because those are the ones the sweeper acts on. A
-// state the platform adds later reads as neither running nor failed, which
-// leaves the run to its deadline exactly as before this existed.
+// Execution is the platform's record of a run, read back. It holds only the
+// facts the sweeper acts on; an unknown state is neither running nor failed and
+// leaves the run to its deadline.
 type Execution struct {
 	// Running is true once a container is executing the run.
 	Running bool
-	// Failed is true once the execution ended without success: it exited
-	// non-zero, was cancelled, or was interrupted.
+	// Failed is true once the execution ended without success (non-zero exit,
+	// cancelled or interrupted).
 	Failed bool
-	// Reason is the platform's word for the ending, never its log tail. The
-	// tail is what the scanner printed, which is its report.
+	// Reason is the platform's word for the ending, never its log tail (that is the
+	// scanner's report).
 	Reason string
 	// ExitCode is the scanner's own status, when the platform reports one.
 	ExitCode *int
@@ -189,8 +166,7 @@ type Scheduler struct {
 // Option adjusts a scheduler.
 type Option func(*Scheduler)
 
-// WithClock replaces the instant deadlines are measured from. A sweeper that
-// can only be tested by waiting is a sweeper nobody tests.
+// WithClock replaces the instant deadlines are measured from, for tests.
 func WithClock(now func() time.Time) Option {
 	return func(s *Scheduler) {
 		if now != nil {
@@ -199,9 +175,8 @@ func WithClock(now func() time.Time) Option {
 	}
 }
 
-// WithPlatform is what actually starts a definition. Without one the scheduler
-// defines runs and starts nothing, which is a deployment that only probes what
-// somebody launches by hand.
+// WithPlatform sets what starts a definition. Without one, runs are defined but
+// never started.
 func WithPlatform(platform Platform) Option {
 	return func(s *Scheduler) { s.platform = platform }
 }
@@ -215,12 +190,12 @@ func New(signer *auth.Signer, cfg config.Verification, log *slog.Logger, opts ..
 	return scheduler
 }
 
-// Signer and Config are what a second scheduler over the same deployment is
-// built from, which is what a test that swaps the platform needs.
+// Signer and Config let a test build a second scheduler over the same
+// deployment with another platform.
 func (s *Scheduler) Signer() *auth.Signer        { return s.signer }
 func (s *Scheduler) Config() config.Verification { return s.cfg }
 
-// Cadence is what the ingestor reschedules with, so both read one setting.
+// Cadence is shared with the ingestor so both read one setting.
 func (s *Scheduler) Cadence() lifecycle.Cadence {
 	return lifecycle.Cadence{
 		Resolve:        s.cfg.Resolve,
@@ -237,10 +212,8 @@ func (s *Scheduler) Cadence() lifecycle.Cadence {
 
 // Verification freezes what is due on one rung and returns its definition.
 //
-// It runs in a transaction with the selection, which is what makes the frozen
-// list a lease at all: between reading the due assets and writing the target
-// rows, another tick reading the same rows would hand the same hosts to two
-// runs.
+// It shares a transaction with the selection: without it, two ticks reading the
+// same due rows would hand the same hosts to two runs.
 func (s *Scheduler) Verification(
 	ctx context.Context, q *sqlcgen.Queries, org, program uuid.UUID, rung string,
 ) (*Definition, error) {
@@ -248,34 +221,19 @@ func (s *Scheduler) Verification(
 		return nil, fmt.Errorf("unknown rung %q", rung)
 	}
 
-	// Asked before anything is selected. A programme whose run is in flight has
-	// nothing due by construction, since the frozen list is what selection
-	// skips, and answering "nothing is due" there would hide the run somebody
-	// actually has to decide about.
+	// Checked first: a programme with a run in flight has nothing due (selection
+	// skips the frozen list), and "nothing is due" would hide that run.
 	if live, err := s.InFlight(ctx, q, program, KindVerification); err != nil {
 		return nil, err
 	} else if live != nil {
 		return nil, fmt.Errorf("%w: %s", ErrRunInFlight, live.Error())
 	}
 
-	// And not while an enumeration is walking the same perimeter, which the
-	// frozen list cannot express: a discovery run freezes nothing, because it is
-	// the one allowed to find things, so selection has no way to see the hosts
-	// it is already scanning.
-	//
-	// The window is the run itself. Its report has not landed, so every asset it
-	// is touching still carries the due date it had before, and a verification
-	// starting a minute in selects hosts a browser-less scanner is connecting to
-	// right now. Two runs holding the same host is double scan traffic against
-	// somebody's perimeter, which is the one cost this system is not allowed to
-	// be careless with, and the existing lease only ever covered the pair it
-	// could see.
-	//
-	// One direction only. Discovery is rare and its cadence is a promise, so it
-	// wins; verification re-selects on the next tick and loses nothing but
-	// minutes. Blocking discovery on a live verification would be the symmetric
-	// rule and a starvation: during a drain a verification is in flight most
-	// minutes, and the enumeration would never go out.
+	// Also not while an enumeration walks the same perimeter: a discovery run freezes nothing, so
+	// selection cannot see its hosts, and its report has not landed, so their due dates are
+	// unchanged. One direction only: discovery is rare and its cadence a promise, while
+	// verification re-selects next tick; the symmetric rule would starve discovery, a
+	// verification being in flight most minutes during a drain.
 	if live, err := s.InFlight(ctx, q, program, KindDiscovery); err != nil {
 		return nil, err
 	} else if live != nil {
@@ -302,9 +260,8 @@ func (s *Scheduler) Verification(
 		return nil, err
 	}
 
-	// Built in one loop, which is what keeps the two arrays the same length:
-	// the statement indexes them together and a short one would read as nulls
-	// rather than fail.
+	// One loop keeps both arrays the same length; the statement indexes them
+	// together and a short one reads as nulls instead of failing.
 	assets := make([]pgtype.UUID, 0, len(due))
 	keys := make([]string, 0, len(due))
 	for _, row := range due {
@@ -320,9 +277,8 @@ func (s *Scheduler) Verification(
 		return nil, fmt.Errorf("freeze target list: %w", err)
 	}
 
-	// The list travels behind a header rather than in the URL, which is what
-	// the flag exists for: a credential in a query string ends up in every
-	// access log, proxy log and error message that ever prints the URL.
+	// The list travels in a header, not the URL: a credential in a query string
+	// ends up in every access, proxy and error log.
 	def.Args = append(def.Args,
 		"--stages", rung,
 		"--targets-url", s.targetsURL(def.RunID),
@@ -333,24 +289,12 @@ func (s *Scheduler) Verification(
 	return def, nil
 }
 
-// Candidate freezes the candidates that are due and returns their run.
-//
-// The same shape as Verification and deliberately not a parameter of it, because
-// what differs is what it does *not* check. A live verification does not hold
-// this back, which is the whole reason the lane exists: a sweep holds its slot
-// for its whole deadline, and the aggressive curve rests on a candidate's first
-// check happening at sixty seconds rather than half an hour later.
-//
-// Nor does a live discovery, and that is a decision. Discovery blocks
-// verification because a full sweep sends a second scanner at hosts the first
-// one is connected to. A resolve sends nothing to the target at all, so there is
-// nothing to collide with, and blocking here would spend the freshness advantage
-// on a run that cannot interfere with it.
-//
-// What still holds it back is another candidate run, kept by the partial unique
-// index, and the frozen list: a host held by a verification run is not taken
-// here either, because the lease is one lease across the lanes rather than one
-// per lane.
+// Candidate freezes the candidates that are due and returns their run. Same shape as
+// Verification but not a parameter of it, as it deliberately skips a check: a live
+// verification (the reason the lane exists) or discovery does not hold it back, since a
+// resolve sends nothing to the target. Another candidate run does (partial unique index), as
+// does the frozen list: a host held by a verification run is not taken, the lease being
+// shared across lanes.
 func (s *Scheduler) Candidate(
 	ctx context.Context, q *sqlcgen.Queries, org, program uuid.UUID,
 ) (*Definition, error) {
@@ -374,9 +318,8 @@ func (s *Scheduler) Candidate(
 		return nil, ErrNothingDue
 	}
 
-	// A shorter deadline than a sweep, because this does one rung over a short
-	// list. A slot held for thirty minutes by a run that had one thing to do
-	// turns the bound this lane exists for back into the problem it solves.
+	// Shorter deadline than a sweep: one rung over a short list must not hold the
+	// slot for thirty minutes.
 	def, err := s.create(ctx, q, org, program, KindCandidate,
 		lifecycle.RungResolve, "", len(due), s.cfg.CandidateTimeout)
 	if err != nil {
@@ -398,10 +341,8 @@ func (s *Scheduler) Candidate(
 		return nil, fmt.Errorf("freeze target list: %w", err)
 	}
 
-	// The targets input is what makes this cheap, and it is the input rather
-	// than the length of the list: stage 1 is replaced, so no enumeration runs
-	// and no source quota is spent whatever the list holds. One host is the
-	// common case, not the mechanism.
+	// Stage 1 is replaced by the targets input, so no enumeration runs and no
+	// source quota is spent whatever the list size.
 	def.Args = append(def.Args,
 		"--stages", lifecycle.RungResolve,
 		"--targets-url", s.targetsURL(def.RunID),
@@ -414,15 +355,9 @@ func (s *Scheduler) Candidate(
 
 // Discovery provisions one enumeration per apex of a programme.
 //
-// A discovery run gets no targets URL and a domain instead. That is the whole
-// difference between the two mandates, and it is also why the answer is a list:
-// the scanner takes one root domain per execution, so a perimeter of three
-// apexes is three runs and never one run naming three.
-//
-// The apexes already in flight are skipped rather than refused with the rest.
-// A programme whose second enumeration failed gets that one provisioned again
-// while the first is still walking, which is the behaviour the per apex bound
-// exists to allow; only a programme with nothing left free answers
+// The scanner takes one root domain per execution, so three apexes are three
+// runs, never one run naming three. Apexes already in flight are skipped so the
+// free ones still go out; only a programme with none free answers
 // ErrRunInFlight.
 func (s *Scheduler) Discovery(
 	ctx context.Context, q *sqlcgen.Queries, org, program uuid.UUID,
@@ -448,16 +383,12 @@ func (s *Scheduler) Discovery(
 	}
 
 	// Built once and appended to each definition. The perimeter is the
-	// programme's, not the apex's: an exclusion under one apex is still an
-	// exclusion when another is being walked, and a scanner told less than the
-	// whole list is a scanner sending packets somewhere the perimeter says not
-	// to.
+	// programme's, not the apex's: a scanner told less than the whole list sends
+	// packets where the perimeter says not to.
 	//
-	// The scanner's exclusions are name patterns, so a rule matching on an
-	// address range or a path cannot travel. Those still classify at ingestion,
-	// which is after the packet, and that is a real gap in the safety net: it
-	// is logged rather than dropped in silence, because a perimeter whose
-	// exclusions half apply is worse than one whose limits are known.
+	// Exclusions are name patterns, so address-range or path rules cannot travel.
+	// They still classify at ingestion, after the packet. That gap is logged, not
+	// dropped.
 	var exclusions, untravelled []string
 	for _, rule := range excluded {
 		switch rule.Matcher {
@@ -479,17 +410,14 @@ func (s *Scheduler) Discovery(
 		def, err := s.create(ctx, q, org, program, KindDiscovery, ScopeFull, apex, 0, s.cfg.Timeout)
 		switch {
 		case errors.Is(err, ErrRunInFlight):
-			// Kept rather than returned, so the apexes that are free still go
-			// out. It is only the answer if none of them was.
+			// Kept so the free apexes still go out; only the answer if none was.
 			inFlight = err
 			continue
 		case err != nil:
 			return nil, err
 		}
-		// One domain, and the whole reason this function returns a list. The
-		// flag is a single value on the scanner side, so a comma joined list of
-		// apexes reaches it as one malformed domain name and the run dies
-		// before it resolves anything.
+		// -d is a single value on the scanner side: a comma-joined list reaches it as
+		// one malformed domain and the run dies before resolving anything.
 		def.Args = append(def.Args, "--stages", def.Scope, "-d", apex)
 		def.Args = append(def.Args, exclusions...)
 		defs = append(defs, def)
@@ -501,9 +429,8 @@ func (s *Scheduler) Discovery(
 		return nil, ErrNoPerimeter
 	}
 
-	// Written at creation rather than at completion. A run that dies on the
-	// way must not be restarted by the cadence: the deadline sweeper already
-	// handles it, and confusing the two would start two.
+	// Written at creation, not completion. A run that dies must not be restarted by
+	// the cadence; the deadline sweeper handles it.
 	if err := q.TouchDiscovery(ctx, sqlcgen.TouchDiscoveryParams{
 		ProgramID: pgUUID(program),
 		At:        stamp(at),
@@ -516,15 +443,13 @@ func (s *Scheduler) Discovery(
 	return defs, nil
 }
 
-// create writes the row and builds everything a run receives.
+// create writes the run row and builds everything the run receives.
 func (s *Scheduler) create(
 	ctx context.Context, q *sqlcgen.Queries, org, program uuid.UUID,
 	kind, scope, apex string, targets int, timeout time.Duration,
 ) (*Definition, error) {
-	// The bound is on the apex for a discovery and on the programme for a
-	// verification, because that is the unit each one holds. A programme with
-	// three apexes has three enumerations to provision, and one of them being
-	// in flight says nothing about the other two.
+	// The bound is per apex for a discovery and per programme for a verification,
+	// the unit each one holds.
 	live, err := s.inFlightFor(ctx, q, program, kind, apex)
 	if err != nil {
 		return nil, err
@@ -563,9 +488,8 @@ func (s *Scheduler) create(
 		Scope:     scope,
 		Deadline:  stamp(def.Deadline),
 	}
-	// Null rather than the empty string on a verification: the column carries a
-	// constraint tying it to the kind, and "" is a value the constraint would
-	// accept while meaning nothing.
+	// Null rather than "": the column's constraint ties it to the kind and would
+	// accept "" while meaning nothing.
 	if apex != "" {
 		params.Apex = &apex
 	}
@@ -574,9 +498,8 @@ func (s *Scheduler) create(
 		params.TargetCount = &count
 	}
 	if err := q.CreateRun(ctx, params); err != nil {
-		// The index is the reservation, and the check above is only the
-		// readable half of it. Two transactions that never saw each other's
-		// rows both reach here, and one of them loses.
+		// The unique index is the real reservation; the check above is the readable
+		// half. Two transactions that never saw each other's rows both reach here.
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == pgerrcode.UniqueViolation {
 			return nil, fmt.Errorf("%w: another run of the same kind was created first", ErrRunInFlight)
@@ -584,17 +507,16 @@ func (s *Scheduler) create(
 		return nil, fmt.Errorf("create run: %w", err)
 	}
 
-	// The report token lives as long as the deadline plus a margin: a run that
-	// spends its whole budget must still be able to deliver what it produced.
+	// Valid for the deadline plus a margin, so a run that spends its whole budget
+	// can still deliver.
 	report := s.signer.Mint(auth.PurposeReport, def.RunID, def.Deadline.Add(s.cfg.Grace))
 	def.Args = []string{
 		"--ports", s.cfg.Ports,
 		"--scan-rate", strconv.Itoa(int(program1.RateLimitRps)),
 		"--webhook-url", strings.TrimSuffix(s.cfg.PublicURL, "/") + "/reports",
 		"--webhook-header", "Authorization: Bearer " + report,
-		// The scanner's default is thirty seconds per attempt, and writing a
-		// large report takes longer. It hung up, the write rolled back, and
-		// the retries repeated the same work to the same end.
+		// The scanner's thirty second default is shorter than writing a large report:
+		// it hung up, the write rolled back, and retries repeated the same work.
 		"--webhook-timeout", s.cfg.ReportTimeout.String(),
 		"--timeout", timeout.String(),
 	}
@@ -602,33 +524,28 @@ func (s *Scheduler) create(
 	return def, nil
 }
 
-// mint is the targets credential, kept beside the URL that needs it.
+// mint signs the targets credential.
 func (s *Scheduler) mint(purpose auth.Purpose, run uuid.UUID, expires time.Time) string {
 	return s.signer.Mint(purpose, run, expires)
 }
 
-// InFlight reads the run a second request would run into, or nil.
+// InFlight reads the run a second request would collide with, or nil.
 func (s *Scheduler) InFlight(
 	ctx context.Context, q *sqlcgen.Queries, program uuid.UUID, kind string,
 ) (*InFlight, error) {
 	return s.inFlightFor(ctx, q, program, kind, "")
 }
 
-// liveRun is the shape both live run statements return. They select the same
-// columns because they ask the same question on two units, and converting is
-// what keeps that a fact the compiler checks rather than a comment.
+// liveRun is the common shape of both live run statements; the conversion makes
+// the compiler check that they stay identical.
 type liveRun sqlcgen.LiveRunForProgramRow
 
-// inFlightFor answers the same question on the unit the kind actually holds.
+// inFlightFor answers on the unit the kind holds: the programme for a
+// verification (its frozen list can name any host), one apex for a discovery
+// (so one apex in flight does not hide the free ones).
 //
-// A verification holds a programme, because its frozen target list can name any
-// host in it. A discovery holds one apex, because that is what it enumerates,
-// and asking about the programme there would let one apex in flight hide the
-// two that are free.
-//
-// The empty apex keeps the programme wide question, which is what the caller
-// blocking a verification behind any live enumeration wants: that one is about
-// traffic against a perimeter, so which apex is being walked does not matter.
+// An empty apex keeps the programme-wide question, used to block a verification
+// behind any live enumeration.
 func (s *Scheduler) inFlightFor(
 	ctx context.Context, q *sqlcgen.Queries, program uuid.UUID, kind, apex string,
 ) (*InFlight, error) {
@@ -678,9 +595,8 @@ func (s *Scheduler) inFlightFor(
 
 // Sweep expires runs whose deadline passed with nothing delivered.
 //
-// It repairs nothing, and that is the property the whole design rests on. Due
-// dates move only when a report is ingested, so an abandoned run leaves the
-// inventory exactly as it found it; expiring it frees its targets and makes the
+// It repairs nothing: due dates only move on ingestion, so an abandoned run
+// leaves the inventory as it was. Expiring it frees its targets and makes the
 // failure visible.
 func (s *Scheduler) Sweep(ctx context.Context, q *sqlcgen.Queries) (int, error) {
 	at := s.now()
@@ -697,27 +613,21 @@ func (s *Scheduler) Sweep(ctx context.Context, q *sqlcgen.Queries) (int, error) 
 	return len(expired), nil
 }
 
-// targetsURL is where a run fetches its frozen list.
-//
-// It carries no credential. The signature travels in a header, because a token
-// in a query string is a token in every access log, proxy log and error message
-// that ever prints the URL, and those outlive the run by a long way.
+// targetsURL is where a run fetches its frozen list. It carries no credential,
+// which travels in a header (see Verification).
 func (s *Scheduler) targetsURL(run uuid.UUID) string {
 	return fmt.Sprintf("%s/runs/%s/targets", strings.TrimSuffix(s.cfg.PublicURL, "/"), run)
 }
 
-// credentialFlags are the arguments whose value is a live credential.
-//
-// Both are bearer tokens for the life of the run they name: one posts its
-// report, the other fetches its frozen target list. Anything that prints an
-// invocation has to go through Redacted, which is why the list lives here
-// rather than at each call site that might forget it.
+// credentialFlags are the arguments whose value is a live bearer token (report
+// posting, target fetching). Anything printing an invocation goes through
+// Redacted.
 var credentialFlags = map[string]struct{}{
 	"--webhook-header": {},
 	"--targets-header": {},
 }
 
-// Redacted is an invocation safe to write down.
+// Redacted returns an invocation safe to log.
 func Redacted(args []string) []string {
 	out := make([]string, len(args))
 	copy(out, args)
@@ -729,17 +639,12 @@ func Redacted(args []string) []string {
 	return out
 }
 
-// Scopes a run may be given, and they are the scanner's own names.
-//
-// The ladder is a scope rather than a list of stages, and each rung runs the
-// ones below it. That is what makes a hand entered host cheap to satisfy in one
-// pass, and it is why the ladder is the cost knob rather than a cadence per
-// probe type. These are the same four values the run row is constrained to, so
-// the column and the flag cannot drift apart.
+// Scopes a run may be given, using the scanner's own names. Each rung runs the
+// ones below it, so the ladder is the cost knob. They match the values the run
+// row is constrained to.
 const (
-	// ScopeFull walks every rung, and it is what a discovery run does. The
-	// scanner also accepts enum, resolve and ports; only the ones this
-	// provisions are named here, so an unused constant cannot drift.
+	// ScopeFull walks every rung and is what a discovery run does. The scanner
+	// also accepts enum, resolve and ports; only provisioned ones are named here.
 	ScopeFull = "full"
 )
 
@@ -756,9 +661,8 @@ func authorized(p sqlcgen.ProgramForSchedulingRow, now time.Time) (string, bool)
 	return "", true
 }
 
-// bounded narrows a count to the column that holds it. Both callers are
-// already bounded by configuration; the clamp is here so that a setting nobody
-// validated cannot turn a batch size into a negative limit.
+// bounded narrows a count to its column and clamps unvalidated settings, so
+// none can become a negative limit.
 func bounded(n int) int32 {
 	if n > math.MaxInt32 {
 		return math.MaxInt32
@@ -780,25 +684,19 @@ func stamp(t time.Time) pgtype.Timestamptz {
 	return pgtype.Timestamptz{Time: t.UTC(), Valid: true}
 }
 
-// Launch starts a definition and records what the platform called it.
-//
-// It runs **after** the transaction that created the run has committed, and
-// that order is the whole of the failure story. Starting inside the transaction
-// would leave an execution running with a valid credential against a run row
-// that was rolled back. Starting after means a platform that refuses, on a
-// quota or an outage, leaves the row pending: the deadline sweeper expires it,
-// the signed tokens and the frozen list expire with it, and the due dates were
-// never moved, so the next tick starts a fresh run over the same assets.
-// Nothing has to be repaired.
 // Recorder writes the name the platform gave an execution.
 //
-// A function rather than a handle on the database, because the write happens
-// *after* a call to a cloud API and must not happen inside a transaction that
-// was open during it. A pool of ten connections cannot absorb one held for as
-// long as somebody else's control plane takes to answer, and the caller is
-// also the only one that knows which organization the transaction belongs to.
+// A function rather than a database handle: the write happens after a cloud API
+// call and must not sit in a transaction held open during it, and the caller
+// alone knows the organization.
 type Recorder func(ctx context.Context, runID uuid.UUID, externalID string) error
 
+// Launch starts a definition and records what the platform called it.
+//
+// It runs after the creating transaction commits. Starting inside it could
+// leave a live execution against a rolled-back row. Starting after means a
+// refusing platform leaves the row pending: the sweeper expires it and the next
+// tick starts a fresh run, since due dates never moved.
 func (s *Scheduler) Launch(ctx context.Context, record Recorder, def *Definition) error {
 	if s.platform == nil {
 		return nil
@@ -814,8 +712,8 @@ func (s *Scheduler) Launch(ctx context.Context, record Recorder, def *Definition
 	}
 
 	if err := record(ctx, def.RunID, external); err != nil {
-		// The execution is running and this is only its name. Losing it costs
-		// the logs of that run, which is worth an error and not a rollback.
+		// The execution is running; only its name is lost, along with that run's logs.
+		// Worth an error, not a rollback.
 		return fmt.Errorf("record the start of %s: %w", def.RunID, err)
 	}
 
@@ -825,8 +723,7 @@ func (s *Scheduler) Launch(ctx context.Context, record Recorder, def *Definition
 	return nil
 }
 
-// exitMeanings are the scanner's exit statuses, from its own output contract.
-// They are what makes "exit code 3" mean something on a console.
+// exitMeanings are the scanner's exit statuses from its output contract.
 var exitMeanings = map[int]string{
 	1: "the scanner refused its configuration",
 	2: "the report was delivered with the scope unfinished",
@@ -834,7 +731,7 @@ var exitMeanings = map[int]string{
 	4: "the scanner produced no report",
 }
 
-// platformFailure is what a run's error says when the platform ended it.
+// platformFailure is the error text for a run the platform ended.
 func platformFailure(execution Execution) string {
 	message := "the platform ended the execution"
 	if execution.Reason != "" {
@@ -849,15 +746,12 @@ func platformFailure(execution Execution) string {
 	return message
 }
 
-// Watch asks the platform what became of every open run it started.
+// Watch asks the platform what became of every open run it started and returns
+// how many it closed.
 //
-// A report is what closes a run and a run that dies delivers none, so without
-// this the deadline was the only way out: a scanner that crashed after five
-// minutes held its apex for the rest of its budget, and the console could only
-// say it was waiting. It returns how many runs it closed.
-//
-// A platform that cannot be read is logged and skipped, run by run. It leaves
-// each run to its deadline, which is where it was before this existed.
+// A report closes a run and a dead run delivers none, so the deadline used to
+// be the only way out. A platform that cannot be read is logged and skipped
+// per run, leaving it to its deadline.
 func (s *Scheduler) Watch(ctx context.Context, q *sqlcgen.Queries) (int, error) {
 	if s.platform == nil {
 		return 0, nil
@@ -908,13 +802,13 @@ func (s *Scheduler) Watch(ctx context.Context, q *sqlcgen.Queries) (int, error) 
 	return closed, nil
 }
 
-// cancelled is the error a run closed from the console carries.
+// cancelled is the error of a run closed from the console.
 const cancelled = "cancelled from the console"
 
-// Cancel closes an open run and returns what the platform called its
-// execution, empty when nothing started one. The caller commits, then calls
-// Stop: asking the platform inside the transaction would hold a connection for
-// as long as somebody else's control plane takes to answer.
+// Cancel closes an open run and returns the platform's name for its execution
+// (empty if none). The caller commits, then calls Stop: asking the platform
+// inside the transaction would hold a connection for as long as it takes to
+// answer.
 func (s *Scheduler) Cancel(ctx context.Context, q *sqlcgen.Queries, runID uuid.UUID) (string, error) {
 	row, err := q.FailRun(ctx, sqlcgen.FailRunParams{
 		RunID: pgUUID(runID), At: stamp(s.now()), Error: cancelled,
@@ -929,7 +823,7 @@ func (s *Scheduler) Cancel(ctx context.Context, q *sqlcgen.Queries, runID uuid.U
 		return "", fmt.Errorf("close run: %w", err)
 	}
 
-	// Nothing was closed, and the three reasons call for different answers.
+	// Nothing was closed; the three reasons need different answers.
 	run, err := q.RunForTargets(ctx, sqlcgen.RunForTargetsParams{RunID: pgUUID(runID)})
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -943,8 +837,8 @@ func (s *Scheduler) Cancel(ctx context.Context, q *sqlcgen.Queries, runID uuid.U
 	}
 }
 
-// Stop asks the platform to end an execution. Without a platform there is
-// nothing to stop, which is not an error.
+// Stop asks the platform to end an execution; with no platform there is nothing
+// to stop.
 func (s *Scheduler) Stop(ctx context.Context, externalID string) (bool, error) {
 	if s.platform == nil || externalID == "" {
 		return false, nil
@@ -955,12 +849,9 @@ func (s *Scheduler) Stop(ctx context.Context, externalID string) (bool, error) {
 	return true, nil
 }
 
-// Sweeper expires runs whose deadline passed.
-//
-// It is a loop of its own rather than a branch of the housekeeping tick,
-// because the two answer to different clocks: partitions are created months
-// ahead and a run holds its targets for minutes. A run nothing expires holds
-// them forever, and the assets it froze are invisible to every later tick.
+// Sweeper expires runs past their deadline. It is its own loop because the
+// clocks differ: partitions are made months ahead while a run holds its targets
+// for minutes, and an unexpired run hides its assets from every later tick.
 type Sweeper struct {
 	scheduler *Scheduler
 	queries   *sqlcgen.Queries
@@ -968,8 +859,7 @@ type Sweeper struct {
 	log       *slog.Logger
 }
 
-// NewSweeper builds the loop. It takes no enable flag, for the same reason the
-// partition job does not.
+// NewSweeper builds the loop. It takes no enable flag, like the partition job.
 func NewSweeper(scheduler *Scheduler, queries *sqlcgen.Queries, interval time.Duration, log *slog.Logger) *Sweeper {
 	if interval <= 0 {
 		interval = time.Minute
@@ -994,9 +884,8 @@ func (s *Sweeper) Run(ctx context.Context) {
 	}
 }
 
-// Once does a single pass, which is also what a test calls. The deadline goes
-// first: a run past it is expired whatever the platform says, and asking about
-// it would be a call for nothing.
+// Once does a single pass (also what tests call). The deadline goes first: a
+// run past it expires whatever the platform says.
 func (s *Sweeper) Once(ctx context.Context) {
 	if _, err := s.scheduler.Sweep(ctx, s.queries); err != nil {
 		s.log.ErrorContext(ctx, "run sweep failed", "error", err)

@@ -147,12 +147,9 @@ func TestATargetListIsServedOnlyToItsOwnRun(t *testing.T) {
 		t.Fatalf("after its list was fetched the run is %q started_at=%v", state, started)
 	}
 
-	// The signature names one run. Pointing it at another is a refusal rather
-	// than an answer about whether that one exists.
-	//
-	// The other run lives under its own programme, because one live
-	// verification run per programme is now a fact of the schema rather than a
-	// check somebody can forget to make.
+	// The signature names one run. Pointing it at another is a refusal, not an answer about
+	// whether that one exists. The other run lives under its own programme, as one live
+	// verification run per programme is a schema fact.
 	elsewhereProgram := uuid.New()
 	h.exec(t, `INSERT INTO program (id, org_id, name, authorized_from)
 	           VALUES ($1, $2, 'other', now() - interval '1 day')`, elsewhereProgram, h.org)
@@ -383,12 +380,9 @@ func arg(args []string, flag string) string {
 	return ""
 }
 
-// firstRun reads the one entry a verification produces.
-//
-// The route answers with a list because a discovery over a perimeter of several
-// apexes is several runs, the scanner taking one root domain per execution. A
-// verification is a list of one, and this says so rather than indexing in the
-// middle of an assertion about something else.
+// firstRun reads the one entry a verification produces. The route answers with a list
+// because a discovery over several apexes is several runs; a verification is a list of
+// one, said here instead of indexing mid-assertion.
 func firstRun(t *testing.T, body map[string]any) map[string]any {
 	t.Helper()
 

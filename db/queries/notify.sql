@@ -1,17 +1,14 @@
 -- Notifications. The event is written by ingestion, in its transaction; only
 -- the sending is asynchronous.
 
--- WriteEvents inserts a whole batch in one statement.
+-- WriteEvents inserts a whole batch in one statement. Ingestion has a round trip budget
+-- per observation, enforced by a test; one INSERT per changed observation would blow it
+-- on a first run where everything changes. The budget is per observation beyond a batch's
+-- fixed cost.
 --
--- Ingestion has a round trip budget per observation and a test fails past it.
--- One INSERT per changed observation would blow it on a first run, where
--- everything changes, which is exactly the scenario the milestone measures. So
--- the budget is counted per observation beyond the fixed cost of a batch.
---
--- Parallel arrays rather than COPY, for the reason written above AddRunTargets:
--- COPY FROM is refused on a table carrying a policy. Same round trip, and the
--- organization and the programme become scalars of the statement, which every
--- caller already had in hand as constants of the batch.
+-- Parallel arrays, not COPY (see AddRunTargets): COPY FROM is refused on a table with a
+-- policy. Same round trip, with organization and programme as scalars of the statement,
+-- constants of the batch for every caller.
 --
 -- @tenant: scoped
 -- name: WriteEvents :execrows
@@ -22,11 +19,9 @@ SELECT @org_id::uuid, @program_id::uuid,
        (@payloads::jsonb[])[i], (@created_ats::timestamptz[])[i], (@suppressed::boolean[])[i]
   FROM generate_subscripts(@kinds::text[], 1) AS i;
 
--- PendingEvents is the notifier's queue.
---
--- Ordered by priority so a takeover leaves before a title change, and the
--- partial index means a closed month costs an empty index to consult rather
--- than a month of rows to filter.
+-- PendingEvents is the notifier's queue. Ordered by priority so a takeover leaves before a
+-- title change; the partial index means a closed month costs an empty index to consult,
+-- not a month of rows to filter.
 --
 -- @tenant: cross-org
 -- @why: the notifier drains every tenant's queue in one tick, ordered by
@@ -46,26 +41,20 @@ SELECT e.id, e.created_at, e.org_id, e.program_id, e.asset_id, e.kind, e.priorit
           e.created_at
  LIMIT @batch::int;
 
--- MarkNotified closes one event.
---
--- By (id, created_at) rather than id alone: the primary key is composite, and
--- forgetting the second half scans every partition on each mark.
+-- MarkNotified closes one event. By (id, created_at): the primary key is composite, and
+-- omitting the second half scans every partition per mark.
 --
 -- @tenant: keyed
 -- name: MarkNotified :exec
 UPDATE notification_event SET notified_at = @at::timestamptz
  WHERE id = @id::bigint AND created_at = @created_at::timestamptz;
 
--- CountWindow is how many of a programme's events at one priority were sent
--- inside the window.
+-- CountWindow is how many of a programme's events at one priority were sent inside the
+-- window. Read from the table, not memory: an in-memory counter resets on restart,
+-- reopening the tap exactly when an incident restarts the process.
 --
--- Read from the table rather than from state the notifier holds in memory. An
--- in-memory counter resets on restart, which reopens the tap exactly when one
--- restarts because of an incident.
---
--- An event with no asset does not consume the window either: counting it would
--- shrink the cap at the precise moment a programme went dark, which is when the
--- most room is needed.
+-- An event with no asset does not consume the window: counting it would shrink the cap
+-- the moment a programme went dark, when most room is needed.
 --
 -- @tenant: keyed
 -- name: CountWindow :one
@@ -76,11 +65,9 @@ SELECT count(*)
    AND asset_id IS NOT NULL
    AND notified_at >= @since::timestamptz;
 
--- SuppressWindow marks what the summary speaks for.
---
--- The individual events stay in the database, readable and not sent. An
--- overflow must never produce the absence of a notification, which is how an
--- anti-flood turns into a loss of signal.
+-- SuppressWindow marks what the summary speaks for. The events stay in the database,
+-- readable and unsent: an overflow must never produce the absence of a notification, how
+-- an anti-flood turns into lost signal.
 --
 -- @tenant: keyed
 -- name: SuppressWindow :execrows
@@ -96,12 +83,10 @@ SELECT id, url, secret_ref, template, min_priority, managed_by
  WHERE org_id = @org_id::uuid AND enabled
  ORDER BY created_at;
 
--- UpsertConfigChannel is the bootstrap of the configured output.
---
--- Keyed on the organization and the config marker rather than on the URL.
--- Without that, changing the configured URL and restarting inserts a second
--- active row without disabling the first, and every alert goes out twice, one
--- of them to the destination just replaced.
+-- UpsertConfigChannel is the bootstrap of the configured output. Keyed on the
+-- organization and the config marker, not the URL: otherwise changing the URL and
+-- restarting inserts a second active row without disabling the first, and every alert goes
+-- out twice, one to the replaced destination.
 --
 -- @tenant: scoped
 -- name: UpsertConfigChannel :exec
@@ -114,13 +99,10 @@ ON CONFLICT (org_id) WHERE managed_by = 'config' DO UPDATE SET
     min_priority = EXCLUDED.min_priority,
     enabled      = true;
 
--- OneOrganization is the condition the configured channel is bootstrapped
--- under.
---
--- A configuration file has no way to name a tenant, so exactly one organization
--- is the only case where the intent is unambiguous. Beyond it, giving a global
--- URL to one of several organizations would leak one tenant's alerts into
--- another's channel.
+-- OneOrganization is the condition the configured channel is bootstrapped under. A
+-- configuration file cannot name a tenant, so exactly one organization is the only
+-- unambiguous case; beyond it, a global URL on one of several would leak one tenant's
+-- alerts into another's channel.
 --
 -- @tenant: cross-org
 -- @why: counting organizations is the one question that cannot be asked from
@@ -129,12 +111,9 @@ ON CONFLICT (org_id) WHERE managed_by = 'config' DO UPDATE SET
 -- name: OneOrganization :many
 SELECT id FROM org ORDER BY created_at LIMIT 2;
 
--- StuckEvents counts what has been neither notified nor suppressed for too
--- long.
---
--- A broken notifier is a silent failure by nature: nothing else announces it,
--- ingestion keeps writing and the inventory stays correct. It is the kind of
--- outage that goes unnoticed until the takeover it misses.
+-- StuckEvents counts what has been neither notified nor suppressed for too long. A broken
+-- notifier is silent by nature: ingestion keeps writing and the inventory stays correct,
+-- until the takeover it misses.
 --
 -- @tenant: cross-org
 -- @why: housekeeping watches the whole queue. A per tenant count cannot
@@ -143,11 +122,9 @@ SELECT id FROM org ORDER BY created_at LIMIT 2;
 SELECT count(*) FROM notification_event
  WHERE notified_at IS NULL AND NOT suppressed AND created_at < @before::timestamptz;
 
--- PurgeSuppressed drops the onboarding and overflow noise.
---
--- A targeted DELETE inside the partitions rather than a partition drop: those
--- rows are written in waves and the delete is bounded. Partitioning on
--- suppressed would be the wrong axis.
+-- PurgeSuppressed drops the onboarding and overflow noise. A targeted DELETE inside the
+-- partitions, not a partition drop: those rows are written in waves and the delete is
+-- bounded. Partitioning on suppressed would be the wrong axis.
 --
 -- @tenant: cross-org
 -- @why: retention is a property of the deployment, applied to every tenant's
@@ -156,17 +133,12 @@ SELECT count(*) FROM notification_event
 DELETE FROM notification_event
  WHERE suppressed AND created_at < @before::timestamptz;
 
--- OnboardingDue finds the programmes whose first run is over and whose flood
--- has never been summarised.
+-- OnboardingDue finds the programmes whose first run is over and whose flood has never
+-- been summarised. The summary is emitted when the grace ends, not during: one per batch
+-- would each carry a count already wrong when written.
 --
--- The summary is emitted when the grace ends, not during. Summarising while the
--- run is going would produce one summary per batch, each carrying a count
--- already wrong by the time it is written.
---
--- And it is emitted at all, which is the point: an overflow must never produce
--- the absence of a notification. That is how an anti-flood turns into a loss of
--- signal, and a first run that says nothing at all is the same failure wearing
--- a different name.
+-- And it is emitted at all, which is the point: an overflow must never produce the
+-- absence of a notification, and a first run saying nothing is the same loss of signal.
 --
 -- @tenant: cross-org
 -- @why: the first run summary is due per programme, and the loop that emits it
@@ -177,19 +149,17 @@ WITH held AS (
       FROM notification_event e
      WHERE e.suppressed
        AND e.kind = 'new_active'
-       -- A window overflow writes a digest too, and any digest excluding a
-       -- programme here would silence its onboarding summary for good: a large
-       -- first run saturates the high window on port openings, which the grace
-       -- does not hold, so the overflow digest would land first and the
+       -- A window overflow writes a digest too, and excluding on any digest would silence a
+       -- programme's onboarding summary for good: a large first run saturates the high window on
+       -- port openings, which the grace does not hold, so the overflow digest lands first and the
        -- onboarding one never.
        AND NOT EXISTS (
              SELECT 1 FROM notification_event d
               WHERE d.program_id = e.program_id
                 AND d.kind = 'digest'
                 AND d.payload ->> 'reason' = 'first run')
-       -- The grace is at most seven days, so nothing older can still be
-       -- waiting for one. Without the bound this walks every suppressed row of
-       -- the retention window, twice a minute, forever.
+       -- The grace is at most seven days, so nothing older can still be waiting. Without the bound
+       -- this walks every suppressed row of the retention window, twice a minute, forever.
        AND e.created_at > @since::timestamptz
      GROUP BY e.org_id, e.program_id
 )
@@ -204,11 +174,9 @@ SELECT h.org_id, h.program_id, p.name, p.created_at, h.held,
   JOIN program p ON p.id = h.program_id
  ORDER BY h.program_id;
 
--- DigestInWindow reports whether a summary already speaks for this window.
---
--- Without it every suppressed event past the cap writes its own summary, and an
--- anti-flood that produces one notification per suppressed notification is not
--- one.
+-- DigestInWindow reports whether a summary already speaks for this window. Without it
+-- every suppressed event past the cap writes its own summary, and an anti-flood producing a
+-- notification per suppressed notification is not one.
 --
 -- @tenant: keyed
 -- name: DigestInWindow :one

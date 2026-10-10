@@ -6,9 +6,8 @@ import (
 	"github.com/JoshuaMart/recon/internal/signals"
 )
 
-// The case that forces the whole package. On a fronted target no informative
-// transport level failure ever happens: the edge always answers, with no
-// refusal and no nxdomain, so an asset whose origin is dead would stay active
+// The case forcing the whole package. On a fronted target no informative transport
+// failure happens: the edge always answers, so a dead-origin asset would stay active
 // forever.
 func TestAnEdgeReportingADeadOriginIsADeath(t *testing.T) {
 	t.Parallel()
@@ -32,10 +31,9 @@ func TestAnEdgeReportingADeadOriginIsADeath(t *testing.T) {
 	}
 }
 
-// A 403 is not a 403. An application answering 403 on a protected route is
-// alive and measured, and without the distinction either every 403 becomes a
-// success and the regime switch never fires, or every 403 becomes a failure and
-// every protected route in an inventory drifts toward unobservable.
+// A 403 is not a 403. An application answering 403 on a protected route is alive and
+// measured; without the distinction, either every 403 is a success and the regime switch
+// never fires, or every 403 is a failure and protected routes drift toward unobservable.
 func TestAnApplicationForbiddenIsASuccessAndAChallengeIsNot(t *testing.T) {
 	t.Parallel()
 

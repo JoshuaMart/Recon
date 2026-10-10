@@ -19,10 +19,9 @@ import (
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-// The response envelope is transcribed from what the API actually returns, and
-// a body of another shape unmarshals cleanly into nothing. Without this test
-// that failure is a warning and an execution whose logs nobody can find, which
-// is the one thing the external id exists for.
+// The response envelope is transcribed from what the API returns, and a body of another
+// shape unmarshals cleanly into nothing. Without this test that is a warning and an
+// execution with unfindable logs, the one thing the external id exists for.
 func TestTheStartResponseIsReadTheWayTheAPIWritesIt(t *testing.T) {
 	t.Parallel()
 
@@ -121,10 +120,9 @@ func TestAnInvocationIsSafeToWriteDown(t *testing.T) {
 	}
 }
 
-// The body is the one the platform returned for a run whose report could not
-// be delivered, minus the fields this does not read. error_message is kept in
-// it on purpose: it is the tail of what the scanner printed, which is its
-// report, and the reason must not carry any of it.
+// The body is what the platform returned for a run whose report could not be delivered,
+// minus unread fields. error_message stays on purpose: it is the tail of what the scanner
+// printed (its report), and the reason must carry none of it.
 func TestAFailedExecutionIsReadWithItsReasonAndExitCode(t *testing.T) {
 	t.Parallel()
 

@@ -26,13 +26,10 @@
 	}
 
 	/**
-	 * The six answers, and which of them this asset can give.
-	 *
-	 * This is the "general information" block every tool of this kind opens with, and the
-	 * rule it follows here is the three absences's: a tile that has nothing to say says which
-	 * nothing it is, and a family this deployment cannot compute is **not shown at all**.
-	 * The network tile is the one that disappears — a deployment with no MaxMind database
-	 * is a normal deployment , and an empty tile reads as a broken interface.
+	 * The six answers, and which this asset can give. The "general information" block such tools open
+	 * with, under one rule: a tile with nothing to say says which nothing it is, and a family this
+	 * deployment cannot compute is not shown at all. The network tile is the one that disappears: a
+	 * deployment with no MaxMind database is normal, and an empty tile reads as a broken interface.
 	 */
 	const tiles = $derived.by(() => {
 		const out: Tile[] = [];
@@ -44,9 +41,8 @@
 			out.push(response(chain));
 			out.push(certificateTile(certificate));
 		} else {
-			// The layer verdict, in the vocabulary the layer uses. `unmeasured` and
-			// `dead` are two different absences, and collapsing them into "unknown"
-			// would lose the one that is a measurement.
+			// The layer verdict, in the layer's vocabulary. `unmeasured` and `dead` are different absences, and
+			// collapsing them into "unknown" loses the one that is a measurement.
 			out.push({
 				label: 'Name',
 				value: asset.dns_state ?? 'unmeasured',
@@ -63,9 +59,8 @@
 				label: 'Open ports',
 				value: open.join(', '),
 				unit: '/tcp',
-				// A service is scanned on its own port and nothing else, so "one open of 1
-				// scanned" would be a sentence about nothing. The scan width is only worth
-				// saying when there was a width.
+				// A service is scanned on its own port only, so "one open of 1 scanned" is a sentence about
+				// nothing. The scan width is worth saying only when there was one.
 				sub: !ports.scanned
 					? 'from the key of this asset, never scanned'
 					: ports.scanned > open.length
@@ -79,9 +74,8 @@
 			label: 'Volatility',
 			value: String(asset.volatility),
 			unit: asset.volatility === 1 ? 'change' : 'changes',
-			// No threshold colour, and that is milestone 7's "no composite score, no
-			// severity" rather than restraint: the bands the volatility rule wants need weeks of real
-			// data, and painting the number would be inventing them.
+			// No threshold colour, by the "no composite score, no severity" rule and not restraint: the bands
+			// a volatility rule wants need weeks of real data, and painting the number would invent them.
 			sub: 'over the last 7 days'
 		});
 		return out;
@@ -95,9 +89,8 @@
 				value: String(asset.status_code),
 				family: codeFamily(asset.status_code),
 				unit: chain.length > 1 ? `after ${chain.length - 1} ${chain.length === 2 ? 'hop' : 'hops'}` : undefined,
-				// A 3xx with nowhere to land is not "no redirect": the code says the
-				// service redirects and the observer did not follow it, which is
-				// what a browser reports when the hop it stopped on is the last.
+				// A 3xx with nowhere to land is not "no redirect": the code says the service redirects and the
+				// observer did not follow, as a browser reports when the hop it stopped on is the last.
 				sub: asset.final_url
 					? `${hops}lands on ${asset.final_url}`
 					: hops

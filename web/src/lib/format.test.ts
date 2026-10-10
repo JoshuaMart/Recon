@@ -19,9 +19,8 @@ import {
 import type { Asset, Facet } from './types';
 
 /**
- * The cases here are the ones that discriminate, which is the only kind worth
- * writing: roadmap rule 8 comes from two defects that were invisible because the
- * test data had no wildcard and never crossed midnight.
+ * The cases here are the ones that discriminate, the only kind worth writing: two defects were
+ * invisible because the test data had no wildcard and never crossed midnight.
  */
 
 function base(): Asset {
@@ -53,10 +52,9 @@ describe('cookieState', () => {
 	});
 
 	it('does not report a site that only sets PHPSESSID as setting no cookie', () => {
-		// The third case of the three absences, and the reason this function exists rather
-		// than a check on the badge list. The asset was rendered and does set a
-		// cookie; both display filters removed it. Calling that "no cookie" would
-		// state something false, which is what the denylist is forbidden to do.
+		// The third cookie case, and why this function exists rather than a check on the badge list: the
+		// asset was rendered and does set a cookie, but both display filters removed it. Calling that "no
+		// cookie" would state something false, which the denylist must never do.
 		const filtered = asset({
 			last_fingerprint_at: '2026-08-01T00:00:00Z',
 			attributes: { cookie_names: ['PHPSESSID'] },
@@ -111,9 +109,8 @@ describe('identity', () => {
 		).toEqual({ head: 'https://a.example.com', path: '' });
 	});
 
-	// The case the port table got wrong: 8081 answered in plain http, the probe
-	// recorded it, and the card refused to say so because the number is ambiguous.
-	// The number is; the observation is not.
+	// The case the port table got wrong: 8081 answered in plain http and the probe recorded it, yet the
+	// card refused to say so because the number is ambiguous. The number is; the observation is not.
 	it('writes the scheme the probe measured on an unusual port', () => {
 		expect(
 			identity(
@@ -209,9 +206,8 @@ describe('lineage', () => {
 
 describe('shownFacets', () => {
 	it('survives a facet whose terms are null', () => {
-		// The case that took the first render of a real inventory down. The server
-		// returns one facet per field whether or not the filtered set has a value
-		// for it, and a nil slice encodes as `null` in Go, not as [].
+		// The case that took the first render of a real inventory down: the server returns a facet per
+		// field whether or not the filtered set has a value, and a nil slice encodes as `null` in Go.
 		const facets: Facet[] = [
 			{ field: 'port', terms: null },
 			{ field: 'lifecycle', terms: [{ value: 'active', count: 35 }] }
@@ -238,9 +234,8 @@ describe('shownFacets', () => {
 
 describe('cardHashes', () => {
 	it('keeps the favicon and the certificate key, and drops the scripts', () => {
-		// the three absences, measured: 464 badges over 50 cards, 316 distinct script values.
-		// The scripts leave the card and stay in the search, so the assertion is on
-		// what the card shows and not on what the server sent.
+		// Measured: 464 badges over 50 cards, 316 distinct script values. The scripts leave the card and
+		// stay in search, so the assertion is on what the card shows, not what the server sent.
 		const asset = {
 			...base(),
 			pivots: [
@@ -260,9 +255,9 @@ describe('cardHashes', () => {
 
 describe('infraState', () => {
 	it('says unconfigured before looking at the asset', () => {
-		// The case that matters. A deployment with no MaxMind database is normal
-		// , and an empty infrastructure family reads as a broken interface.
-		// It wins over the CDN case, since neither ASN nor country exists to hide.
+		// The case that matters: a deployment with no MaxMind database is normal, and an empty
+		// infrastructure family reads as a broken interface. It wins over the CDN case, as neither ASN nor
+		// country exists to hide.
 		expect(infraState(base(), false)).toBe('unconfigured');
 		expect(infraState({ ...base(), is_cdn: true, asn: 13335 }, false)).toBe('unconfigured');
 	});
@@ -281,9 +276,8 @@ describe('flag', () => {
 	});
 
 	it('gives nothing rather than mojibake on anything else', () => {
-		// The codes come from a MaxMind lookup, so a two-letter shape is expected —
-		// but an empty string, a three-letter code or a digit must not render two
-		// arbitrary code points that look like a flag of somewhere.
+		// Codes come from a MaxMind lookup, so two letters are expected, but an empty string, a
+		// three-letter code or a digit must not render two arbitrary code points that look like a flag.
 		for (const bad of [undefined, '', 'F', 'FRA', '12', 'F1']) {
 			expect(flag(bad)).toBe('');
 		}
@@ -331,9 +325,8 @@ describe('landingOf', () => {
 });
 
 describe('webSurface', () => {
-	// A name and an address are probed at dns and tcp, never at http. Everything
-	// a card says about a response is, for them, a sentence about a question nobody
-	// asked — and "no answer" to such a question is worse than silence.
+	// A name and an address are probed at dns and tcp, never http. Everything a card says about a
+	// response is, for them, about a question nobody asked, and "no answer" to it is worse than silence.
 	it('separates what is probed over http from what is not', () => {
 		expect(webSurface(asset({ kind: 'service', key: 'a.example.com:443/tcp' }))).toBe(true);
 		expect(webSurface(asset({ kind: 'url', key: 'https://a.example.com/api' }))).toBe(true);
@@ -343,9 +336,8 @@ describe('webSurface', () => {
 });
 
 describe('bytes', () => {
-	// The exact number, grouped: it is what somebody compares against the next
-	// observation of the same asset, and a rounded one hides a body that grew by eighty
-	// bytes.
+	// The exact number, grouped: it is compared against the next observation of the asset, and a
+	// rounded one hides a body that grew by eighty bytes.
 	it('groups rather than abbreviates under a megabyte', () => {
 		expect(bytes(4637)).toBe('4 637 B');
 		expect(bytes(0)).toBe('0 B');
@@ -377,9 +369,8 @@ describe('daysUntil and elapsed', () => {
 });
 
 describe('verdictOf', () => {
-	// the three absences: "no observer gets through" is an absence of measurement and "the name no
-	// longer resolves" is a measurement. The first licenses no conclusion, so the two
-	// carry different tones as well as different words.
+	// "No observer gets through" is an absence of measurement; "the name no longer resolves" is a
+	// measurement. The first licenses no conclusion, so they differ in tone as well as words.
 	it('separates an absence of measurement from a measurement', () => {
 		const unobservable = verdictOf(asset({ lifecycle: 'unobservable' }));
 		const inactive = verdictOf(asset({ lifecycle: 'inactive', dns_state: 'dead' }));

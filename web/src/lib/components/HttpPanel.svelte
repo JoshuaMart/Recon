@@ -13,15 +13,10 @@
 	const { asset, evidence }: Props = $props();
 
 	/**
-	 * The chain, drawn as a descent.
-	 *
-	 * the projection: a card showing `200` on a service that answered 308, then 307, then 200 was
-	 * true and was not the information. The card gained the codes; this view has the room
-	 * to show what each hop said and where it sent, which is the part that separates "an
-	 * application behind a redirect" from "a service that sends somewhere else entirely".
-	 *
-	 * The payload is preferred and the promoted column is the fallback: `status_chain` is
-	 * always there and carries codes alone, the payload carries the urls too.
+	 * The chain, drawn as a descent. A card showing `200` on a service that answered 308, 307, then 200
+	 * was true but not the information; this view has room for what each hop said and where it sent. The
+	 * payload is preferred and the promoted column the fallback: `status_chain` is always there but
+	 * carries codes alone.
 	 */
 	const hops = $derived.by<Hop[]>(() => {
 		const measured = hopsOf(evidence);
@@ -111,9 +106,8 @@
 
 		<div class="dv-divide"></div>
 
-		<!-- Present or absent, with the value. No grade and no letter: a header is a fact,
-		     and a score would be the composite severity milestone 7 forbids on an asset. An
-		     absent one is dashed and grey rather than red, for the same reason. -->
+		<!-- Present or absent, with the value. No grade or letter: a header is a fact, and a score would be
+		the composite severity forbidden on an asset. An absent one is dashed and grey, not red, likewise. -->
 		<div class="dv-lbl heading">Security headers · {present} of {security.length} present</div>
 		<div class="sec">
 			{#each security as header (header.name)}

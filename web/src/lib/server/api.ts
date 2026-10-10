@@ -2,12 +2,9 @@ import { env } from '$env/dynamic/private';
 import { error } from '@sveltejs/kit';
 
 /**
- * The proxy.
- *
- * The browser carries no credential, so every call to the control plane is made
- * from here with the api_token read out of the cookie. That is the whole reason
- * this console has a server, and it is why there is no client side fetch of the
- * API anywhere in this codebase.
+ * The proxy. The browser carries no credential, so every control-plane call is made from here
+ * with the api_token read from the cookie. That is why this console has a server, and why there
+ * is no client-side fetch of the API anywhere.
  */
 
 /** Where the control plane listens. One place reads the environment. */
@@ -28,11 +25,9 @@ export class APIError extends Error {
 }
 
 /**
- * call posts a JSON body and decodes a JSON answer.
- *
- * A 401 is turned into a typed error rather than a redirect, because the caller
- * knows whether it is checking a token somebody just typed or serving a page whose
- * cookie has been revoked. Those want different answers.
+ * call posts a JSON body and decodes a JSON answer. A 401 becomes a typed error, not a redirect:
+ * the caller knows whether it checks a token just typed or serves a page whose cookie was
+ * revoked, which want different answers.
  */
 export async function call<T>(token: string, path: string, body: unknown, fetcher: typeof fetch = fetch): Promise<T> {
 	return send<T>('POST', token, path, body, fetcher);
@@ -67,17 +62,10 @@ export async function get<T>(token: string, path: string, fetcher: typeof fetch 
 }
 
 /**
- * stream forwards a response body without buffering it.
- *
- * The export is forbidden from materializing the inventory before sending it, and
- * a proxy that buffered would cancel that property at the exact place it was
- * built. The status line goes out before the first row is read, exactly as the
- * control plane's own handler does it.
- *
- * The live feed does not come through here, and the reason is worth a line: it is
- * a GET whose headers matter to the browser rather than to us, so it forwards in
- * its own route instead of teaching this one a second shape it would carry for one
- * caller.
+ * stream forwards a response body without buffering it: the export must not materialize the
+ * inventory before sending, and a buffering proxy would cancel that. The status line goes out before
+ * the first row is read. The live feed does not come through here (a GET whose headers matter to the
+ * browser); it forwards in its own route.
  */
 export async function stream(
 	token: string,
@@ -105,13 +93,10 @@ export async function stream(
 }
 
 /**
- * refusal pulls the control plane's own error out of the body.
- *
- * Both halves. A refused filter carries the clause it choked on, which is the
- * whole reason the compiler returns a typed error: the console can point at the
- * facet somebody just clicked rather than at the request. And the machine readable
- * reason is what separates a stale version from a malformed body, which look the
- * same to a status code alone.
+ * refusal pulls the control plane's own error out of the body, both halves. A refused filter
+ * carries the clause it choked on, so the console can point at the facet just clicked and not the
+ * request. And the machine-readable reason separates a stale version from a malformed body, which
+ * look alike to a status code.
  */
 async function refusal(response: Response): Promise<APIError> {
 	try {

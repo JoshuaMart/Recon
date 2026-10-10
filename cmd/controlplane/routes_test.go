@@ -10,14 +10,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// The two lists this compares are the operations in openapi.yaml and the
-// mux.Handle calls in main.go. 15.3 says they are two descriptions of one
-// thing, maintained by hand, with nothing that fails to compile when they
-// diverge. This is that nothing, written down.
+// Compares the operations in openapi.yaml with the mux.Handle calls in main.go: two
+// hand-maintained descriptions of one thing, with nothing failing to compile when they
+// diverge. This is that nothing.
 //
-// It cannot check the shape of a body or the meaning of a status, which is the
-// part of the drift 15.3 says stays unbounded. It catches the one that is
-// mechanical: a route added, removed or renamed without the document following.
+// It cannot check a body's shape or a status's meaning; it catches the mechanical drift:
+// a route added, removed or renamed without the document following.
 const (
 	routesFile  = "main.go"
 	openAPIFile = "../../docs/public/openapi.yaml"

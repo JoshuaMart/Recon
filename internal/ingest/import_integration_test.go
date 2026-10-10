@@ -1,8 +1,7 @@
 //go:build integration
 
-// What an import may and may not do, asserted against a database rather than
-// against the structure the decoder returned. Every claim 7.6 makes about
-// writes lands here.
+// What an import may and may not do, asserted against a database and not the
+// structure the decoder returned.
 package ingest_test
 
 import (
@@ -92,9 +91,9 @@ func (h *harness) nullableDue(t *testing.T, column, key string) *time.Time {
 	return due
 }
 
-// An import declares and never observes. This is the assertion the whole shape
-// of 7.6 rests on, and it is cheap to state and easy to lose: any later change
-// that starts writing what the file measured fails here first.
+// An import declares and never observes. The assertion the whole shape rests on,
+// cheap to state and easy to lose: any change that starts writing what the file
+// measured fails here first.
 func TestAnImportWritesNoObservation(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme-corp.test"))
@@ -118,8 +117,8 @@ func TestAnImportWritesNoObservation(t *testing.T) {
 }
 
 // The perimeter classifies, the file does not. A name the tool called
-// in-scope-adjacent is stored, visible, and never probed, which is the outcome
-// worth having: unknown is where an acquisition shows up.
+// in-scope-adjacent is stored, visible and never probed: unknown is where an
+// acquisition shows up.
 func TestTheToolsScopeDoesNotDecideAnything(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme-corp.test"))
@@ -256,9 +255,9 @@ func TestTheSameFileTwiceCreatesNothingTheSecondTime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first import: %v", err)
 	}
-	// Per asset, not one date for all of them: each row back-dates to its own
-	// event's timestamp and those differ across the file, so comparing every
-	// row against a single value measures the fixture rather than the write.
+	// Per asset, not one date for all: each row back-dates to its own event's
+	// timestamp, which differs across the file, so one shared value measures the
+	// fixture rather than the write.
 	before := h.firstSeen(t)
 
 	second, err := h.ing.Import(context.Background(), h.queries, h.importRun(), set, realScan(t))
@@ -278,9 +277,8 @@ func TestTheSameFileTwiceCreatesNothingTheSecondTime(t *testing.T) {
 			second.Assets.Existing, first.Assets.Created+first.Assets.Existing)
 	}
 
-	// And no date moved. Counting rows would pass on an upsert that rewrote
-	// every first_seen, which is the half of idempotence that does not show up
-	// as a row and is the one a cursor walking the inventory would notice.
+	// And no date moved. Counting rows would pass on an upsert rewriting every
+	// first_seen, the half of idempotence a cursor walking the inventory would notice.
 	for key, was := range before {
 		if now, ok := after[key]; !ok {
 			t.Errorf("%s disappeared on the repeat", key)
@@ -290,14 +288,13 @@ func TestTheSameFileTwiceCreatesNothingTheSecondTime(t *testing.T) {
 	}
 }
 
-// first_seen is the moment of the import, like every other act that writes an
-// asset, and the scan's own date is in the lineage where it belongs.
+// first_seen is the moment of the import, like every act that writes an asset; the
+// scan's own date is in the lineage.
 //
-// An earlier version of this phase back-dated the row to the event's timestamp.
-// It read well and it fought two mechanisms that both take first_seen to mean
-// "when this platform knew": the feed walks it as a cursor, so nothing an import
-// created was ever emitted, and the candidate budget measures from it, so a
-// three week old file arrived already expired. 7.6 carries the reasoning.
+// An earlier version back-dated the row to the event's timestamp. It fought two
+// mechanisms that read first_seen as "when this platform knew": the feed walks it as
+// a cursor, so nothing an import created was ever emitted, and the candidate budget
+// measures from it, so a three-week-old file arrived already expired.
 func TestTheRowIsDatedByTheImportAndTheScanDateIsInTheLineage(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -360,8 +357,8 @@ func TestAnImportedCandidateIsNotAlreadyExpired(t *testing.T) {
 }
 
 // An import does not resurrect what this system concluded was gone. The file is
-// dated by whoever ran the scan and can be older than the archival it would
-// undo, which is what separates it from the assets form and from a certificate.
+// dated by whoever ran the scan and may predate the archival, unlike the assets form
+// and a certificate.
 func TestAnImportDoesNotReviveAnArchivedAsset(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -394,11 +391,9 @@ func TestAnImportDoesNotReviveAnArchivedAsset(t *testing.T) {
 		t.Errorf("lifecycle = %q, want it left archived", lifecycle)
 	}
 
-	// And it carries no due date, which is the half that turns "does not
-	// revive" into something more than a label. An archived row has no dates,
-	// so the upsert's COALESCE would hand it the import's, and every selection
-	// filters archived out again: nothing would ever claim it while the queue
-	// counted it as due forever.
+	// And no due date, which turns "does not revive" into more than a label. An archived
+	// row has no dates, so the upsert's COALESCE would hand it the import's, every
+	// selection filters archived out, and the queue would count it as due forever.
 	if due := h.nullableDue(t, "next_resolve_at", "gone.acme.test"); due != nil {
 		t.Errorf("an archived asset is due at %s, and no selection will ever take it", due)
 	}
@@ -520,9 +515,8 @@ func TestTheAnswerAccountsForEveryEventType(t *testing.T) {
 	}
 }
 
-// A name the platform cannot turn into an identity is named individually, not
-// swallowed by a total. A list where three entries went nowhere is the failure
-// mode this endpoint has.
+// A name the platform cannot make an identity is named individually, not swallowed
+// by a total: entries silently going nowhere is this endpoint's failure mode.
 func TestAnEntryThatIsNotAnIdentityIsNamed(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -546,11 +540,10 @@ func TestAnEntryThatIsNotAnIdentityIsNamed(t *testing.T) {
 	}
 }
 
-// The milestone's first assertion, and the one that needs two files rather than
-// one. subdomains.txt is written by the tool itself, independently of the event
-// stream, so comparing the created fqdn assets against it checks the decoder
-// against something that is not the decoder. A silently dropped name is exactly
-// what a test reading only the stream would miss.
+// The first assertion, needing two files. subdomains.txt is written by the tool
+// itself, independently of the event stream, so comparing the created fqdn assets
+// against it checks the decoder against something that is not the decoder; a test
+// reading only the stream would miss a silently dropped name.
 func TestTheReferenceScanCreatesEveryNameTheToolListed(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme-corp.test"))
@@ -617,11 +610,10 @@ func TestTheReferenceScanCreatesEveryNameTheToolListed(t *testing.T) {
 	}
 }
 
-// The second half of "resolve, then full once it answers", and the assertion
-// that this phase added no promotion of its own. An imported name that resolves
-// earns the expensive rung through the same reschedule path a certificate
-// candidate does. Without it a name is created with no full date, checked only
-// by resolve runs which leave that date alone, and swept for ports never.
+// The second half of "resolve, then full once it answers": no promotion of its own
+// was added. An imported name that resolves earns the expensive rung through the
+// same reschedule path a certificate candidate does; without it the name has no full
+// date, is checked only by resolve runs and is never port-swept.
 func TestAnImportedNameThatAnswersEarnsTheExpensiveRung(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -662,13 +654,13 @@ func TestAnImportedNameThatAnswersEarnsTheExpensiveRung(t *testing.T) {
 	}
 }
 
-// A service whose host this platform cannot name is refused with it, rather
-// than written as a service with no parent.
+// A service whose host this platform cannot name is refused with it, not written
+// parentless.
 //
-// hostKey and normalize.Service disagree on exactly one shape: a single label
-// host, which Service accepts and FQDN does not. The decoder creates a host for
-// every service it emits precisely so a service always has a parent, and that
-// guarantee only holds if the write refuses the pair together.
+// hostKey and normalize.Service disagree on one shape, the single-label host
+// (Service accepts it, FQDN does not). The decoder creates a host for every service
+// so each has a parent, a guarantee that holds only if the write refuses the pair
+// together.
 func TestAServiceWhoseHostIsNotAnIdentityIsRefusedWithIt(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -702,9 +694,8 @@ func TestAServiceWhoseHostIsNotAnIdentityIsRefusedWithIt(t *testing.T) {
 	}
 }
 
-// The answer names entries one by one and the list is bounded, so a file that
-// is wrong in bulk does not produce a body bigger than the file. What the bound
-// held back is counted rather than dropped.
+// The answer names entries one by one and is bounded, so a file wrong in bulk does
+// not give a body bigger than the file. What the bound held back is counted.
 func TestTheRefusalListInTheAnswerIsBounded(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -733,9 +724,9 @@ func TestTheRefusalListInTheAnswerIsBounded(t *testing.T) {
 	}
 }
 
-// A rule that brings an abandoned asset back into scope does not by itself
-// decide to chase it again, and must not leave a date nothing can claim. The
-// same fault as the import's, in the statement the reclassification uses.
+// A rule bringing an abandoned asset back into scope does not by itself decide to
+// chase it, and must not leave a date nothing can claim: the import's fault, in the
+// reclassification's statement.
 func TestReclassifyingAnArchivedAssetIntoScopeSchedulesNothing(t *testing.T) {
 	h := newHarness(t)
 

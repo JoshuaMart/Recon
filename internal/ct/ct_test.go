@@ -94,16 +94,14 @@ func TestOneApexClaimedByTwoProgrammesIsTwoClaims(t *testing.T) {
 	}
 }
 
-// The invariant that keeps this from being a second perimeter engine.
+// The invariant keeping this from being a second perimeter engine. scope answers "does
+// this host match this rule" by walking rules; this answers "which apexes does this
+// host fall under" by walking labels. They are two indexes over one predicate, and when
+// they disagree CT creates assets the perimeter would not classify in scope, or stops
+// creating ones it would.
 //
-// The scope package answers "does this host match this rule" by walking the
-// rules; this answers "which apexes does this host fall under" by walking the
-// labels. They are two indexes over one predicate, and the day they disagree,
-// Certificate Transparency starts creating assets the perimeter would not have
-// classified in scope, or stops creating ones it would have.
-//
-// Run over the real stream rather than over invented names, because the shapes
-// that break a suffix comparison are the ones nobody thinks to write down.
+// Run over the real stream, since the shapes that break a suffix comparison are the ones
+// nobody thinks to write.
 func TestTheWalkAgreesWithTheScopeEngine(t *testing.T) {
 	sans := fixtureSANs(t)
 
@@ -144,10 +142,9 @@ func TestTheWalkAgreesWithTheScopeEngine(t *testing.T) {
 		t.Fatalf("compile the perimeter: %v", err)
 	}
 
-	// The real corpus carries no adversarial name, because certificates are
-	// issued for names people own. Left at that, this test passes just as
-	// happily on a suffix comparison, which is the one fault it exists to
-	// catch: a corpus without the discriminating case measures nothing.
+	// The real corpus has no adversarial name (certificates are issued for names people
+	// own), so the test would pass on a suffix comparison, the fault it exists to catch: a
+	// corpus without the discriminating case measures nothing.
 	probes := append([]string(nil), sans...)
 	for pattern := range patterns {
 		probes = append(probes,
@@ -355,10 +352,9 @@ func fixtureSANs(t *testing.T) []string {
 	return sans
 }
 
-// A scope rule is stored exactly as somebody typed it: the console validates a
-// throwaway copy and writes the original. So the set has to canonicalize, and it
-// has to do it the way the perimeter does, or an apex is held in a spelling no
-// SAN will ever match while the set reports itself as holding it.
+// A scope rule is stored as typed (the console validates a throwaway copy and writes the
+// original), so the set must canonicalize the way the perimeter does, or an apex is held
+// in a spelling no SAN matches while the set reports holding it.
 func TestTheSetCanonicalizesAnApexTheWayThePerimeterDoes(t *testing.T) {
 	cases := []struct {
 		pattern string

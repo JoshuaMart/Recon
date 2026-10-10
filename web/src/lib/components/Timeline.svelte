@@ -10,16 +10,10 @@
 	const { timeline, truncated }: Props = $props();
 
 	/**
-	 * What a class means in words.
-	 *
-	 * The whole point of the classification is that a revelation is not an alert: the
-	 * instrument came to see better and the target did not move. Rendering the two the
-	 * same way would put the distinction back in the reader's head, which is where it
-	 * was before the producer version was stored twice.
-	 *
-	 * The class sits on the transition and not on each field, because that is what it
-	 * describes: a pure addition across a version bump is the observer moving, and one
-	 * field of the same diff cannot be a revelation while another is not.
+	 * What a class means in words. A revelation is not an alert: the instrument came to see better and
+	 * the target did not move, and rendering both alike would leave the distinction in the reader's head.
+	 * The class sits on the transition, not each field: a pure addition across a version bump is the
+	 * observer moving, and one field of a diff cannot be a revelation while another is not.
 	 */
 	const classes: Record<string, { label: string; tone: string }> = {
 		real_change: { label: 'changed', tone: 'real' },
@@ -27,12 +21,9 @@
 	};
 
 	/**
-	 * A changed value, rendered.
-	 *
-	 * The payloads are the producer's, so a side of a diff is a list, a scalar or an
-	 * object depending on the field, and typing it as a list of strings is what put
-	 * `[object Object]` on the screen. Anything that is not a string or a list of them
-	 * is written as JSON, which is at least true.
+	 * A changed value, rendered. Payloads are the producer's, so a side of a diff is a list, scalar
+	 * or object depending on the field; typing it as a list of strings put `[object Object]` on the
+	 * screen. Anything not a string or a list of them is written as JSON, at least true.
 	 */
 	function values(value: unknown, limit = 4): string {
 		if (value === undefined || value === null) return '';
@@ -52,18 +43,10 @@
 	}
 
 	/**
-	 * Which of the two forms a changed field takes, because the server sends both.
-	 *
-	 * `internal/diff` carries `before`/`after` — the whole field — and `added`/`removed`
-	 * — the delta — on purpose, and says why in the same breath: "+ PHPSESSID" is
-	 * unreadable without knowing there were nine cookies before, and the full pair is
-	 * unreadable when there are ninety. Choosing between them is therefore the screen's
-	 * job, and rendering both is what produced `open_ports changed → 443 + 443`, the
-	 * same value written twice.
-	 *
-	 * The pair when there is something to compare and it is short enough to read; the
-	 * delta otherwise, including when one side is empty — a field that appeared reads as
-	 * "+ 443" and never as "→ 443".
+	 * Which of the two forms a changed field takes; the server sends both. `internal/diff` carries
+	 * `before`/`after` and `added`/`removed` on purpose: "+ PHPSESSID" is unreadable without knowing there
+	 * were nine cookies, and the full pair is unreadable at ninety. So the screen chooses: the pair when
+	 * short enough to compare, the delta otherwise or when one side is empty ("+ 443", never "→ 443").
 	 */
 	const pairLimit = 6;
 
@@ -77,31 +60,26 @@
 	}
 
 	/**
-	 * A first observation is not a change, and four of them are not four changes.
-	 *
-	 * On a fresh inventory every layer has exactly one state, so the panel was four
-	 * entries each apologising in the same words. They are collapsed into one line naming
-	 * the layers, and the timeline shows what it exists to show: the changes.
+	 * A first observation is not a change, and four are not four changes. On a fresh inventory every
+	 * layer has one state, so the panel was four entries apologising in the same words. They collapse
+	 * into one line naming the layers, and the timeline shows what it exists for: changes.
 	 */
 	const changes = $derived(timeline.filter((entry) => entry.diff));
 	const firsts = $derived(timeline.filter((entry) => !entry.diff));
 	const firstLayers = $derived([...new Set(firsts.map((entry) => entry.layer))]);
 
 	/**
-	 * The layer filter, over what is already loaded.
-	 *
-	 * No request behind it: the asset view answers all three parts in one response, so narrowing to
-	 * one layer is a filter on an array. A chip and not a select, because there are four
-	 * of them at most and the count is worth seeing.
+	 * The layer filter, over what is loaded. No request behind it: the asset view answers all three
+	 * parts in one response, so narrowing is a filter on an array. A chip, not a select: at most
+	 * four, and the count is worth seeing.
 	 */
 	let only = $state<Change['layer'] | ''>('');
 	const layers = $derived([...new Set(changes.map((entry) => entry.layer))]);
-	// The filter is only honoured while the layer it names is still on screen.
-	// State survives a navigation between two assets on the same route, and the
-	// tab row only renders above one layer, so a filter left on `http` followed
-	// by an asset whose changes are all `dns` showed an empty panel with no
-	// control left to clear it. Self healing here rather than through an effect
-	// that resets it, because the condition is the same one the tabs render on.
+	// The filter is honoured only while its layer is on screen. State survives navigation between
+	// two assets on one route and the tab row renders only above one layer, so a filter left on
+	// `http` before an asset whose changes are all `dns` showed an empty panel with no control to
+	// clear it. Self-healing here, not an effect resetting it: the condition is the one the tabs
+	// render on.
 	const active = $derived(only && layers.includes(only) ? only : '');
 	const shown = $derived(active ? changes.filter((entry) => entry.layer === active) : changes);
 

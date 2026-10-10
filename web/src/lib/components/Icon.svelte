@@ -1,11 +1,8 @@
 <script lang="ts">
 	/**
-	 * The icon set, in one file.
-	 *
-	 * Every glyph is an inline SVG with a viewBox and no intrinsic size, so it
-	 * fills whatever box it lands in unless something sizes it. app.css sets a
-	 * base size on `svg` for that reason: a context rule nobody wrote costs a
-	 * wrong size and never a full-card arrow.
+	 * The icon set, in one file. Every glyph is an inline SVG with a viewBox and no intrinsic size,
+	 * filling whatever box it lands in unless sized. app.css sets a base size on `svg` so an unwritten
+	 * context rule costs a wrong size, never a full-card arrow.
 	 */
 	interface Props {
 		name:

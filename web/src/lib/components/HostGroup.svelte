@@ -17,25 +17,19 @@
 	const { group, filters, enriched, favicons }: Props = $props();
 
 	/**
-	 * The host, and what its services agree on (the fold).
-	 *
-	 * The header states the operator, the address, the certificate and the lineage once
-	 * instead of once per service — but only where `sharedOf` found the members to agree,
-	 * because `Group` carries no aggregate and a header that guesses is a header nobody
-	 * can check. Anything they disagree on stays on the rows, where it is true.
+	 * The host, and what its services agree on. The header states operator, address, certificate and
+	 * lineage once instead of per service, but only where `sharedOf` found the members agreeing:
+	 * `Group` carries no aggregate, and a header that guesses cannot be checked. What they disagree
+	 * on stays on the rows, where it is true.
 	 */
 	const { self, services } = $derived(splitGroup(group));
 	const shared = $derived(sharedOf(group));
 
 	/**
-	 * The icon, which answers a different question from the tags beside it.
-	 *
-	 * A tag **claims** something about the host and only rises on agreement. An image
-	 * **shows** what the name looks like, and a host serving four applications was
-	 * getting an empty square — which reads as a missing favicon rather than as four
-	 * different ones. So the icon falls back to the front door, and it is a pivot with
-	 * its counter only where the whole host agrees, since that is the only case where
-	 * the count describes the host rather than one of its services.
+	 * The icon answers a different question from the tags. A tag claims something about the host and
+	 * rises only on agreement; an image shows what the name looks like, and a host serving four
+	 * applications got an empty square. So the icon falls back to the front door, and is a pivot with
+	 * its counter only where the whole host agrees (the count then describes the host, not one service).
 	 */
 	const iconHash = $derived(shared.favicon ?? frontDoorFavicon(group));
 	const icon = $derived(iconHash ? favicons[iconHash] : undefined);
@@ -79,9 +73,8 @@
 		{/if}
 
 		{#if self}
-			<!-- The header is the asset when the host is one of ours, so opening it opens
-			     the fqdn rather than a filtered list of its services. It carries a status
-			     code that repeats its own :443, which is why it is not a row of its own. -->
+			<!-- The header is the asset when the host is ours, so opening it opens the fqdn, not a filtered
+			list of its services. It carries a status code repeating its own :443, hence no row of its own. -->
 			<a class="host" href="/assets/{self.asset_id}">{group.host}</a>
 		{:else}
 			<span class="host">{group.host}</span>
@@ -131,17 +124,15 @@
 			<AssetRow {asset} {filters} {shared} />
 		{/each}
 		{#if services.length === 0 && self}
-			<!-- A name with no service of its own. One line rather than a header over
-			     nothing: seventeen of the thirty-three groups of a real inventory are
-			     exactly this, and a card each was half a screen of empty zones. -->
+			<!-- A name with no service of its own: one line, not a header over nothing. Seventeen of a real
+			inventory's thirty-three groups are exactly this, and a card each was half a screen of empty zones. -->
 			<AssetRow asset={self} {filters} {shared} withHost />
 		{/if}
 	</div>
 
 	{#if shared.lineage}
-		<!-- Once per host rather than once per service. It was the same sentence on six
-		     consecutive rows, and it only rises here when every service agrees on it
-		     (the lineage is per asset, and two services of one host can differ). -->
+		<!-- Once per host, not per service: the same sentence on six consecutive rows. It rises here only
+		when every service agrees (lineage is per asset, and two services of one host can differ). -->
 		<p class="lineage" title={shared.lineage}>
 			<Icon name="lineage" />
 			<span>{shared.lineage}</span>

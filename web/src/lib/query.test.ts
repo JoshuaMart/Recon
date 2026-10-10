@@ -23,9 +23,8 @@ import type { Filter } from './query';
 
 describe('parseFilters', () => {
 	it('reads a filter whose value contains a colon', () => {
-		// A service key is host:port and a lineage string is full of colons, so
-		// splitting on every colon would corrupt exactly the values this interface
-		// puts in the URL.
+		// A service key is host:port and a lineage string is full of colons, so splitting on every colon
+		// would corrupt exactly the values this interface puts in the URL.
 		const filters = parseFilters(new URLSearchParams('f=key:eq:a.example.com:8443'));
 		expect(filters).toEqual([{ field: 'key', op: 'eq', value: 'a.example.com:8443' }]);
 	});
@@ -58,9 +57,8 @@ describe('toAST', () => {
 	});
 
 	it('types a facet bucket back into what the column holds', () => {
-		// The reason this module has a registry at all: a facet casts its buckets
-		// to text, so port 443 comes back as the string "443" and the AST refuses a
-		// string where the column is an int.
+		// Why this module has a registry: a facet casts its buckets to text, so port 443 returns as "443"
+		// and the AST refuses a string for an int column.
 		expect(toAST([{ field: 'port', op: 'eq', value: '443' }])).toEqual({
 			field: 'port',
 			op: 'eq',
@@ -161,9 +159,8 @@ describe('withFilter', () => {
 
 describe('badgeFilter', () => {
 	it('maps a pivot type onto the field that searches it', () => {
-		// The two vocabularies differ: internal/search names the type `favicon` and
-		// the searchable field `favicon_hash`. Keyed on the wrong one, a badge is a
-		// link that silently matches nothing.
+		// The vocabularies differ: internal/search names the type `favicon` and the field `favicon_hash`.
+		// Keyed on the wrong one, a badge is a link that silently matches nothing.
 		expect(badgeFilter('favicon', 'abc')).toEqual({ field: 'favicon_hash', op: 'eq', value: 'abc' });
 		expect(badgeFilter('cert_spki', 'abc')).toEqual({ field: 'cert_spki_hash', op: 'eq', value: 'abc' });
 		expect(badgeFilter('script', 'abc')).toEqual({ field: 'script_hash', op: 'contains', value: 'abc' });
@@ -219,9 +216,8 @@ describe('filterGroups', () => {
 });
 
 describe('facetFilter', () => {
-	// The defect this exists for: the sidebar wrote `eq` for every bucket, and an
-	// array column takes `contains`. It came back as
-	// `technologies does not accept "eq"`, and only once somebody clicked one.
+	// The defect this exists for: the sidebar wrote `eq` for every bucket, and an array column takes
+	// `contains`, failing with `technologies does not accept "eq"` only after a click.
 	const operators = {
 		technologies: ['contains', 'exists'],
 		country: ['eq', 'neq', 'in', 'exists'],
@@ -253,9 +249,9 @@ describe('facetFilter', () => {
 });
 
 describe('isGrouped and the shape of the list', () => {
-	// the fold inverts the default: the inventory is 98 assets over 33 hosts, so the
-	// flat list is mostly one host written five times. The parameter therefore names the
-	// exception, and an URL that carries none is the grouped list.
+	// The fold inverts the default: the inventory is 98 assets over 33 hosts, so the flat list is
+	// mostly one host written five times. The parameter names the exception, and a URL with none is
+	// the grouped list.
 	it('is grouped unless the URL says otherwise', () => {
 		expect(isGrouped(new URLSearchParams(''))).toBe(true);
 		expect(isGrouped(new URLSearchParams('f=port:eq:443'))).toBe(true);
@@ -282,10 +278,9 @@ describe('isGrouped and the shape of the list', () => {
 describe('the list shape survives a link', () => {
 	const filters = [{ field: 'port', op: 'eq' as const, value: '443' }];
 
-	// The shape lives in the URL, so every link built from it has to carry it.
-	// It defaults to grouped, which is right for a link arriving from elsewhere
-	// and wrong for every link on the list itself: from the flat list, adding a
-	// facet folded it back without anybody asking.
+	// The shape lives in the URL, so every link built from it carries it. It defaults to grouped,
+	// right for an inbound link and wrong on the list itself: from the flat list, adding a facet
+	// folded it back unasked.
 	it('keeps the flat list flat', () => {
 		expect(href(filters, false)).toContain('group=none');
 		expect(href([], false)).toBe('/?group=none');
@@ -296,9 +291,8 @@ describe('the list shape survives a link', () => {
 		expect(href([])).toBe('/');
 	});
 
-	// Dropping the cursor when the shape changes is the point rather than an
-	// omission: the two walk different keys, so carrying one across would ask
-	// the server to continue a walk it never started.
+	// Dropping the cursor on a shape change is the point: the two walk different keys, and carrying
+	// one across would ask the server to continue a walk it never started.
 	it('drops the cursor on both sides of the toggle', () => {
 		expect(groupHref(filters, false)).not.toContain('cursor');
 		expect(groupHref(filters, true)).not.toContain('cursor');
@@ -316,9 +310,8 @@ describe('the search box', () => {
 		]);
 	});
 
-	// Typing again is a new search rather than a second one. Two substrings of one
-	// name is not a question anybody asks by typing twice in the same box, and a
-	// box that accumulated would need its own way to undo.
+	// Typing again is a new search, not a second: two substrings of one name is not a question anyone
+	// asks by typing twice, and an accumulating box would need its own undo.
 	it('replaces the term rather than adding one', () => {
 		const searched = withSearch([], 'admin');
 		expect(withSearch(searched, 'staging')).toEqual([{ field: 'key', op: 'contains', value: 'staging' }]);

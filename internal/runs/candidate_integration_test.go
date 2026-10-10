@@ -224,13 +224,10 @@ func hasFlag(args []string, flag string) bool {
 	return false
 }
 
-// The correction that defines the lane, asserted rather than commented.
-//
-// CANDIDATE is not a Certificate Transparency state. A host somebody typed into
-// the assets form is one too until its first answer, and it carries a full date
-// because they typed it in to find out what it exposes. Defining the lane on the
-// lifecycle alone would divert it into a pass pinned to resolve, where a
-// resolution reports that the name answers and nothing ever sweeps a port.
+// The correction that defines the lane, asserted. CANDIDATE is not a CT state: a host
+// typed into the assets form is one until its first answer, and carries a full date
+// because it was typed in to learn what it exposes. Defining the lane on lifecycle alone
+// would divert it into a pass pinned to resolve, where nothing ever sweeps a port.
 func TestAHandEnteredCandidateStaysWithTheDueDatePassAndGetsFull(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

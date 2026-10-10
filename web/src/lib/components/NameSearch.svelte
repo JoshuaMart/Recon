@@ -12,32 +12,27 @@
 	const { filters, grouped = true }: Props = $props();
 
 	/**
-	 * The box shows the search in force.
-	 *
-	 * Read from the filters rather than kept as state, because the filter in the
-	 * URL is the search: arriving on a shared link, using the back button or
-	 * removing the chip in the toolbar all have to move this field, and they only
-	 * do if it has no memory of its own.
+	 * The box shows the search in force. Read from the filters, not kept as state: the URL's filter is
+	 * the search, so a shared link, the back button and removing the toolbar chip all must move this
+	 * field, which only works if it has no memory of its own.
 	 */
 	let term = $derived(searchTerm(filters));
 
 	/**
-	 * A GET form, and the handler is an enhancement rather than the mechanism.
-	 *
-	 * A search cannot be a plain link, since the value is typed rather than
-	 * chosen. What it can be is a form the browser submits on its own, which is
-	 * why the load function accepts `q` and answers with a redirect to the filter
-	 * it means: with no JavaScript this still searches, and it still lands on a
-	 * URL somebody can share.
+	 * A GET form; the handler is an enhancement, not the mechanism. A typed value cannot be a plain
+	 * link, but a browser-submitted form can be, which is why the load function accepts `q` and
+	 * redirects to the filter it means: with no JavaScript this still searches and lands on a
+	 * shareable URL.
 	 */
 	function search(event: SubmitEvent) {
 		event.preventDefault();
 		goto(searchHref(filters, term), { keepFocus: true });
 	}
 
-	/** The other filters travel as hidden fields, because a GET form submits its
-	 *  own inputs and nothing else: without them, searching would clear the
-	 *  facets somebody had already chosen. */
+	/**
+	 * The other filters travel as hidden fields: a GET form submits only its own inputs, so without
+	 * them searching would clear the facets already chosen.
+	 */
 	const carried = $derived(withSearch(filters, '').map(encodeFilter));
 </script>
 
@@ -54,9 +49,8 @@
 		<input type="search" name="q" bind:value={term} placeholder="Search a name" autocomplete="off" spellcheck="false" />
 	</label>
 
-	<!-- Submit rather than search-as-you-type: every keystroke here is a query
-	     over the whole inventory, and the answer arrives with the facets beside
-	     it. -->
+	<!-- Submit, not search-as-you-type: every keystroke is a query over the whole inventory, with the
+	facets answering beside it. -->
 	<button class="go" type="submit" aria-label="Search"><Icon name="search" /></button>
 </form>
 

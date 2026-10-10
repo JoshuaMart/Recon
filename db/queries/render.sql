@@ -1,22 +1,17 @@
--- The render queue is a predicate, not a list.
---
--- It is re-evaluated on every tick and holds no state between two of them,
--- which is what makes the whole path idempotent: a render has no lease, the due
--- date is the queue, and a refused asset simply keeps a date in the past. There
--- is nothing to reconcile and no path where a crash between a refusal and a
--- retry drops the work.
+-- The render queue is a predicate, not a list. It is re-evaluated every tick and holds no
+-- state between them, which makes the path idempotent: a render has no lease, the due date
+-- is the queue, and a refused asset keeps a date in the past. Nothing to reconcile, and no
+-- crash window between a refusal and a retry drops the work.
 
 -- SelectDueRenders is one pass.
 --
--- Priority sorts before the due date, and that ordering is what protects the
--- urgent case. A first scan makes thousands of baselines due at the same
--- instant, and a render triggered by a detected change five minutes later
--- carries a later date: ordered on the date alone it would sort behind every
--- one of them.
+-- Priority sorts before the due date, protecting the urgent case: a first scan makes
+-- thousands of baselines due at one instant, and a change-triggered render five minutes
+-- later has a later date, so date alone would sort it behind all of them.
 --
--- The authorization window is read here rather than only when a run is
--- provisioned. A render is a request to somebody's server, and an expired
--- programme must not receive one because a due date said so.
+-- The authorization window is read here, not only at run provisioning: a render is a
+-- request to someone's server, and an expired programme must not get one because a due
+-- date said so.
 --
 -- @tenant: cross-org
 -- @why: the render queue is one predicate over the whole inventory, and the
@@ -36,12 +31,10 @@ SELECT c.asset_id, c.org_id, c.program_id, c.kind, c.key, c.host, c.port, c.sche
  ORDER BY c.fingerprint_priority, c.next_fingerprint_at, c.asset_id
  LIMIT @batch_size::int;
 
--- PromoteRender brings a render forward and never delays one.
---
--- It is what a detected change, a manual request and the sweep after a service
--- update all go through, and the one-way rule is the load-bearing part: a
--- manual request lives in the high queue with an immediate due date, and a
--- replan triggered a second later would bury it for a week without trace.
+-- PromoteRender brings a render forward and never delays one. A detected change, a manual
+-- request and the post-update sweep all use it; the one-way rule is load-bearing, since a
+-- manual request lives in the high queue with an immediate date and a replan a second
+-- later would bury it for a week without trace.
 --
 -- @tenant: keyed
 -- name: PromoteRender :exec
@@ -52,13 +45,10 @@ UPDATE asset_current SET
    AND scope_status = 'in_scope'
    AND lifecycle <> 'archived';
 
--- CountUnobservable is what the per programme alert reads.
---
--- A mass tip into unobservable is a different event from one asset going quiet,
--- and it usually says something about the observer rather than about the
--- targets: an address that got banned, an egress that broke, a renderer that
--- stopped clearing challenges. Swallowed by a per asset summary it is invisible
--- exactly when it matters.
+-- CountUnobservable is what the per-programme alert reads. A mass tip into unobservable
+-- differs from one asset going quiet and usually says something about the observer (a
+-- banned address, a broken egress, a renderer no longer clearing challenges); a per-asset
+-- summary would hide it exactly when it matters.
 --
 -- @tenant: cross-org
 -- @why: the mass tip alert is computed for every programme in one pass. It
@@ -76,16 +66,13 @@ SELECT c.program_id, c.org_id, p.name,
 HAVING count(*) FILTER (WHERE c.lifecycle = 'unobservable') > 0
  ORDER BY c.program_id;
 
--- ReplanRenders is the forced refresh after a major update of the service.
+-- ReplanRenders is the forced refresh after a major update of the service. The whole
+-- inventory is replanned in the low queue, spread over days, restoring baselines without a
+-- mass alert. It only brings a render forward, never delays one, and leaves assets that
+-- left the scheduler alone.
 --
--- The whole inventory is replanned in the low queue, spread over several days,
--- which restores baseline consistency without a mass alert. It may only bring a
--- render forward, never delay one, and it leaves untouched the assets that have
--- left the scheduler.
---
--- The spread is the walk order rather than a random draw, so a replan that runs
--- twice lands every asset on the same date both times instead of reshuffling an
--- inventory that is already queued.
+-- The spread is the walk order, not a random draw, so a replan run twice lands every asset
+-- on the same date instead of reshuffling an inventory already queued.
 --
 -- @tenant: scoped
 -- name: ReplanRenders :execrows
@@ -109,12 +96,10 @@ UPDATE asset_current c SET
   FROM numbered n, input i
  WHERE c.asset_id = n.asset_id;
 
--- AssetForRender reads the counters a render needs, and creates nothing.
---
--- The upsert path exists because a report discovers things. A render is made
--- for an asset that already exists, and routing it through the same statement
--- would let the rendering service invent inventory, which is the one thing the
--- isolated component must not be able to do.
+-- AssetForRender reads the counters a render needs and creates nothing. The upsert path
+-- exists because a report discovers things; a render is for an existing asset, and the same
+-- statement would let the rendering service invent inventory, the one thing the isolated
+-- component must not do.
 --
 -- @tenant: keyed
 -- name: AssetForRender :one
@@ -132,13 +117,10 @@ SELECT c.asset_id, c.org_id, c.program_id, c.kind, c.key, c.lifecycle,
   FROM asset_current c
  WHERE c.asset_id = @asset_id::uuid;
 
--- RescheduleRender moves a render out to its next due date.
---
--- Distinct from PromoteRender, which only ever brings one forward. This is the
--- other direction and the ordinary one: the render happened, so the asset goes
--- back to the low queue at whatever cadence its regime earns. Leaving the
--- priority raised would keep an asset that was urgent once ahead of the queue
--- for every pass afterwards.
+-- RescheduleRender moves a render out to its next due date. The ordinary direction, unlike
+-- PromoteRender (forward only): the render happened, so the asset returns to the low queue
+-- at its regime's cadence. A raised priority would keep a once-urgent asset ahead for
+-- every later pass.
 --
 -- @tenant: keyed
 -- name: RescheduleRender :exec
@@ -148,14 +130,11 @@ UPDATE asset_current SET
     fingerprint_priority = @priority::smallint
  WHERE asset_id = @asset_id::uuid;
 
--- EarnBaseline arms a service's first render, once.
---
--- Distinct from PromoteRender, which takes the earlier of two dates and the
--- more urgent of two priorities. A baseline is neither: it is the line being
--- created, so it only applies where there is none, and it must not touch an
--- asset already queued for any other reason. Going through the promote path
--- would leave the baseline at whatever priority the column defaults to and
--- silently put a mass of first renders in the queue that exists to stay short.
+-- EarnBaseline arms a service's first render, once. Unlike PromoteRender (earlier of two
+-- dates, more urgent of two priorities), a baseline is the line being created: it applies
+-- only where there is none and must not touch an asset queued for any other reason. The
+-- promote path would leave it at the column's default priority and put a mass of first
+-- renders in the queue that must stay short.
 --
 -- @tenant: keyed
 -- name: EarnBaseline :exec

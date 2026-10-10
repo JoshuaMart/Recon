@@ -11,18 +11,10 @@
 	const { data }: { data: PageData } = $props();
 
 	/**
-	 * The walk through the list, past the first page the server rendered.
-	 *
-	 * The button used to be a link to the next page, which is a different thing
-	 * from loading more: it replaced the fifty rows on screen with the next fifty
-	 * and sent the reader back to the top, so a list read downwards could only be
-	 * walked by never looking back. The rows accumulate here instead.
-	 *
-	 * A derived rather than plain state, because that is what resets it: the
-	 * server hands back a new `data` for every question, so a new answer empties
-	 * this by construction, and appending assigns over it until the next one.
-	 * That is also the line this splits on. The filters stay in the URL and only
-	 * the depth is local: a shared link is the search, not how far somebody read.
+	 * The walk through the list, past the server's first page. The button used to link to the next page,
+	 * replacing the fifty rows and sending the reader to the top; rows accumulate here instead. A
+	 * derived, because that resets it: the server hands back a new `data` for every question, so a new
+	 * answer empties this by construction. Filters stay in the URL and only depth is local.
 	 */
 	let walk = $derived({
 		answer: data,
@@ -42,12 +34,9 @@
 	const favicons = $derived({ ...data.favicons, ...walk.favicons });
 
 	/**
-	 * The link the button falls back to with no JavaScript.
-	 *
-	 * A cursor and not an offset, and the cursor is opaque on purpose: it encodes
-	 * the ordering key the server chose. There is no page number and no total,
-	 * because a count over a filtered set is a second full scan, and that budget is spent
-	 * that budget on the facets instead.
+	 * The no-JavaScript fallback link. A cursor, not an offset, and opaque on purpose: it encodes the
+	 * ordering key the server chose. No page number or total, as a count over a filtered set is a
+	 * second full scan, and that budget goes to the facets.
 	 */
 	const next = $derived(walk.cursor ? nextHref(data.filters, walk.cursor, data.grouped) : '');
 
@@ -63,12 +52,9 @@
 			});
 			if (!response.ok) throw new Error('the console answered ' + response.status);
 			const page: GroupedPage & FlatPage = await response.json();
-			// What is already on screen, because the walk is a keyset over an
-			// inventory that keeps moving: a row whose last_seen went backwards
-			// sorts below a cursor it was already handed out under, and comes
-			// back. The list is keyed by host and by asset, so a repeat is a
-			// duplicate key, which is a crash of the whole page rather than one
-			// wrong row.
+			// What is on screen already: the walk is a keyset over a moving inventory, so a row whose last_seen
+			// went backwards sorts below a cursor it was handed under and comes back. The list is keyed by host
+			// and asset, so a repeat is a duplicate key, crashing the whole page, not one wrong row.
 			const shownHosts = new Set(groups.map((group) => group.host));
 			const shownAssets = new Set(assets.map((asset) => asset.asset_id));
 			walk = {
@@ -95,24 +81,21 @@
 
 <div class="work">
 	<aside class="side">
-		<!-- The one filter that is typed rather than chosen, and it sits with the
-		     others: it produces the same `f` in the URL as a facet click, and the
-		     chip that appears in the toolbar is how it is undone. -->
+		<!-- The one filter that is typed, not chosen, and it sits with the others: it produces the same `f`
+		as a facet click, and the toolbar chip is how it is undone. -->
 		<NameSearch filters={data.filters} grouped={data.grouped} />
 
 		<Facets facets={data.facets} filters={data.filters} {favicons} operators={data.operators} grouped={data.grouped} />
 	</aside>
 
 	<main class="results">
-		<!-- The names, so a chip reads `program is jomar.ovh` rather than an identifier
-		     nobody can check. The load function resolves them only when a programme filter
-		     is present, which is what keeps this free on every other search. -->
+		<!-- The names, so a chip reads `program is jomar.ovh` and not an unverifiable identifier. The load
+		function resolves them only when a programme filter is present, keeping other searches free. -->
 		<FilterBar filters={data.filters} programNames={data.programNames} grouped={data.grouped} />
 
-		<!-- the fold: the host is the list and the flat one is the exception, so the
-		     toggle names both shapes and neither is a mode with state. Links rather than
-		     a control, because the shape lives in the URL: it is shareable and the back
-		     button means something. -->
+		<!-- The fold: the host is the list and the flat one the exception, so the toggle names both shapes
+		and neither is a stateful mode. Links, because the shape lives in the URL: shareable, and the back
+		button means something. -->
 		<div class="mode">
 			<a class="toggle" class:on={data.grouped} href={groupHref(data.filters, true)}>by host</a>
 			<a class="toggle" class:on={!data.grouped} href={groupHref(data.filters, false)}>every asset</a>
@@ -123,9 +106,8 @@
 				<HostGroup {group} filters={data.filters} enriched={data.enriched} {favicons} />
 			{/each}
 		{:else if assets.length}
-			<!-- One panel rather than one card each, and the same row component as the
-			     grouped list with the host written back into it. A second row would be a
-			     second place to keep what a line has to say. -->
+			<!-- One panel, not a card each, with the grouped list's row component and the host written back
+			in: a second row would be a second place for what a line has to say. -->
 			<section class="flat">
 				{#each assets as asset (asset.asset_id)}
 					<AssetRow {asset} filters={data.filters} withHost grouped={false} />
@@ -142,9 +124,8 @@
 
 		{#if next}
 			<div class="next">
-				<!-- An anchor and not a button: without JavaScript this is still the
-				     next page, and the handler is what turns the same click into rows
-				     added under the ones already read. -->
+				<!-- An anchor, not a button: without JavaScript it is still the next page, and the handler turns
+				the same click into rows added under those already read. -->
 				<a class="btn" class:busy={loading} href={next} onclick={more} aria-busy={loading}>
 					{loading ? 'Loading…' : 'Load more'}
 				</a>
@@ -177,9 +158,8 @@
 		min-width: 0;
 	}
 
-	/* Two links rather than a segmented control, because the shape is a URL and not a
-	   piece of component state. Sized down: it is a preference, and the rows under it
-	   are what somebody came to read. */
+	/* Two links, not a segmented control: the shape is a URL, not component state. Sized down, a
+	preference, with the rows under it being what someone came to read. */
 	.mode {
 		display: flex;
 		gap: 2px;

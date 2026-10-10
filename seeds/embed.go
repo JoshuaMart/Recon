@@ -1,8 +1,6 @@
-// Package seeds carries reference data as files.
-//
-// It is applied by a replayable seed run on every deployment rather than by a
-// migration. The lists grow as new frameworks and edges appear, and a migration
-// per addition would be a migration nobody wants to write.
+// Package seeds carries reference data as files, applied by a replayable seed on
+// every deployment rather than a migration: the lists grow with new frameworks and
+// edges, and a migration per addition is one nobody wants to write.
 package seeds
 
 import _ "embed"

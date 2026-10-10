@@ -1,15 +1,8 @@
 /*
- * The console's art direction, carried over from the validated search-view
- * mockup of 17 August 2026.
- *
- * Two rules that the mockup found the hard way and that are cheap to keep:
- *
- *   - Every icon is an inline SVG with a viewBox and no intrinsic size, and one
- *     of those fills whatever box it lands in. The base size below is set once,
- *     so a context rule nobody wrote costs a wrong size and never a full-card
- *     arrow.
- *   - Rounded cards over sharp controls. The radii are tokens because mixing
- *     the two by hand is what makes an interface look assembled.
+ * The console's art direction, from the validated search-view mockup (17 August 2026).
+ * Icons are inline SVGs with a viewBox and no intrinsic size, so the base size below is set once
+ * and an unwritten context rule costs a wrong size, never a full-card arrow. Rounded cards over
+ * sharp controls; radii are tokens, as mixing the two by hand looks assembled.
  */
 
 :root {

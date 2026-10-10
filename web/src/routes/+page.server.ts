@@ -5,25 +5,19 @@ import { redirect } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 
 /**
- * The search view.
- *
- * The list, sidebar and capabilities start in parallel. When a facet is selected,
- * its own values are then refreshed without that field's filter. This keeps the
- * other choices visible and gives the sidebar disjunctive-facet semantics.
+ * The search view. The list, sidebar and capabilities start in parallel. When a facet is
+ * selected, its own values are refreshed without that field's filter, keeping the other choices
+ * visible: disjunctive-facet semantics.
  */
 export const load: PageServerLoad = async ({ locals, url, fetch }) => {
 	const token = locals.token!;
 	const filters = parseFilters(url.searchParams);
 
 	/**
-	 * The search box submits a typed word, and this turns it into the filter it
-	 * means before anything renders.
-	 *
-	 * A redirect rather than a second way of filtering: `q` never survives this
-	 * function, so the list has exactly one representation of its question, the
-	 * chip in the toolbar knows how to remove it, and the URL somebody copies is
-	 * the same one a facet click produces. It is also what makes the box work
-	 * with no JavaScript, where a form submission is all there is.
+	 * The search box submits a typed word, and this turns it into the filter it means before anything
+	 * renders. A redirect, not a second way of filtering: `q` never survives, so the list has one
+	 * representation of its question, the toolbar chip knows how to remove it, and the copied URL is
+	 * the one a facet click produces. It also makes the box work without JavaScript.
 	 */
 	if (url.searchParams.has('q')) {
 		redirect(303, href(withSearch(filters, url.searchParams.get('q') ?? ''), isGrouped(url.searchParams)));
@@ -31,24 +25,20 @@ export const load: PageServerLoad = async ({ locals, url, fetch }) => {
 
 	const filter = toAST(filters);
 	const cursor = url.searchParams.get('cursor') ?? undefined;
-	// Grouped is the list and flat is the exception, so the parameter names the
-	// exception. In the URL like every other piece of list state, so both shapes
-	// are a link somebody can send and the back button means something.
+	// Grouped is the list and flat the exception, so the parameter names the exception. In the URL
+	// like all list state: both shapes are sendable links and the back button means something.
 	const grouped = isGrouped(url.searchParams);
-	// Two routes and not a flag, because the two cursors mean different columns.
-	// Sending one to the other is a refusal on the server, and the links here
-	// drop the cursor when they change shape so it is unreachable from the page.
+	// Two routes, not a flag: the cursors mean different columns. Sending one to the other is refused
+	// by the server, and links here drop the cursor on a shape change so it is unreachable.
 	const route = grouped ? '/assets/hosts' : '/assets/search';
 
 	try {
 		const [page, sidebar, capabilities, names] = await Promise.all([
 			call<GroupedPage & FlatPage>(token, route, { filter, cursor, limit: 50 }, fetch),
 			call<FacetAnswer>(token, '/assets/facets', { filter }, fetch),
-			// Whether this deployment enriches at all. Asked of the server because
-			// the console cannot see the difference between "no MaxMind database"
-			// and "no match": both give zero ASN, and an empty infrastructure
-			// family reads as a broken interface rather than as a normal
-			// deployment.
+			// Whether this deployment enriches at all. Asked of the server: the console cannot tell "no
+			// MaxMind database" from "no match" (both zero ASN), and an empty infrastructure family reads as a
+			// broken interface, not a normal deployment.
 			get<Capabilities>(token, '/assets/fields', fetch),
 			programNames(token, filters, fetch)
 		]);
@@ -59,18 +49,15 @@ export const load: PageServerLoad = async ({ locals, url, fetch }) => {
 			grouped,
 			groups: page.groups ?? [],
 			assets: page.assets ?? [],
-			// The two maps merged, and the order matters in one direction only: the
-			// facet answer covers the sidebar's icons and the page answer covers the
-			// rows, and a hash in both carries the same image because it is the hash
-			// of those bytes. The sidebar ranks the whole filtered result, so its
-			// most shared icon is routinely one no row on screen carries.
+			// The two maps merged; order matters one way only. The facet answer covers the sidebar's icons and
+			// the page answer the rows, and a hash in both has the same image (the hash of those bytes). The
+			// sidebar ranks the whole filtered result, so its most shared icon is often one no row carries.
 			favicons: { ...(facets.favicons ?? {}), ...(page.favicons ?? {}) },
 			nextCursor: page.next_cursor,
 			facets: facets.facets,
 			enriched: capabilities.enrichment?.configured ?? false,
-			// The sidebar links to a filter, and the operator a field takes is the
-			// server's to say. Guessed here, an array field comes back as a 400
-			// after somebody clicked it.
+			// The sidebar links to a filter, and the operator a field takes is the server's to say; guessed
+			// here, an array field returns a 400 after a click.
 			operators: capabilities.fields ?? {},
 			programNames: names
 		};
@@ -85,11 +72,9 @@ interface FacetAnswer {
 }
 
 /**
- * Refresh each selected facet without its own selections.
- *
- * The list still receives the complete filter. Only the counters for the active
- * facet are self-excluding, so after choosing 200 the sidebar can still offer
- * 302 while every other condition remains in force.
+ * Refresh each selected facet without its own selections. The list still gets the complete
+ * filter; only the active facet's counters exclude themselves, so after choosing 200 the sidebar
+ * still offers 302 with every other condition in force.
  */
 async function disjunctiveFacets(
 	token: string,
@@ -119,12 +104,9 @@ async function disjunctiveFacets(
 }
 
 /**
- * The names behind the program identifiers a filter carries.
- *
- * A chip reading "program is 3f9a…" is a chip nobody can check. The identifier is
- * what the query needs and the name is what a reader needs, and resolving it here
- * keeps the URL shareable: a link carrying a name would break the moment somebody
- * renamed a program.
+ * The names behind the program identifiers a filter carries. A chip reading "program is 3f9a…"
+ * cannot be checked. The query needs the identifier and a reader the name; resolving here keeps
+ * the URL shareable, as a link carrying a name breaks when a program is renamed.
  */
 async function programNames(token: string, filters: Filter[], fetcher: typeof fetch): Promise<Record<string, string>> {
 	if (!filters.some((filter) => filter.field === 'program_id')) return {};

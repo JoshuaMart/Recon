@@ -24,14 +24,10 @@
 		/** Flat mode writes the host into the row, since no header carries it. */
 		withHost?: boolean;
 		/**
-		 * Which shape the list is in, so a link out of it does not silently change
-		 * it.
-		 *
-		 * `href` defaults to grouped, which is right for a link arriving from
-		 * somewhere else and wrong for every link on this page: from the flat list,
-		 * clicking a facet or removing a chip folded the list back without anybody
-		 * asking. The shape lives in the URL, so it has to travel with every link
-		 * built from it.
+		 * Which shape the list is in, so a link out of it does not silently change it. `href` defaults
+		 * to grouped, right for an inbound link and wrong for every link on this page: from the flat
+		 * list, clicking a facet or removing a chip folded it back unasked. The shape lives in the URL,
+		 * so it travels with every link built from it.
 		 */
 		grouped?: boolean;
 	}
@@ -39,13 +35,10 @@
 	const { asset, filters, shared = {}, withHost = false, grouped = true }: Props = $props();
 
 	/**
-	 * One service, one line (the fold).
-	 *
-	 * The card it replaces spent 160 px per asset and repeated its host's operator, city
-	 * and certificate on every one of them. What the row keeps is everything milestone 7
-	 * asserts: the lifecycle as a colour **and** a sentence where the colour alone would
-	 * conclude, the status with its chain, the three states of the cookie badge, and no
-	 * score anywhere.
+	 * One service, one line. The card it replaces spent 160 px per asset and repeated its host's
+	 * operator, city and certificate on each. The row keeps what must stay: the lifecycle as colour
+	 * and a sentence where colour alone would conclude, the status with its chain, the three cookie
+	 * states, and no score anywhere.
 	 */
 	const name = $derived(identity(asset));
 	const label = $derived(statusLabel(asset));
@@ -56,13 +49,10 @@
 	const openable = $derived(asset.kind === 'url' ? asset.key : serviceURL(asset));
 
 	/**
-	 * Where the chain landed, and nothing when it landed on itself.
-	 *
-	 * `landingOf` rather than a comparison written here: a service reached on `:443`
-	 * answers a final URL that spells the port the canonical form drops, so the two
-	 * strings differ while the address does not. The path alone when the host is
-	 * unchanged, the whole URL when it is, because a service that sends somewhere else
-	 * is a different fact and the host is the half of it that matters.
+	 * Where the chain landed, nothing when it landed on itself. `landingOf`, not a comparison here:
+	 * a service reached on `:443` answers a final URL spelling the port the canonical form drops, so
+	 * strings differ while the address does not. The path alone when the host is unchanged, the whole
+	 * URL when it is, as a service sending elsewhere is a different fact.
 	 */
 	const landing = $derived(landingOf(asset, name.head));
 
@@ -78,12 +68,10 @@
 	}
 
 	/**
-	 * The takeover candidate, which is the finding this whole product exists for.
-	 *
-	 * First in the cell and loud, because it is the one badge that is not a pivot:
-	 * it does not link assets, it says one of them points at something anybody can
-	 * now claim. It still links to a search, on the field that asks whether the key
-	 * is there at all, so "show me every one of these" is one click.
+	 * The takeover candidate, the finding this product exists for. First in the cell and loud: the
+	 * one badge that is not a pivot, since it links no assets but says one points at something anyone
+	 * can now claim. It still links to a search on whether the key exists, so "every one of these" is
+	 * one click.
 	 */
 	const takeover = $derived(asset.attributes?.takeover_candidate);
 	const takeoverHref = $derived(
@@ -91,15 +79,9 @@
 	);
 
 	/**
-	 * What a badge from the fingerprinter says about its own age.
-	 *
-	 * The service runs on five triggers rather than on a cadence, so a technology,
-	 * a favicon or a cookie can be weeks older than the last probe. A badge sharing
-	 * the row's `last_checked_at` would be claiming the browser saw what the probe
-	 * saw, and the gap is exactly what somebody needs to know before trusting it.
-	 *
-	 * The certificate is not one of these: it comes from the probe, like the status
-	 * code beside it.
+	 * What a fingerprinter badge says about its age. The service runs on five triggers, so a technology,
+	 * favicon or cookie can be weeks older than the last probe, and sharing the row's `last_checked_at`
+	 * would claim the browser saw what the probe saw. The certificate is not one: it comes from the probe.
 	 */
 	function rendered(type: string): string {
 		if (type === 'cert_spki') return '';
@@ -125,9 +107,8 @@
 		<span class="code" class:none={!label.family} data-code={label.family}>{label.code}</span>
 	</span>
 
-	<!-- An unobservable or an inactive asset carries its sentence here. It needs an
-	     explicit mention rather than a colour alone, and an asset no observer reaches has
-	     no title to show in this cell anyway. -->
+	<!-- An unobservable or inactive asset carries its sentence here: it needs an explicit mention, not
+	colour alone, and an asset no observer reaches has no title to show in this cell. -->
 	{#if verdict}
 		<span class="title verdict {verdict.tone}" title={verdict.text}>{verdict.text}</span>
 	{:else if asset.title}
@@ -174,9 +155,8 @@
 		<!-- The three states of the three absences, kept on the row. An absence of data must not
 		     read as data, so a missing cookie badge says which absence it is. -->
 		{#if !webSurface(asset)}
-			<!-- Nothing renders a name, so "never rendered" would read as a pending
-			     state rather than as a rule. The row says nothing, which is the honest
-			     amount. -->
+			<!-- Nothing renders a name, so "never rendered" would read as a pending state, not a rule. The row
+			says nothing, the honest amount. -->
 		{:else if cookies === 'never-rendered'}
 			<span
 				class="pv absent"
@@ -209,9 +189,8 @@
 
 	<span class="acts">
 		{#if openable}
-			<!-- `noopener` stops the opened page reaching window.opener and navigating this
-			     tab to a fake login, `noreferrer` keeps the console URL and its filters out
-			     of the target's Referer. -->
+			<!-- `noopener` stops the opened page reaching window.opener and navigating this tab to a fake
+			login; `noreferrer` keeps the console URL and filters out of the target's Referer. -->
 			<a
 				class="launch"
 				href={openable}
@@ -240,9 +219,8 @@
 		min-width: 0;
 	}
 
-	/* Flat, the host is back in the row and it is what identifies the line. The grouped
-	   row can spend its width on the title because the address is three columns wide in
-	   the header above it; here the address has to be readable first. */
+	/* Flat, the host is back in the row and identifies the line. The grouped row spends its width on
+	the title because the header above carries the address; here the address must read first. */
 	.row.flat {
 		grid-template-columns: 12px minmax(230px, 1.7fr) 118px minmax(90px, 0.9fr) minmax(0, 0.8fr) 216px 44px 40px 40px;
 	}
@@ -325,10 +303,9 @@
 		min-width: 0;
 	}
 
-	/* A hop is a status code and reads as one: same chip, one size down and without
-	   the weight, so the code that answered still dominates the row. Leaving the hops
-	   as bare text made a 308 look like a different kind of thing from the 200 it led
-	   to, when it is the same measurement one step earlier. */
+	/* A hop is a status code and reads as one: the same chip, a size down and unweighted, so the code
+	that answered still dominates. Bare text made a 308 look unlike the 200 it led to, when it is the
+	same measurement one step earlier. */
 	.hop {
 		font-family: var(--font-mono);
 		font-size: 10.5px;

@@ -42,11 +42,10 @@ func TestTheRealDatabasesAnswer(t *testing.T) {
 	}
 	t.Logf("8.8.8.8 -> AS%d %s, %s %s", unicast.ASN, unicast.ASNOrg, unicast.Country, unicast.City)
 
-	// An anycast address answers with an operator and no country, and that is
-	// the case this test exists for. The record carries registered_country and
-	// nothing else, so falling back to it would report Australia for an address
-	// served from every continent. The operator is the actionable half and it
-	// is the one that survives.
+	// An anycast address answers with an operator and no country, the case this exists for:
+	// the record carries registered_country alone, and falling back to it would report
+	// Australia for an address served from every continent. The operator, the actionable
+	// half, survives.
 	anycast := e.Lookup(netip.MustParseAddr("1.1.1.1"))
 	if anycast.ASN == 0 {
 		t.Errorf("1.1.1.1 = %+v, want an operator", anycast)

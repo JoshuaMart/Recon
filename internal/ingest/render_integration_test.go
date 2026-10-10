@@ -63,12 +63,10 @@ func page(status int, title, server string) *fingerprint.Result {
 	}
 }
 
-// The rule this whole layer rests on. When no candidate produces a chain, a
-// browser receiving an invalid response on a port that speaks something other
-// than HTTP, the service addressed the target perfectly well and the target
-// answered something that is not a page. Returning a bare error instead leaves
-// the counters untouched, so the backoff never widens and the unobservable
-// verdict becomes unreachable.
+// The rule this layer rests on. When no candidate produces a chain (a browser getting
+// an invalid response from a port speaking non-HTTP), the service addressed the target
+// fine and it answered something that is not a page. A bare error would leave counters
+// untouched, so backoff never widens and the unobservable verdict is unreachable.
 func TestARenderThatObtainedNoPageStillWritesAnObservation(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -93,9 +91,8 @@ func TestARenderThatObtainedNoPageStillWritesAnObservation(t *testing.T) {
 	}
 	h.expectRenderReach(t, service, -1, nil)
 
-	// And the timestamp did not move. A list showing "rendered five minutes
-	// ago, no cookies" on an asset no browser ever obtained a page from is the
-	// false statement the three cookie states exist to prevent.
+	// And the timestamp did not move: "rendered five minutes ago, no cookies" on an asset
+	// no browser got a page from is the false statement the three cookie states prevent.
 	var last *time.Time
 	if err := h.pool.QueryRow(context.Background(),
 		`SELECT last_fingerprint_at FROM asset_current WHERE program_id = $1 AND key = $2`,
@@ -148,9 +145,9 @@ func TestNoScreenshotReachesTheDatabase(t *testing.T) {
 	}
 }
 
-// A mitigation aimed at the raw client is the common case, and it is the one
-// the regime switch exists for. The browser clears the challenge and sees a
-// 200; the raw client takes a 403 and detects it perfectly.
+// A mitigation aimed at the raw client is the common case the regime switch exists
+// for: the browser clears the challenge and sees a 200, the raw client takes a 403 and
+// detects it perfectly.
 func TestAProtectedServiceFlipsOntoTheBrowser(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -188,9 +185,9 @@ func TestAProtectedServiceFlipsOntoTheBrowser(t *testing.T) {
 	}
 }
 
-// Neither observer gets a result. The asset is neither alive nor dead, and
-// unobservable is what says so: reading it as a death would archive every asset
-// behind a mitigation that turns both of them away.
+// Neither observer gets a result: the asset is neither alive nor dead, and
+// unobservable says so. A death reading would archive every asset behind a mitigation
+// turning both away.
 func TestNeitherObserverGettingThroughIsUnobservableAndNotADeath(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -227,9 +224,8 @@ func TestNeitherObserverGettingThroughIsUnobservableAndNotADeath(t *testing.T) {
 	}
 }
 
-// A death that was observed is not a silence. The probe reached the edge and
-// the edge reported that the origin is gone, so the asset ends inactive even
-// though the browser was failing at the same moment.
+// An observed death is not a silence: the probe reached the edge, which reported the
+// origin gone, so the asset ends inactive though the browser fails at the same moment.
 func TestADeadOriginDiesEvenWhileTheRenderFails(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -312,10 +308,9 @@ func (h *harness) expectRenderReach(t *testing.T, key string, streak int, reacha
 	}
 }
 
-// A certain failure is not a measurement. Chrome answers ERR_UNSAFE_PORT on its
-// own restricted list, so pointing a browser at one of those ports is known to
-// fail before the call, and it would push an SSH service toward a state that
-// qualifies what is unknown rather than what is not the web.
+// A certain failure is not a measurement. Chrome answers ERR_UNSAFE_PORT on its own
+// restricted list, so a browser aimed at those ports is known to fail beforehand and
+// would push an SSH service toward a state qualifying the unknown, not "not the web".
 func TestAPortABrowserRefusesEarnsNoBaseline(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -330,9 +325,9 @@ func TestAPortABrowserRefusesEarnsNoBaseline(t *testing.T) {
 	if due := h.renderDueOf(t, "box.acme.test:22/tcp"); due != nil {
 		t.Fatalf("port 22 is queued for a browser at %s", due)
 	}
-	// And the ordinary case is not filtered out with it. A forgotten
-	// application on an unusual port is the reason this platform exists, so a
-	// hand written list of "non web" ports would be the mistake.
+	// And the ordinary case is not filtered out: a forgotten application on an unusual
+	// port is why this platform exists, so a hand-written "non web" list would be the
+	// mistake.
 	if due := h.renderDueOf(t, "box.acme.test:8090/tcp"); due == nil {
 		t.Fatal("port 8090 earned no baseline, and it is exactly what a scan is for")
 	}
@@ -346,9 +341,9 @@ func TestAChangeBuysARenderOnlyWhileTheProbeIsTheDetector(t *testing.T) {
 	c := &clock{now: time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)}
 	ing := h.dated(c)
 
-	// A first contact is not a change. It has its own trigger, its own filter
-	// and its own queue, and promoting it here would put every service of a
-	// fresh perimeter into the queue that exists to stay short.
+	// A first contact is not a change. It has its own trigger, filter and queue, and
+	// promoting it here would put every service of a fresh perimeter into the queue that
+	// must stay short.
 	h.answering(t, c, ing, set, 200, "App", "nginx")
 	if priority := h.renderPriorityOf(t, service); priority != lifecycle.PriorityBaseline {
 		t.Fatalf("a first contact entered at priority %d", priority)
@@ -360,9 +355,9 @@ func TestAChangeBuysARenderOnlyWhileTheProbeIsTheDetector(t *testing.T) {
 		t.Fatalf("a detected change entered at priority %d", priority)
 	}
 
-	// Now the raw client stops getting through. Its diff no longer buys a
-	// render: the probe keeps running for reachability and for TLS, but what it
-	// sees of a target refusing it is not a change worth paying a browser for.
+	// Now the raw client stops getting through. Its diff no longer buys a render: the
+	// probe keeps running for reachability and TLS, but what it sees of a refusing target
+	// is not worth a browser.
 	exec(t, h.pool, `UPDATE asset_current SET http_reachable = false,
 	        fingerprint_priority = $1 WHERE program_id = $2 AND key = $3`,
 		lifecycle.PriorityBaseline, h.program, service)
@@ -385,9 +380,8 @@ func (h *harness) renderPriorityOf(t *testing.T, key string) int16 {
 	return priority
 }
 
-// When the raw client is the one being turned away, the renderer is the only
-// detector left and has to run at a detector's rate rather than at a
-// three weekly one.
+// With the raw client turned away, the renderer is the only detector left and runs at
+// a detector's rate, not a three-weekly one.
 func TestTheSoleDetectorRendersAtItsOwnRate(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -413,10 +407,9 @@ func TestTheSoleDetectorRendersAtItsOwnRate(t *testing.T) {
 	}
 }
 
-// A report is evidence rather than a fact, and the scheme is the field where
-// that matters most quietly: it decides whether a port belongs in an authority,
-// so a case nobody lowered points a browser at a different service on the same
-// host and writes the answer against this one.
+// A report is evidence, not a fact, and the scheme is where that matters most quietly:
+// it decides whether a port belongs in an authority, so an unlowered case points a
+// browser at another service on the same host and writes the answer against this one.
 func TestASchemeIsNormalizedBeforeItIsStored(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -447,9 +440,9 @@ func TestASchemeIsNormalizedBeforeItIsStored(t *testing.T) {
 	}
 }
 
-// The promote path reads the same filter as the baseline. A change on a service
-// Chrome refuses to open would otherwise take the head of the queue and stay
-// there, because the pass cannot render it and nothing moves it out.
+// The promote path reads the baseline's filter. A change on a service Chrome refuses to
+// open would take the queue head and stay, as the pass cannot render it and nothing
+// moves it out.
 func TestAChangeOnAPortABrowserRefusesBuysNothing(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))
@@ -472,16 +465,12 @@ func TestAChangeOnAPortABrowserRefusesBuysNothing(t *testing.T) {
 	}
 }
 
-// What a port scan cannot say, and what a browser then says for it.
-//
-// An imported service carries a host and a port and nothing else: the scan
-// reports an open port, so the projection has no scheme and no status code, and
-// the console can name the asset only as `host:port`, offer no address to open
-// and read `no answer` beside it. A render then completes a request against
-// that same asset, which is the measurement both columns were missing, and it
-// wrote neither: the chain travelled as a pivot and the rest was dropped on the
-// floor. The probe takes the promoted columns back on its first pass, by the
-// one-producer rule and with no special case for having been second.
+// What a port scan cannot say, a browser then says. An imported service has a host and
+// port only: the scan reports an open port, so the projection has no scheme or status
+// code, the console names it `host:port`, offers nothing to open and reads `no answer`.
+// A render then completes a request against it, the measurement both columns lacked,
+// and wrote neither: the chain travelled as a pivot and the rest was dropped. The probe
+// takes the promoted columns back on its first pass, by the one-producer rule.
 func TestARenderNamesAServiceAPortScanCouldNot(t *testing.T) {
 	h := newHarness(t)
 	set := h.scope(t, include("acme.test"))

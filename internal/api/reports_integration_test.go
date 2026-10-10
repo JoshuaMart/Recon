@@ -33,11 +33,9 @@ import (
 const signingKey = "a-signing-key-long-enough-to-be-one"
 
 type harness struct {
-	// pool is the owner's, and it is the test's own hand rather than the
-	// application's: fixtures and assertions go through it. Every handler below
-	// runs on the two pools a deployment gives it, because a suite connected as
-	// the owner exercises no policy at all and would pass with row-level
-	// security switched off entirely.
+	// pool is the owner's, the test's own hand for fixtures and assertions. Every handler
+	// runs on the two pools a deployment gives it: a suite connected as the owner exercises
+	// no policy and would pass with row-level security off entirely.
 	pool    *pgxpool.Pool
 	server  *httptest.Server
 	signer  *auth.Signer
@@ -123,9 +121,8 @@ func newHarness(t *testing.T) *harness {
 	}
 	ingestor := ingest.New(nil, lifecycle.DefaultCadence(), quiet)
 
-	// The whole route set rather than one handler. What the tests below check
-	// about a refusal is which of them answers, and a mux built per test would
-	// let a route be reachable in a test and unrouted in the binary.
+	// The whole route set, not one handler: the tests check which route answers a refusal,
+	// and a per-test mux could leave a route reachable in a test and unrouted in the binary.
 	mux := http.NewServeMux()
 	mux.Handle("POST /reports", api.NewReports(scoped, sysPool, signer, ingestor, time.Minute, quiet))
 	mux.Handle("GET /runs/{run}/targets", api.NewTargets(scoped, sysPool, signer, quiet))
@@ -139,9 +136,8 @@ func newHarness(t *testing.T) *harness {
 	renders := api.NewRenders(scoped, 72*time.Hour, quiet)
 	mux.Handle("POST /assets/{asset}/render", guard.Require(auth.ActionManageJobs, renders.Request))
 	mux.Handle("POST /renders/replan", guard.Require(auth.ActionManageJobs, renders.Replan))
-	// The console surface, registered here so a route reachable in a test is a
-	// route the binary serves. enriched is false, which is the deployment the
-	// three states of enrichment call the normal one.
+	// The console surface, registered so a route reachable in a test is one the binary
+	// serves. enriched is false, the deployment the three enrichment states call normal.
 	assets := api.NewAssets(scoped, false, quiet)
 	mux.Handle("POST /assets/search", guard.Require(auth.ActionReadAssets, assets.Search))
 	mux.Handle("POST /assets/hosts", guard.Require(auth.ActionReadAssets, assets.Hosts))
@@ -167,14 +163,11 @@ func newHarness(t *testing.T) *harness {
 	h.exec(t, `INSERT INTO org (id, name) VALUES ($1, 'tenant')`, h.org)
 	h.exec(t, `INSERT INTO program (id, org_id, name, authorized_from) VALUES ($1, $2, 'p', now() - interval '1 day')`,
 		h.program, h.org)
-	// valid_from is written with the harness clock rather than left to default
-	// to the database's now(). The rules in force are read back at h.now(), so
-	// a default would compare two clocks: the container's and this process's.
-	// They disagree by however much the runtime's VM has drifted, and when the
-	// database is ahead the rule is not yet in force, every asset classifies
-	// unknown, and the failure reads as a scope bug rather than as a clock.
-	// This is the fault scope.md describes, in the fixture that sets up the
-	// tests for it.
+	// valid_from uses the harness clock, not the database's now(). Rules are read back at
+	// h.now(), so a default would compare two clocks (the container's and this process's)
+	// that drift. With the database ahead the rule is not yet in force, every asset
+	// classifies unknown, and it reads as a scope bug, not a clock one: the fault scope.md
+	// describes, in the fixture.
 	h.exec(t, `INSERT INTO scope_rule (id, org_id, program_id, kind, matcher, pattern, valid_from)
 	           VALUES ($1, $2, $3, 'include', 'apex', 'target.test', $4)`,
 		uuid.New(), h.org, h.program, c.now.Add(-time.Hour))
@@ -219,9 +212,8 @@ func (h *harness) run(t *testing.T, kind string) (uuid.UUID, string) {
 	if kind == "candidate" {
 		scope = "resolve"
 	}
-	// And a discovery carries the apex it enumerates, which a CHECK requires
-	// for the same reason: a discovery that names no domain is a run that
-	// cannot say what it walked.
+	// A discovery carries the apex it enumerates, which a CHECK requires: a discovery
+	// naming no domain cannot say what it walked.
 	var apex *string
 	if kind == "discovery" {
 		name := "acme.test"
@@ -327,9 +319,8 @@ func TestATruncatedRunSaysSoRatherThanFailing(t *testing.T) {
 		t.Error("a truncated report wrote nothing")
 	}
 
-	// It delivered, so it is not failed: a scheduler reading "failed" would
-	// re-run work whose results it already holds. What it said about its own
-	// completeness is in the summary, where it stays legible.
+	// It delivered, so it is not failed: a scheduler reading "failed" would re-run work
+	// whose results it holds. How complete it says it was is in the summary.
 	var state string
 	var summary map[string]any
 	if err := h.pool.QueryRow(context.Background(),
@@ -346,10 +337,9 @@ func TestATruncatedRunSaysSoRatherThanFailing(t *testing.T) {
 	}
 }
 
-// A major version this does not know has to be refused. The report type is
-// transcribed rather than shared so the scanner can evolve, and that only holds
-// if a document reusing field names under new meanings is a 400 rather than
-// wrong inventory written in silence.
+// A major version this does not know is refused. The report type is transcribed so the
+// scanner can evolve, which holds only if reused field names with new meanings give a
+// 400, not wrong inventory written silently.
 func TestAnUnknownReportSchemaIsRefused(t *testing.T) {
 	h := newHarness(t)
 	_, token := h.run(t, "discovery")
@@ -372,9 +362,8 @@ func TestAnUnknownReportSchemaIsRefused(t *testing.T) {
 	}
 }
 
-// The data is still valid: the run may have been re-dispatched, and
-// deduplication merges the two. Refusing it would throw away work that was
-// actually done.
+// The data is valid: the run may have been re-dispatched and deduplication merges.
+// Refusing it would discard work done.
 func TestALateReportIsAcceptedAndMarked(t *testing.T) {
 	h := newHarness(t)
 	runID, token := h.run(t, "discovery")
@@ -392,9 +381,9 @@ func TestALateReportIsAcceptedAndMarked(t *testing.T) {
 		`SELECT summary FROM run WHERE id = $1`, runID).Scan(&summary); err != nil {
 		t.Fatalf("read run: %v", err)
 	}
-	// The stored keys are the struct's tags rather than its Go identifiers,
-	// because the queue view reads this document back: without tags a renamed
-	// field would change what a console reads with nothing failing to compile.
+	// The stored keys are the struct's tags, not its Go identifiers: the queue view reads
+	// this document back, and a renamed field would change what a console reads without a
+	// compile error.
 	if summary["late"] != true {
 		t.Errorf("the report was not marked late: %v", summary)
 	}
@@ -472,10 +461,9 @@ func TestTheCredentialIsRequiredAndBound(t *testing.T) {
 	}
 }
 
-// The frozen list is the whole of the reservation, and a candidate run gets one
-// exactly like a verification run does. Reading the gate as "is verification"
-// left its reports unchecked against the list they were given, which is the
-// scanner-chooses-its-own-perimeter hole the list exists to close.
+// The frozen list is the whole reservation, and a candidate run gets one like a
+// verification run. Reading the gate as "is verification" left its reports unchecked
+// against it, the scanner-chooses-its-own-perimeter hole the list closes.
 func TestACandidateRunsReportIsCheckedAgainstItsFrozenList(t *testing.T) {
 	h := newHarness(t)
 

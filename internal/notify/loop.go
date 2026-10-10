@@ -15,14 +15,13 @@ import (
 type Loop struct {
 	notifier *Notifier
 	interval time.Duration
-	// channel is the configured output, retried until it is settled: the
-	// organization is created by a command outside this process, so a bootstrap
-	// that only ran at startup would leave the channel missing until somebody
-	// restarted for an unrelated reason.
+	// channel is the configured output, retried until settled: the organization is
+	// created by a command outside this process, so a startup-only bootstrap would
+	// leave the channel missing until an unrelated restart.
 	channel ConfigChannel
 	settled bool
-	// unobservableAlert is the share of a programme's inventory that makes a
-	// mass tip an event rather than a number.
+	// unobservableAlert is the share of a programme's inventory that makes a mass tip
+	// an event rather than a number.
 	unobservableAlert float64
 }
 
@@ -62,11 +61,8 @@ func (l *Loop) Run(ctx context.Context) {
 	}
 }
 
-// Once produces the aggregate events and then drains.
-//
-// The order matters: a mass tip written on this tick has to leave on this tick.
-// A takeover is notified with at most one tick between being written and being
-// sent, and a programme going dark deserves no worse.
+// Once produces the aggregate events and then drains. Order matters: a mass tip
+// written this tick must leave this tick, like a takeover.
 func (l *Loop) Once(ctx context.Context) {
 	if !l.settled {
 		settled, err := Bootstrap(ctx, sqlcgen.New(l.notifier.pool),
@@ -94,12 +90,9 @@ func (l *Loop) Once(ctx context.Context) {
 		"summarised", summary.Summarised, "failed", summary.Failed, "nowhere", summary.Nowhere)
 }
 
-// Aggregates writes the events no single observation can settle.
-//
-// The mass tip is the case that shows the boundary. A per programme ratio is a
-// proportion over an inventory, not a conclusion drawn from one observation,
-// and an aggregate is exactly what a sweep is the right tool for. It is the
-// only thing given to one.
+// Aggregates writes the events no single observation can settle. The mass tip is a
+// per-programme proportion over an inventory, not a conclusion from one
+// observation, and the one thing a sweep is the right tool for.
 func (n *Notifier) Aggregates(ctx context.Context, threshold float64) error {
 	queries := sqlcgen.New(n.pool)
 
@@ -156,13 +149,10 @@ func (n *Notifier) Aggregates(ctx context.Context, threshold float64) error {
 	return nil
 }
 
-// onboarding emits the summary a first run's silence owes.
-//
-// The grace holds back the flood, and holding it back without saying so is the
-// same loss of signal the cap exists to avoid. The summary goes out once the
-// grace has ended, carries the count the grace held, and is a programme event,
-// so it escapes the windows: folding an aggregate into a second aggregate
-// counts it twice and loses it.
+// onboarding emits the summary a first run's silence owes. Holding back the flood
+// without saying so loses signal as the cap would. It goes out once the grace
+// ends, carries the held count, and is a programme event so it escapes the
+// windows (an aggregate in an aggregate is counted twice and lost).
 func (n *Notifier) onboarding(ctx context.Context, q *sqlcgen.Queries, now time.Time) error {
 	due, err := q.OnboardingDue(ctx, sqlcgen.OnboardingDueParams{
 		Since: pgtype.Timestamptz{Time: now.Add(-GraceAge).UTC(), Valid: true},
@@ -187,8 +177,8 @@ func (n *Notifier) onboarding(ctx context.Context, q *sqlcgen.Queries, now time.
 			"held":    row.Held,
 			"reason":  "first run",
 		}
-		// A programme whose first run never finished is an incident, and
-		// absorbing it in silence is a perimeter quietly ceasing to be scanned.
+		// A programme whose first run never finished is an incident; absorbing it silently
+		// is a perimeter quietly ceasing to be scanned.
 		incident := !row.CompletedDiscovery
 		if incident {
 			payload["incident"] = "the first discovery run never completed"

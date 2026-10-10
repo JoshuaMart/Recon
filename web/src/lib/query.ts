@@ -1,14 +1,8 @@
 /**
- * Filters, in the URL and as an AST.
- *
- * The structured representation comes first and the query language later, so
- * there is no text bar here and nothing parses a DSL. What the interface can
- * build is a conjunction of facets whose selected values are alternatives, and
- * it travels in the URL as repeated `f` params so that a filtered list is a
- * shareable link and renders on the server.
- *
- * The day the language arrives it produces this same tree. It does not replace
- * this module, it adds a second way to fill it.
+ * Filters, in the URL and as an AST. The structured representation comes first and the query language
+ * later, so nothing parses a DSL: the interface builds a conjunction of facets whose selected values
+ * are alternatives, carried as repeated `f` params so a filtered list is a shareable link rendered on
+ * the server. The language will fill this same tree as a second way in.
  */
 
 export type Op = 'eq' | 'in' | 'suffix' | 'prefix' | 'contains' | 'exists' | 'gt' | 'gte' | 'lt' | 'lte';
@@ -20,14 +14,9 @@ export interface Filter {
 }
 
 /**
- * Which fields need a value that is not a string.
- *
- * This is a second registry and the first one lives in Go, which is a divergence
- * waiting to happen. It is small on purpose and it exists for a reason the server
- * cannot solve for us: a facet term is cast to text by the aggregation, so port
- * 443 comes back as "443", and the compiler refuses a string where the column is
- * an int. Everything absent from these two lists travels as text, `program_id`
- * included: the server binds it and casts it at the placeholder.
+ * Which fields need a non-string value. A second registry beside the Go one, kept small: a facet term
+ * is cast to text by the aggregation (port 443 returns as "443") and the compiler refuses a string for
+ * an int column. Everything absent travels as text, `program_id` included (the server casts it).
  */
 const numeric = new Set(['port', 'status_code', 'asn', 'volatility']);
 const boolean = new Set(['is_cdn', 'waf_detected', 'takeover_candidate']);
@@ -61,32 +50,24 @@ export function encodeFilter(filter: Filter): string {
 }
 
 /**
- * Every link the interface builds is built here.
- *
- * Not for tidiness: it is the one place a base path would ever have to be
- * applied, and it keeps the components free of URL assembly, which is where an
- * unescaped value slips into a query string.
+ * Every link the interface builds is built here: the one place a base path would be applied,
+ * keeping components free of URL assembly, where an unescaped value slips into a query string.
  */
 
-/** programHref is the list filtered to one perimeter, which is what the programmes
- *  screen links to. `program_id` is a field where `org_id` is not: inside one
- *  organization, asking what a perimeter holds is a legitimate question, and the
- *  tenant clause is emitted beside it either way. */
+/**
+ * programHref is the list filtered to one perimeter, linked from the programmes screen.
+ * `program_id` is a field where `org_id` is not: inside one organization, asking what a
+ * perimeter holds is legitimate, and the tenant clause is emitted beside it regardless.
+ */
 export function programHref(programID: string): string {
 	return href([{ field: 'program_id', op: 'eq', value: programID }]);
 }
 
 /**
- * Which shape the list takes, read from the URL.
- *
- * Grouped is the default and the parameter therefore names the exception:
- * `group=none` is the flat list. A name occupies several rows by construction, so
- * the flat list is mostly one host written five times, and a default that has to
- * be chosen every time is a default that is wrong.
- *
- * The two shapes are two routes on the server and not a flag, because their
- * cursors mean different columns. That is why every link below drops the cursor
- * when it changes shape.
+ * Which shape the list takes, read from the URL. Grouped is the default, so the parameter names the
+ * exception: `group=none` is the flat list, mostly one host written five times. The shapes are two
+ * server routes, not a flag, as their cursors mean different columns; every link below drops the
+ * cursor when it changes shape.
  */
 export function isGrouped(params: URLSearchParams): boolean {
 	return params.get('group') !== 'none';
@@ -101,25 +82,20 @@ export function href(filters: Filter[], grouped = true): string {
 }
 
 /**
- * groupHref toggles the fold, keeping the filters and dropping the cursor.
- *
- * Dropping it is the point rather than an omission: a cursor of the flat list walks
- * assets and a cursor of the grouped one walks hosts, so carrying one across the
- * toggle would ask the server to continue a walk it never started. The server
- * refuses it, and this makes the refusal unreachable from the interface.
+ * groupHref toggles the fold, keeping the filters and dropping the cursor. Dropping it is the
+ * point: a flat cursor walks assets and a grouped one walks hosts, so carrying one across would
+ * ask the server to continue a walk it never started. The server refuses it; this makes the
+ * refusal unreachable from the interface.
  */
 export function groupHref(filters: Filter[], grouped: boolean): string {
 	return href(filters, grouped);
 }
 
-/** nextHref continues the list. A cursor and never a page number: the server
- *  chose the ordering, and an offset over a million rows scans everything before
- *  it on every page.
- *
- *  It is the fallback of the load button rather than what it normally does: the
- *  button appends, and this link is what the same click means with no
- *  JavaScript, where a second page replacing the first is still better than a
- *  dead control. */
+/**
+ * nextHref continues the list with a cursor, never a page number: the server chose the ordering, and
+ * an offset over a million rows rescans everything before it. It is the load button's no-JavaScript
+ * fallback, where replacing the page beats a dead control.
+ */
 export function nextHref(filters: Filter[], cursor: string, grouped = true): string {
 	const search = params(filters);
 	if (!grouped) search.set('group', 'none');
@@ -137,15 +113,9 @@ export function moreHref(filters: Filter[], cursor: string, grouped = true): str
 }
 
 /**
- * The field the search box writes into, and the operator it uses.
- *
- * `key` rather than `host`, because the key is the name of the asset as the list
- * shows it: a hostname for a name, host:port for a service, the URL for a page.
- * A search on the host would answer nothing about a port somebody typed.
- *
- * `contains` because that is what a search field means to the person typing in
- * it. It is the one text operator no index answers, which the server grants on
- * the name alone and says so where it grants it.
+ * The field the search box writes into, and its operator. `key`, not `host`: the key is the asset's
+ * name as the list shows it (host:port for a service, the URL for a page). `contains` is what a search
+ * field means; no index answers it, so the server grants it on the name alone.
  */
 export const searchField = 'key';
 const searchOp: Op = 'contains';
@@ -156,11 +126,9 @@ export function searchTerm(filters: Filter[]): string {
 }
 
 /**
- * withSearch replaces the term rather than adding one.
- *
- * Two substrings of one name is a question nobody asks by typing twice in the
- * same box, and a box that accumulated would need its own way to undo. Every
- * other filter is untouched: a search narrows what the facets already chose.
+ * withSearch replaces the term, not adds one: two substrings of one name is not a question
+ * anyone asks by typing twice in a box, and an accumulating box would need its own undo. Other
+ * filters are untouched; a search narrows what the facets chose.
  */
 export function withSearch(filters: Filter[], term: string): Filter[] {
 	const rest = filters.filter((filter) => !(filter.field === searchField && filter.op === searchOp));
@@ -175,12 +143,11 @@ export function searchHref(filters: Filter[], term: string, grouped = true): str
 	return href(withSearch(filters, term), grouped);
 }
 
-/** facetHref opens one facet on every value it has, as JSON.
- *
- * Filters from the other fields travel, but filters from this field do not. A
- * selected status must not hide the other statuses: its facet answers the
- * choices that remain under the rest of the question. This is the usual
- * disjunctive-facet shape, `(status = 200 OR status = 302) AND kind = service`.
+/**
+ * facetHref opens one facet on every value it has, as JSON. Filters from other fields travel,
+ * this field's do not: a selected status must not hide the other statuses, as its facet answers
+ * the choices left under the rest of the question. The usual disjunctive-facet shape:
+ * `(status = 200 OR status = 302) AND kind = service`.
  */
 export function facetHref(filters: Filter[], field: string): string {
 	const search = params(withoutField(filters, field));
@@ -221,11 +188,9 @@ export function withoutField(filters: Filter[], field: string): Filter[] {
 }
 
 /**
- * The groups the facet UI presents.
- *
- * Repeated equality and containment selections in one field are alternatives.
- * Range and text-shape operators remain separate constraints: turning
- * `port >= 80` and `port <= 443` into an OR would silently widen the query.
+ * The groups the facet UI presents. Repeated equality and containment selections in one field
+ * are alternatives. Range and text-shape operators stay separate constraints: ORing
+ * `port >= 80` and `port <= 443` would silently widen the query.
  */
 export function filterGroups(filters: Filter[]): Filter[][] {
 	const groups: Filter[][] = [];
@@ -247,12 +212,10 @@ export function filterGroups(filters: Filter[]): Filter[][] {
 }
 
 /**
- * toAST compiles facet selections into the tree the API expects.
- *
- * Values selected in the same facet are ORed. Different facets and every other
- * constraint are ANDed. No organization clause can appear here: `org_id` is not
- * a field of the server's registry, so the control plane always emits it outside
- * the tree.
+ * toAST compiles facet selections into the tree the API expects. Values selected in one facet
+ * are ORed; different facets and every other constraint are ANDed. No organization clause can
+ * appear: `org_id` is not in the server's registry, so the control plane emits it outside the
+ * tree.
  */
 export function toAST(filters: Filter[]): Node | undefined {
 	if (filters.length === 0) return undefined;
@@ -285,9 +248,8 @@ function typed(field: string, value: string): string | number | boolean {
 /** The chip text. Plain words rather than operators, since there is no DSL yet. */
 export function label(filter: Filter, names: Record<string, string> = {}): string {
 	const field = fieldLabel(filter.field);
-	// An identifier is what the query needs and a name is what a reader needs. The
-	// chip shows the name when the caller resolved one, and the identifier when it
-	// did not, rather than nothing.
+	// An identifier is what the query needs and a name what a reader needs: the chip shows the
+	// resolved name, or the identifier, never nothing.
 	const value = names[filter.value] ?? filter.value;
 	switch (filter.op) {
 		case 'suffix':
@@ -334,18 +296,10 @@ export function fieldLabel(field: string): string {
 }
 
 /**
- * facetFilter builds the filter a facet bucket links to, with the operator the
- * **server** says the field takes.
- *
- * The sidebar used to write `eq` for every bucket, which is right for a column and
- * wrong for an array: `technologies eq nginx` comes back as
- * `technologies does not accept "eq"`, and only after somebody clicked it. The
- * operators arrive from `GET /assets/fields`, the endpoint whose whole purpose is
- * that a console discovers the vocabulary instead of learning it against 400s.
- *
- * `eq` when the field takes it, `contains` otherwise, and `eq` as a last resort so
- * that a field missing from the map produces a filter the server can name rather
- * than nothing at all.
+ * facetFilter builds the filter a facet bucket links to, with the operator the server says the field
+ * takes. The sidebar once wrote `eq` for every bucket, wrong for an array (`technologies does not
+ * accept "eq"`, only after a click); operators come from `GET /assets/fields`. `eq` when accepted,
+ * else `contains`, else `eq` so a missing field still yields a filter the server can name.
  */
 export function facetFilter(field: string, value: string, operators: Record<string, string[]>): Filter {
 	const allowed = operators[field] ?? [];
@@ -355,12 +309,9 @@ export function facetFilter(field: string, value: string, operators: Record<stri
 }
 
 /**
- * badgeFilter maps a pivot type back to the field that searches it.
- *
- * The two vocabularies differ, and the mapping belongs here rather than in a
- * component: internal/search names the pivot type `favicon` and the searchable
- * field `favicon_hash`, `cookie_name` against `cookie_name`, and a value keyed on
- * the wrong one silently matches nothing rather than failing.
+ * badgeFilter maps a pivot type back to the field that searches it. The vocabularies differ
+ * and the mapping belongs here, not in a component: internal/search names the pivot `favicon`
+ * and the field `favicon_hash`, and a value keyed on the wrong one silently matches nothing.
  */
 export function badgeFilter(type: string, value: string): Filter {
 	switch (type) {

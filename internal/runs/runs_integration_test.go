@@ -162,14 +162,10 @@ func TestTwoConcurrentRunsNeverHoldTheSameHost(t *testing.T) {
 		t.Fatalf("the refusal does not say whether anything claimed it: %v", err)
 	}
 
-	// And the hosts it froze are invisible to a selection, which is what the
-	// exclusion in the statement is for rather than the refusal above.
-	//
-	// The run is moved to another programme rather than disguised as a
-	// discovery, which is how this read before a live enumeration became a
-	// blocker of its own. Moving it is the sharper arrangement anyway: this
-	// programme now has no live run of either kind, so nothing but the frozen
-	// list can be what hides the hosts.
+	// The frozen hosts are invisible to a selection: the statement's exclusion, not
+	// the refusal above. The run is moved to another programme rather than disguised
+	// as a discovery (a live enumeration now blocks on its own); this programme then
+	// has no live run, so only the frozen list can hide the hosts.
 	other := uuid.New()
 	exec(t, h.pool, `INSERT INTO program (id, org_id, name, authorized_from) VALUES ($1,$2,'other',$3)`,
 		other, h.org, h.clock.now.Add(-time.Hour))
@@ -181,9 +177,8 @@ func TestTwoConcurrentRunsNeverHoldTheSameHost(t *testing.T) {
 	}
 }
 
-// A run that dies takes nothing with it. Due dates move only when a report is
-// ingested, so an abandoned run leaves the inventory exactly as it found it and
-// the next tick selects the same assets again.
+// A run that dies takes nothing with it: due dates only move on ingestion, so the
+// next tick selects the same assets again.
 func TestARunKilledMidFlightBlocksNothing(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -252,18 +247,16 @@ func TestSelectionReadsTheRungItWasAskedFor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve run: %v", err)
 	}
-	// The flag takes the scanner's own scope name, which is the same value the
-	// run row is constrained to. Anything else is a run that fails on its
-	// configuration a second after it starts, which no test here could catch
-	// because both sides of the invention live in this repository.
+	// The flag takes the scanner's own scope name, the value the run row is
+	// constrained to. Anything else fails on configuration a second after start, which
+	// no test here would catch since both sides live in this repository.
 	if arg(resolve.Args, "--stages") != "resolve" {
 		t.Fatalf("the stages are %q", arg(resolve.Args, "--stages"))
 	}
 }
 
-// Nothing a run holds opens the inventory. The definition carries two
-// signatures over the run, its purpose and an expiry, and no database
-// credential of any kind.
+// Nothing a run holds opens the inventory: two signatures over run, purpose and
+// expiry, and no database credential.
 func TestARunDefinitionCarriesNoInventoryCredential(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -278,9 +271,8 @@ func TestARunDefinitionCarriesNoInventoryCredential(t *testing.T) {
 	if list != "https://recon.example/runs/"+def.RunID.String()+"/targets" {
 		t.Fatalf("the target list is at %q", list)
 	}
-	// And it carries no credential. A token in a query string is a token in
-	// every access log, proxy log and error message that ever prints that URL,
-	// and those outlive the run by a long way.
+	// And no credential in the URL: a query-string token is in every access, proxy and
+	// error log, which outlive the run.
 	if strings.Contains(list, "token") || strings.Contains(list, "?") {
 		t.Fatalf("the target list URL carries its credential: %q", list)
 	}
@@ -319,10 +311,9 @@ func arg(args []string, flag string) string {
 	return ""
 }
 
-// The authorization window is checked when a run is provisioned rather than
-// only when its report arrives. Without it an expired programme would be
-// provisioned on every tick and refused when the run opens: an execution billed
-// to do nothing.
+// The authorization window is checked at provisioning, not only when the report
+// arrives; otherwise an expired programme is provisioned every tick and refused at
+// run open, an execution billed for nothing.
 func TestAnExpiredProgrammeIsNeverProvisioned(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -337,9 +328,8 @@ func TestAnExpiredProgrammeIsNeverProvisioned(t *testing.T) {
 	}
 }
 
-// last_discovery_at is written at creation rather than at completion. A run
-// that dies on the way must not be restarted by the cadence: the sweeper
-// already handles it, and confusing the two would start two.
+// last_discovery_at is written at creation, not completion: a dying run must not be
+// restarted by the cadence, since the sweeper handles it.
 func TestDiscoveryIsRecordedWhenItIsProvisioned(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -396,16 +386,14 @@ func TestDiscoveryIsRecordedWhenItIsProvisioned(t *testing.T) {
 	}
 }
 
-// The in-flight check is a read followed by a write, and a transaction cannot
-// see another's uncommitted rows. Two of them overlapping both pass the check
-// and both freeze the same hosts, which is double scan traffic against
-// somebody's perimeter.
+// The in-flight check is a read then a write, and a transaction cannot see
+// another's uncommitted rows: two overlapping both pass and freeze the same hosts,
+// double scan traffic on someone's perimeter.
 //
-// The overlap is forced rather than raced: the second transaction takes its
-// snapshot before the first commits and holds it, which is exactly the window
-// the check has and a sleep would only sometimes reproduce. Discovery has
-// carried a partial unique index since the first migration; verification did
-// not, and this is the assertion that says so.
+// The overlap is forced, not raced: the second transaction snapshots before the
+// first commits, the exact window a sleep would only sometimes reproduce. Discovery
+// has had a partial unique index since the first migration; verification did not,
+// and this says so.
 func TestTwoOverlappingRunsCannotBothBeCreated(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -461,13 +449,10 @@ func (h *harness) count(t *testing.T, sql string, args ...any) int {
 	return n
 }
 
-// A discovery run that never completes is expired and a replacement is
-// provisioned.
-//
-// last_discovery_at is written at creation so the cadence cannot start a second
-// run while the first is in flight. Left there after a run died, it also means
-// the programme waits a whole discovery interval for a replacement: a run that
-// failed in thirty seconds would cost a week of coverage.
+// A discovery run that never completes is expired and replaced. last_discovery_at
+// is written at creation so the cadence cannot start a second run mid-flight; left
+// after a death it would make the programme wait a whole interval, a thirty-second
+// failure costing a week of coverage.
 func TestADeadDiscoveryRunIsReplacedRatherThanWaitedOut(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -475,9 +460,8 @@ func TestADeadDiscoveryRunIsReplacedRatherThanWaitedOut(t *testing.T) {
 		VALUES ($1,$2,$3,'include','apex','acme.test',$4)`,
 		uuid.New(), h.org, h.program, h.clock.now.Add(-time.Hour))
 
-	// Through the cadence, because that is where the interval is read.
-	// Calling Discovery directly would answer a different question: it checks
-	// what is in flight and never what the cadence allows.
+	// Through the cadence, where the interval is read; Discovery alone checks what is
+	// in flight, not what the cadence allows.
 	platform := &recorder{id: "run-01"}
 	scheduler := runs.New(h.sched.Signer(), h.sched.Config(), quiet(),
 		runs.WithClock(h.clock.Now), runs.WithPlatform(platform))
@@ -516,10 +500,8 @@ func TestADeadDiscoveryRunIsReplacedRatherThanWaitedOut(t *testing.T) {
 		t.Fatalf("%d replacements went out, and the interval is seven days away", started)
 	}
 
-	// And the record of when this programme was last enumerated survived. The
-	// cursor and the fact are the same column, so clearing it to schedule a
-	// retry would answer "never enumerated" about a programme enumerated an
-	// hour ago.
+	// The record of the last enumeration survived: cursor and fact share a column, so
+	// clearing it to schedule a retry would say "never enumerated" about an hour ago.
 	var last *time.Time
 	if err := h.pool.QueryRow(ctx,
 		`SELECT last_discovery_at FROM program WHERE id = $1`, h.program).Scan(&last); err != nil {
@@ -649,9 +631,8 @@ func (r *recorder) Start(_ context.Context, def *runs.Definition) (string, error
 
 func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-// A programme with nothing to enumerate is not due, so it is not selected and
-// refused on every tick. At a one minute cadence that is a warning a minute
-// forever rather than a signal.
+// A programme with nothing to enumerate is not due, so not selected and refused
+// every tick: at a one-minute cadence, a warning a minute forever.
 func TestAProgrammeWithNoApexIsNotDue(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -707,9 +688,8 @@ func TestAnExclusionThatCannotTravelIsSaidOutLoud(t *testing.T) {
 	if arg(def.Args, "--exclude") != "vpn.acme.test" {
 		t.Fatalf("the name exclusion did not travel: %v", def.Args)
 	}
-	// The range does not travel, and it must not travel as a name either: a
-	// scanner given "10.0.0.0/8" as a domain pattern would exclude nothing and
-	// say nothing.
+	// A range must not travel as a name either: a scanner given "10.0.0.0/8" as a
+	// domain pattern would exclude nothing and say nothing.
 	for _, value := range def.Args {
 		if value == "10.0.0.0/8" {
 			t.Fatal("an address range was handed over as a name pattern")
@@ -717,13 +697,9 @@ func TestAnExclusionThatCannotTravelIsSaidOutLoud(t *testing.T) {
 	}
 }
 
-// The pass on due dates, which is what turns a schedule into a run.
-//
-// Everything under it existed and nothing called it: the selection, the frozen
-// list and the lease have been there since verification was built, and a run
-// went out when somebody pressed a button and never otherwise. Due dates
-// accumulated, the queue counted them as what the next tick can dispatch, and no
-// tick did.
+// The pass on due dates turns a schedule into a run. The selection, frozen list and
+// lease existed but nothing called them: runs went out only on a button press while
+// due dates accumulated and no tick dispatched them.
 func TestTheDuePassStartsAVerificationRun(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -760,9 +736,8 @@ func TestTheDuePassStartsAVerificationRun(t *testing.T) {
 	if kind != "verification" {
 		t.Errorf("kind = %s, want verification", kind)
 	}
-	// Full rather than resolve, because both dates are past and a full run
-	// executes every rung below it. Taking resolve here would leave the ports
-	// unswept while reporting the asset checked.
+	// Full, not resolve: both dates are past and full executes every rung below it.
+	// Resolve would leave ports unswept while reporting the asset checked.
 	if scope != "full" {
 		t.Errorf("scope = %s, want full: it moves both dates and resolve would not", scope)
 	}
@@ -770,9 +745,8 @@ func TestTheDuePassStartsAVerificationRun(t *testing.T) {
 		t.Errorf("the run froze %d targets, want both hosts in one list", targets)
 	}
 
-	// And the second tick starts nothing, because the first one is still in
-	// flight. That bound is a unique index rather than this check, but a pass
-	// that provisioned into a refusal once a minute would be a warning a minute.
+	// The second tick starts nothing, as the first is in flight. A unique index bounds
+	// it, but a pass provisioning into a refusal would warn once a minute.
 	again, err := pass.Once(ctx)
 	if err != nil {
 		t.Fatalf("second pass: %v", err)
@@ -785,15 +759,10 @@ func TestTheDuePassStartsAVerificationRun(t *testing.T) {
 	}
 }
 
-// A programme nothing may scan is not selected at all.
-//
-// Asserted on the selection and not on the number of runs, because the run is
-// refused a second time further down: create reads the programme and checks the
-// window, so a test counting runs passes with the condition removed from the
-// query and proves only that the second guard exists. What the first one buys is
-// that the pass does not wake an expired programme, walk its due assets and log a
-// refusal once a minute forever, which is the shape of this failure rather than
-// a billed execution.
+// A programme nothing may scan is not selected at all. Asserted on the selection,
+// not the run count: create re-checks the window, so counting runs passes with the
+// condition removed from the query. The first guard stops the pass waking an
+// expired programme, walking its due assets and logging a refusal every minute.
 func TestTheDuePassNeverSelectsOutsideTheAuthorization(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -857,9 +826,8 @@ func TestTheDuePassNeverSelectsOutsideTheAuthorization(t *testing.T) {
 	}
 }
 
-// An asset outside the perimeter, archived, or not a name is never a target,
-// and the pass must not wake a programme for one: it would be selected on every
-// tick and find nothing on every tick.
+// An asset outside the perimeter, archived, or not a name is never a target, and
+// must not wake a programme: it would be selected and find nothing every tick.
 func TestTheDuePassIgnoresWhatIsNotATarget(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -889,14 +857,10 @@ func TestTheDuePassIgnoresWhatIsNotATarget(t *testing.T) {
 	}
 }
 
-// No verification while an enumeration is walking the same perimeter.
-//
-// The frozen list cannot express this. A discovery run freezes nothing, because
-// it is the one allowed to find things, so selection has no way to see the hosts
-// it is scanning. The window is the run itself: its report has not landed, every
-// asset it touches still carries the due date it had before, and a verification
-// starting a minute in sends a second scanner at hosts the first one is
-// connected to.
+// No verification while an enumeration walks the same perimeter. The frozen list
+// cannot express it: a discovery run freezes nothing, so selection cannot see its
+// hosts. Its report has not landed, so assets keep their due dates, and a
+// verification a minute in sends a second scanner at hosts the first is on.
 func TestNoVerificationWhileAnEnumerationIsWalkingThePerimeter(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -929,9 +893,8 @@ func TestNoVerificationWhileAnEnumerationIsWalkingThePerimeter(t *testing.T) {
 		t.Errorf("%d targets were frozen while an enumeration was walking the perimeter", n)
 	}
 
-	// The positive control, and the direction of the rule. Once the enumeration
-	// is done the verification goes out on the very next call, so what this
-	// costs is the length of a run rather than a cadence.
+	// The positive control: once the enumeration is done the verification goes out on
+	// the next call, costing the length of a run, not a cadence.
 	exec(t, h.pool, `UPDATE run SET state = 'completed', finished_at = $2 WHERE id = $1`,
 		discovery, h.clock.now)
 
@@ -948,12 +911,9 @@ func TestNoVerificationWhileAnEnumerationIsWalkingThePerimeter(t *testing.T) {
 	}
 }
 
-// The rule is one directional, and the asymmetry is the point.
-//
-// Blocking discovery on a live verification would be the symmetric rule and a
-// starvation: during a drain a verification is in flight most minutes, and the
-// enumeration would never go out. Discovery is rare and its cadence is a
-// promise, so it wins.
+// One directional, on purpose. Blocking discovery on a live verification would
+// starve it: during a drain a verification is in flight most minutes. Discovery is
+// rare and its cadence a promise, so it wins.
 func TestAnEnumerationIsNotBlockedByAVerification(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -982,16 +942,12 @@ func TestAnEnumerationIsNotBlockedByAVerification(t *testing.T) {
 	}
 }
 
-// A programme with two apexes gets one run each, and this is the case the whole
-// per apex shape exists for.
-//
-// The scheduler used to join a programme's apexes with a comma into the one
-// flag the scanner reads as a single domain. Every single apex programme
-// survived it, because a list of one has no separator in it, and the first
-// perimeter with two produced a run that died before resolving anything with
-// "domain \"a.test,b.test\" is not a valid domain name". The assertion is
-// therefore not just that two runs come back: it is that neither of them was
-// handed a list.
+// A programme with two apexes gets one run each, the case the per-apex shape is
+// for. The scheduler once comma-joined apexes into the single-domain flag; every
+// one-apex programme survived (no separator) and the first two-apex perimeter died
+// before resolving anything on "domain \"a.test,b.test\" is not a valid domain
+// name". So the assertion is that neither run was handed a list, not only that two
+// came back.
 func TestAPerimeterOfTwoApexesIsTwoRuns(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -1034,9 +990,8 @@ func TestAPerimeterOfTwoApexesIsTwoRuns(t *testing.T) {
 		t.Errorf("the two runs cover %v", seen)
 	}
 
-	// Both are in flight, and the bound is on the apex rather than on the
-	// programme: the unique index has to allow the pair that the old one made
-	// impossible.
+	// Both in flight: the bound is per apex, and the unique index must allow the pair
+	// the old one made impossible.
 	var live int
 	if err := h.pool.QueryRow(ctx,
 		`SELECT count(*) FROM run WHERE program_id = $1 AND kind = 'discovery'
@@ -1054,9 +1009,8 @@ func TestAPerimeterOfTwoApexesIsTwoRuns(t *testing.T) {
 	}
 }
 
-// One apex failing must not cost the other a cycle. The bound is per apex, so
-// the enumeration that has nothing in flight goes out again on its own while
-// its neighbour is still walking.
+// One failing apex must not cost the other a cycle: the bound is per apex, so the
+// idle enumeration goes out again while its neighbour is still walking.
 func TestAnApexWhoseRunDiedIsProvisionedAgainOnItsOwn(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

@@ -3,10 +3,9 @@
 
 SHELL := /bin/sh
 COMPOSE := docker compose -f deploy/compose/compose.yaml --env-file .env
-# The deployed stack, behind Traefik. Same environment file, because the
-# production compose file reads only variables whose value is a deployment
-# decision: the addresses of the rendering side are service names written into
-# the file itself, so there is no local value it can inherit and get wrong.
+# The deployed stack, behind Traefik. Same environment file: the production compose file reads
+# only variables that are deployment decisions, and the rendering side's addresses are service
+# names written into the file, so there is no local value to inherit wrongly.
 COMPOSE_PROD := docker compose -f deploy/compose/compose.prod.yaml --env-file .env
 GO ?= go
 
@@ -76,22 +75,20 @@ migrate: ## Apply pending migrations against the running stack
 	$(COMPOSE) run --rm migrate up
 
 # ─────────────────────────────────────────────────────────────────────────────
-# The deployed stack. Every target below runs on the host that serves it, from
-# a checkout of this repository, against a Traefik that is already up and a
-# network it already created.
+# The deployed stack. Every target runs on the host serving it, from a checkout, against a
+# Traefik already up and a network it already created.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Run this first on a new host, and after every change to .env. It resolves the
-# whole file and names the first variable that has no value, which is a better
-# place to find out than halfway through a deployment that has already stopped
-# the previous containers.
+# Run first on a new host and after every .env change. It resolves the whole file and names the
+# first variable with no value, better learned here than halfway through a deployment that has
+# stopped the previous containers.
 .PHONY: prod-config
 prod-config: .env no-stray-env ## Render the production compose file with the environment resolved
 	$(COMPOSE_PROD) config
 
-# The version reaches the binaries through a build argument, so `recon -version`
-# and the logs name a commit rather than "dev". A checkout with no tag still
-# gives a short SHA, and -dirty is worth seeing on a deployed host.
+# The version reaches the binaries through a build argument, so `recon -version` and the logs
+# name a commit, not "dev". An untagged checkout still gives a short SHA; -dirty is worth seeing
+# on a deployed host.
 .PHONY: prod-up
 prod-up: .env no-stray-env ## Build and start the deployed stack behind Traefik
 	VERSION="$$(git describe --tags --always --dirty)" $(COMPOSE_PROD) up -d --build
@@ -100,14 +97,12 @@ prod-up: .env no-stray-env ## Build and start the deployed stack behind Traefik
 prod-down: ## Stop the deployed stack, keeping the data
 	$(COMPOSE_PROD) down
 
-# Everything except the Certificate Transparency feed, which narrates every
-# certificate the public logs publish. That is thousands of lines a minute and
-# none of them are about this deployment, so it buries the one service that was
-# about to say something.
+# Everything except the CT feed, which narrates every certificate the public logs publish:
+# thousands of lines a minute, none about this deployment, burying the service about to say
+# something.
 #
-# Written as an exclusion rather than as a list of what to follow, so a service
-# added to the compose file shows up here without anybody remembering to add it.
-# The feed is still there when it is the thing in question:
+# An exclusion, not a list to follow, so a service added to compose shows up without anyone
+# remembering. The feed is still there when it is the subject:
 #
 #   make prod-logs SERVICE=certstream
 .PHONY: prod-logs
@@ -118,16 +113,14 @@ prod-logs: ## Follow the deployed stack's logs, minus the certificate feed
 		$(COMPOSE_PROD) logs -f $$($(COMPOSE_PROD) config --services | grep -vx certstream); \
 	fi
 
-# Only the images this stack does not build. `up --build` rebuilds ours from
-# the checkout and leaves these where they are, so without this a deployment
-# keeps whatever was pulled the first time, for as long as the tag says latest.
+# Only images this stack does not build. `up --build` rebuilds ours and leaves these, so
+# without this a deployment keeps whatever was first pulled for as long as the tag says latest.
 .PHONY: prod-pull
 prod-pull: ## Refresh the images the deployed stack does not build
 	$(COMPOSE_PROD) pull postgres chrome-1 chrome-2 chrome-3 certstream fingerprinter
 
-# Normally redundant: the control plane waits on the migration, the roles and
-# the seed, so `prod-up` has already run all three. It exists for the deployment
-# that only has migrations to apply.
+# Normally redundant: the control plane waits on the migration, roles and seed, so `prod-up`
+# already ran all three. For a deployment that only has migrations to apply.
 .PHONY: prod-migrate
 prod-migrate: ## Apply pending migrations against the deployed stack
 	$(COMPOSE_PROD) run --rm migrate up
@@ -156,12 +149,10 @@ hooks: ## Install the git hooks, which is what makes the secret scan local
 	@echo "  cp .env.example .env"
 	@exit 1
 
-# There is one environment file and it lives at the root, because that is what
-# --env-file above names. Docker compose also reads a .env sitting beside the
-# compose file, and it wins when compose is invoked from that directory, so a
-# copy left there is a second configuration that shadows this one on some
-# invocations and not others. That is not a tidiness rule: it costs an
-# afternoon, because both files work and they disagree.
+# One environment file, at the root, as --env-file names. Compose also reads a .env beside the
+# compose file and it wins when invoked from that directory, so a copy left there is a second
+# configuration shadowing this one on some invocations. Not tidiness: both files work and they
+# disagree, which costs an afternoon.
 .PHONY: no-stray-env
 no-stray-env:
 	@if [ -f deploy/compose/.env ]; then \

@@ -17,16 +17,13 @@ type pivotEntry struct {
 	Note    string `yaml:"note"`
 }
 
-// Seed applies the repository's reference data.
+// Seed applies the repository's reference data. It runs on every deployment, since
+// these lists grow as frameworks and edges appear and a migration per addition is
+// one nobody wants to write. It replaces rather than merges: a merge would let an
+// entry added outside the repository survive every deployment, invisibly.
 //
-// It runs on every deployment rather than once, because these lists grow as new
-// frameworks and edges appear and a migration per addition is a migration
-// nobody wants to write. It replaces rather than merges: a merge would let an
-// entry added outside the repository survive every deployment, and the
-// divergence would be invisible.
-//
-// It runs as the owner. The application role has no write on this table at all,
-// so an entry can only come from here.
+// It runs as the owner. The application role has no write on this table, so an
+// entry can only come from here.
 func Seed(ctx context.Context, conn *pgx.Conn) (int, error) {
 	var file map[string][]pivotEntry
 	if err := yaml.Unmarshal(seeds.GenericPivots, &file); err != nil {

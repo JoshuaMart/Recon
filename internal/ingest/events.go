@@ -9,12 +9,10 @@ import (
 	"github.com/JoshuaMart/recon/internal/notify"
 )
 
-// fieldEvents maps a changed field onto what it is worth telling somebody.
-//
-// A field nobody listed produces no event of its own. It still travels in the
-// diff of whatever event the same observation produced, so nothing is lost: what
-// this table decides is what earns a line in somebody's evening, not what is
-// recorded.
+// fieldEvents maps a changed field onto what is worth telling someone. An unlisted
+// field makes no event of its own but still travels in the diff of whatever event
+// the same observation produced: this table decides what earns a line, not what
+// is recorded.
 var fieldEvents = map[string]string{
 	"tech":         notify.KindTechChanged,
 	"technologies": notify.KindTechChanged,
@@ -26,12 +24,10 @@ var fieldEvents = map[string]string{
 	"open_ports":   notify.KindPortOpened,
 }
 
-// announce tells what this observation changed about the asset itself.
-//
-// It runs on every observation, including a deduplicated one, and that is the
-// point. A death is three identical nxdomains: only the first is a new row, and
-// the transition happens on the third. Producing transitions only where a row
-// was written would make the most common death in the system silent.
+// announce tells what this observation changed about the asset itself. It runs on
+// every observation, deduplicated ones included: a death is three identical
+// nxdomains, only the first a new row, and the transition lands on the third.
+// Producing transitions only on written rows would silence the most common death.
 func (i *Ingestor) announce(run Run, st *state, obs observation, discoverySource string, summary *Summary) {
 	asset := st.id
 	at := i.now()
@@ -51,17 +47,16 @@ func (i *Ingestor) announce(run Run, st *state, obs observation, discoverySource
 
 	base := i.base(st, obs)
 
-	// A transition is told once per asset, not once per observation. A host
-	// writes a dns layer and a tcp layer in the same report, and both see the
-	// same arrival: emitting from each would notify it twice, three times with
-	// a service, and every one of them would be true.
+	// A transition is told once per asset, not per observation: a host writes a dns
+	// and a tcp layer in one report, and emitting from each would notify the same
+	// arrival two or three times, each true.
 	if st.announced != st.lifecycle {
 		switch {
 		case st.lifecycle == lifecycle.Active && st.previousLifecycle != lifecycle.Active:
 			payload := clone(base)
 			payload["from"] = st.previousLifecycle
-			// The layer says nothing about an arrival, and naming the one that
-			// happened to be written first would be arbitrary.
+			// The layer says nothing about an arrival, and naming the one written first would
+			// be arbitrary.
 			delete(payload, "layer")
 			add(notify.KindNewActive, payload)
 			st.announced = st.lifecycle
@@ -75,10 +70,9 @@ func (i *Ingestor) announce(run Run, st *state, obs observation, discoverySource
 	}
 }
 
-// diffEvents tells what this observation changed about the world.
-//
-// It runs only where a row was written, because that is the only path with two
-// payloads to compare: a deduplicated observation is the same state seen again.
+// diffEvents tells what this observation changed about the world. Only where a row
+// was written, the only path with two payloads to compare: a deduplicated
+// observation is the same state seen again.
 func (i *Ingestor) diffEvents(
 	run Run, st *state, obs observation, previous map[string]any,
 	previousVersion, version, discoverySource string, summary *Summary,
@@ -99,12 +93,10 @@ func (i *Ingestor) diffEvents(
 	}
 	base := i.base(st, obs)
 
-	// A takeover candidate is the finding this product exists for, and it is
-	// never held back by anything. It rides the insert path rather than the
-	// transition one on purpose: a name that stays dangling is re-derived from
-	// every report, and critical escapes the windows, so telling it from
-	// announce would re-send the same alert on every scan for as long as the
-	// finding lasts. A re-confirmed finding deduplicates and says nothing.
+	// A takeover candidate is the finding this product exists for and nothing holds it
+	// back. It rides the insert path, not the transition one: a dangling name is
+	// re-derived from every report and critical escapes the windows, so announcing it
+	// would re-send the alert every scan. A re-confirmed finding deduplicates silently.
 	if obs.takeover != nil {
 		payload := clone(base)
 		payload["finding"] = obs.takeover.Map()
@@ -116,14 +108,12 @@ func (i *Ingestor) diffEvents(
 		return
 	}
 
-	// The instrument is dated. A pure addition across a version bump is the
-	// observer seeing better rather than the world changing, and untreated it
-	// would alert across a whole inventory after one update.
+	// The instrument is dated. A pure addition across a version bump is the observer
+	// seeing better, and would alert across a whole inventory after one update.
 	//
-	// Only on the layer the classification is about. The scanner's version is
-	// stamped on the dns, tcp and http layers too, so applying it there would
-	// reclassify a newly opened port as a detection improvement for one pass
-	// after every scanner upgrade, across a whole inventory.
+	// Only on the layer the classification is about: the scanner version is stamped on
+	// dns, tcp and http too, so applying it there would reclassify a newly opened port
+	// as a detection improvement for a pass after every scanner upgrade.
 	if obs.layer == normalize.LayerFingerprint && diff.Revelation(changes, previousVersion, version) {
 		payload := clone(base)
 		payload["diff"] = changes
@@ -134,16 +124,15 @@ func (i *Ingestor) diffEvents(
 		return
 	}
 
-	// One event per kind of change rather than one per changed field, so a
-	// deployment that moves four things is one line and not four.
+	// One event per kind of change, not per field: four changes are one line.
 	byKind := map[string][]diff.Change{}
 	for _, change := range changes {
 		kind, listed := fieldEvents[change.Field]
 		if !listed {
 			continue
 		}
-		// A port list that only lost members is not a port opening. It is the
-		// host closing something, which the lifecycle already speaks for.
+		// A port list that only lost members is not a port opening; it is the host closing
+		// something, which the lifecycle already reports.
 		if kind == notify.KindPortOpened && len(change.Added) == 0 {
 			continue
 		}
@@ -170,15 +159,13 @@ func (i *Ingestor) base(st *state, obs observation) map[string]any {
 		"lifecycle": st.lifecycle,
 	}
 	if len(st.lineage) > 0 {
-		// Every notification carries the lineage, not just the current state.
-		// It is in the row the upsert just wrote, so it costs nothing here.
+		// Every notification carries the lineage, free from the row the upsert wrote.
 		base["lineage"] = jsonAny(json.RawMessage(st.lineage))
 	}
 	return base
 }
 
-// order fixes the sequence events are produced in, so a batch reads the same
-// way twice and a test can assert one.
+// order fixes the production sequence so a batch reads the same twice.
 var order = []string{
 	notify.KindPortOpened,
 	notify.KindTechChanged,

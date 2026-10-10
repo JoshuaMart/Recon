@@ -24,18 +24,13 @@ import (
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
-// recentRuns is how far back the queue view looks.
-//
-// Enough to tell a stuck queue from an idle one, and no further. This is a
-// present state and not a series, and a series needs a time series store, which
-// is what the gauge is for.
+// recentRuns is how far back the queue view looks: enough to tell a stuck queue
+// from an idle one. It is a present state, not a series.
 const recentRuns = 20
 
-// Console is the surface a person drives: perimeters, rules, and the queue.
-//
-// The inventory itself is not here. Reading the assets of a program is a search
-// with a filter, and a second path to the same rows would be a second set of
-// rules to keep in step.
+// Console is the surface a person drives: perimeters, rules and the queue. The
+// inventory is not here; reading assets is a search with a filter, and a second
+// path would be a second set of rules.
 type Console struct {
 	db       *store.Scoped
 	ingestor *ingest.Ingestor
@@ -61,15 +56,12 @@ type program struct {
 	RateLimitRPS      int32      `json:"rate_limit_rps"`
 	DiscoveryInterval string     `json:"discovery_interval"`
 	LastDiscoveryAt   *time.Time `json:"last_discovery_at,omitempty"`
-	// Version is what a write has to carry back. A stale one is a 409 rather
-	// than a write.
+	// Version is what a write must carry back; a stale one is a 409.
 	Version   int32     `json:"version"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
-	// RulesInForce is on the list only, and only when asked for: it costs an
-	// aggregation over the inventory and the switcher sits on every page. The
-	// two counts are also answered by the detail, which is one program somebody
-	// navigated to on purpose rather than a menu rendered everywhere.
+	// RulesInForce is on the list only, when asked for: it aggregates over the
+	// inventory and the switcher sits on every page. The detail answers the counts.
 	RulesInForce  *int32 `json:"rules_in_force,omitempty"`
 	Assets        *int32 `json:"assets,omitempty"`
 	AssetsInScope *int32 `json:"assets_in_scope,omitempty"`
@@ -86,15 +78,13 @@ type rule struct {
 	Note      *string    `json:"note,omitempty"`
 	Version   int32      `json:"version"`
 	CreatedAt time.Time  `json:"created_at"`
-	// InForce is answered by the server so no screen reimplements the window,
-	// and so the comparison happens against the clock that wrote the values.
+	// InForce is answered by the server so no screen reimplements the window, and
+	// the comparison uses the clock that wrote the values.
 	InForce bool `json:"in_force"`
 }
 
-// effect is what a scope write moved, and it commits with the write.
-//
-// A write that says only "ok" leaves somebody running a search to find out what
-// they just did.
+// effect is what a scope write moved, committed with the write, so the response
+// says more than "ok".
 type effect struct {
 	Examined int `json:"examined"`
 	Changed  int `json:"changed"`
@@ -131,8 +121,8 @@ func (h *Console) ListPrograms(w http.ResponseWriter, r *http.Request, principal
 		out = append(out, p)
 	}
 
-	// Asked for, not given. The default shape of this list is the one that
-	// costs nothing, because the switcher renders it on every page.
+	// Asked for, not given: the default shape costs nothing, as the switcher
+	// renders it on every page.
 	if r.URL.Query().Get("counts") == "1" {
 		counts, err := q.CountProgramAssets(ctx, sqlcgen.CountProgramAssetsParams{
 			OrgID: uuidTo(principal.OrgID),
@@ -146,10 +136,9 @@ func (h *Console) ListPrograms(w http.ResponseWriter, r *http.Request, principal
 			byProgram[uuid.UUID(row.ProgramID.Bytes)] = row
 		}
 		for i := range out {
-			// A programme with no asset is absent from the aggregation, and it
-			// gets an explicit zero rather than no field: a missing counter and
-			// a counter of zero read the same on a screen and mean different
-			// things to the code that draws it.
+			// A programme with no asset is absent from the aggregation; it gets an explicit
+			// zero, since a missing counter and a zero read the same on screen but differ
+			// in the code drawing it.
 			count := byProgram[out[i].ID]
 			assets, inScope := count.Assets, count.InScope
 			out[i].Assets, out[i].AssetsInScope = &assets, &inScope
@@ -201,14 +190,11 @@ func (h *Console) GetProgram(w http.ResponseWriter, r *http.Request, principal a
 		out = append(out, readRule(row))
 	}
 
-	// The size of the perimeter, which is what this screen opens with. The same
-	// statement the list runs, and it is grouped over the tenant rather than
-	// filtered here because sqlc generates one function per statement and a
-	// second spelling of the same aggregate is a second thing to keep in step.
+	// The size of the perimeter, which this screen opens with. It runs the list's
+	// statement, grouped over the tenant, because sqlc generates one function per
+	// statement and a second spelling would need keeping in step.
 	//
-	// Zero rather than absent when the group by returned no row for this
-	// program: a perimeter with nothing in it has a size, and it is nought. An
-	// omitted field would read on the screen as a number nobody computed.
+	// Zero rather than absent when no row came back: an empty perimeter has a size.
 	counts, err := q.CountProgramAssets(ctx, sqlcgen.CountProgramAssetsParams{
 		OrgID: uuidTo(principal.OrgID),
 	})
@@ -243,8 +229,7 @@ type programBody struct {
 	AuthorizationRef  *string    `json:"authorization_ref"`
 	RateLimitRPS      int32      `json:"rate_limit_rps"`
 	DiscoveryInterval string     `json:"discovery_interval"`
-	// Version is required on an edit and meaningless on a create, where there
-	// is nothing to avoid overwriting.
+	// Version is required on an edit and meaningless on a create.
 	Version *int32 `json:"version"`
 }
 
@@ -308,11 +293,10 @@ func (h *Console) CreateProgram(w http.ResponseWriter, r *http.Request, principa
 	writeJSON(w, http.StatusCreated, map[string]any{"program": readProgramCreated(row)})
 }
 
-// UpdateProgram edits one, and reclassifies with it.
-//
-// Suspending a programme does not change the perimeter, and the pass runs
-// anyway. It is what carries the due dates, and a pass that only ran on rule
-// writes would be a rule nobody wrote deciding when the inventory is correct.
+// UpdateProgram edits one, and reclassifies with it. Suspending a programme
+// leaves the perimeter unchanged but the pass still runs: it carries the due
+// dates, and running only on rule writes would let a rule nobody wrote decide
+// when the inventory is correct.
 func (h *Console) UpdateProgram(w http.ResponseWriter, r *http.Request, principal auth.Principal) {
 	ctx := r.Context()
 	programID, ok := pathUUID(w, r, "program")
@@ -373,10 +357,8 @@ func (h *Console) UpdateProgram(w http.ResponseWriter, r *http.Request, principa
 		Actor:             actor(principal),
 		At:                stamp(at),
 	})
-	// No row means either no such programme or a version that moved, and the
-	// two are told apart by asking. That second read is the only way to answer
-	// 409 rather than 404 on a stale write, and answering 404 there would send
-	// somebody looking for a programme that is right in front of them.
+	// No row means no such programme or a moved version, told apart by a second
+	// read. It is the only way to answer 409 instead of 404 on a stale write.
 	if errors.Is(err, pgx.ErrNoRows) {
 		h.stale(ctx, w, q, principal, programID)
 		return
@@ -464,10 +446,9 @@ func (h *Console) CreateRule(w http.ResponseWriter, r *http.Request, principal a
 		return
 	}
 
-	// The perimeter as it stands with the new rule in it, compiled once and
-	// used twice. Reading the rules back rather than taking the one just
-	// written, because classification is the whole set: an include added beside
-	// an exclude has to be evaluated with it.
+	// The perimeter with the new rule in it, compiled once and used twice. Rules
+	// are read back rather than reusing the new one, since classification is the
+	// whole set: an include beside an exclude is evaluated with it.
 	set, err := compileScope(ctx, q, programID, at)
 	if err != nil {
 		if errors.Is(err, scope.ErrInvalidRule) {
@@ -478,13 +459,10 @@ func (h *Console) CreateRule(w http.ResponseWriter, r *http.Request, principal a
 		return
 	}
 
-	// An include that names one thing declares it as well as classifying it.
-	//
-	// An apex says where enumeration starts and a run finds what is under it.
-	// The other two name something that exists: a host to probe, or a path to
-	// render. Without this they were classifiers with nothing to classify, and
-	// the rule read as in force over an inventory it had never put anything
-	// into.
+	// An include naming one thing declares it as well as classifying it. An apex
+	// says where enumeration starts; the other two name something that exists (a
+	// host to probe, a path to render). Otherwise the rule is in force over an
+	// inventory it never put anything into.
 	seeded, err := h.seed(ctx, q, principal, programID, set, body)
 	if err != nil {
 		var bad *refusedPattern
@@ -496,10 +474,9 @@ func (h *Console) CreateRule(w http.ResponseWriter, r *http.Request, principal a
 		return
 	}
 
-	// After the write and inside the same transaction, which is the whole
-	// point: a rule in force whose consequence the inventory does not carry is
-	// a perimeter that lies, and the window between two transactions is a
-	// window where the system scans what was just taken away from it.
+	// After the write, in the same transaction: a rule in force whose consequence
+	// the inventory lacks is a perimeter that lies, and between two transactions
+	// the system would scan what was just taken away.
 	moved, err := h.reclassify(ctx, q, programID, at, set)
 	if err != nil {
 		h.unavailable(ctx, w, "reclassify failed", err)
@@ -514,11 +491,9 @@ func (h *Console) CreateRule(w http.ResponseWriter, r *http.Request, principal a
 	})
 }
 
-// UpdateRule edits or closes one.
-//
-// Closing is setting valid_to. There is no delete on this surface at all: a
-// rule has a period of validity rather than an existence, and an asset
-// classified by a rule since closed stays explainable.
+// UpdateRule edits or closes one. Closing sets valid_to; there is no delete: a
+// rule has a validity period, and an asset classified by a since-closed rule
+// stays explainable.
 func (h *Console) UpdateRule(w http.ResponseWriter, r *http.Request, principal auth.Principal) {
 	ctx := r.Context()
 	programID, ok := pathUUID(w, r, "program")
@@ -557,18 +532,16 @@ func (h *Console) UpdateRule(w http.ResponseWriter, r *http.Request, principal a
 		ProgramID: uuidTo(programID),
 		RuleID:    uuidTo(ruleID),
 		Version:   *body.Version,
-		// Absent leaves the pattern alone, which is what closing a rule does.
+		// Absent leaves the pattern alone, which is what closing does.
 		Pattern: optional(body.Pattern),
 		Note:    body.Note,
 		ValidTo: stampMaybe(body.ValidTo),
 		Actor:   actor(principal),
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		// The programme is already known to be this caller's, so two readings are
-		// left: a version that moved, and a rule this programme does not have.
-		// The answer names both rather than picking one, because separating them
-		// costs a second read and the action is the same either way: reread the
-		// programme before writing again.
+		// The programme is known to be the caller's, so either the version moved or
+		// this programme has no such rule. The answer names both: telling them apart
+		// costs a read, and the action is the same, reread before writing.
 		fail(w, http.StatusConflict, "stale_version",
 			"the rule moved since it was read, or this programme has no such rule. "+
 				"Nothing was written.")
@@ -579,9 +552,8 @@ func (h *Console) UpdateRule(w http.ResponseWriter, r *http.Request, principal a
 		return
 	}
 
-	// Nothing is seeded here, and the asymmetry is deliberate. Closing a rule
-	// must not create anything, and this surface offers no way to change a
-	// pattern, so the only edit that reaches it is the close.
+	// Nothing is seeded: closing must create nothing, and this surface cannot change
+	// a pattern, so the close is the only edit reaching here.
 	set, err := compileScope(ctx, q, programID, at)
 	if err != nil {
 		if errors.Is(err, scope.ErrInvalidRule) {
@@ -604,11 +576,9 @@ func (h *Console) UpdateRule(w http.ResponseWriter, r *http.Request, principal a
 	writeJSON(w, http.StatusOK, map[string]any{"rule": readRuleUpdated(row, at), "effect": moved})
 }
 
-// Queue answers "why is nothing moving".
-//
-// Read from a console and never from what consumes it. The depth gauge exists
-// for the metrics store; this is the question somebody asks in front of a
-// screen, and answering it should not require a psql session.
+// Queue answers "why is nothing moving". It is read from the console, not from
+// what consumes it: the depth gauge is for the metrics store, and this question
+// should not need a psql session.
 func (h *Console) Queue(w http.ResponseWriter, r *http.Request, principal auth.Principal) {
 	ctx := r.Context()
 	at := h.now()
@@ -645,8 +615,7 @@ func (h *Console) Queue(w http.ResponseWriter, r *http.Request, principal auth.P
 	}
 	outDepths := make([]depth, 0, len(depths))
 	for _, row := range depths {
-		// A pair whose three numbers are zero is dropped, so an entry here is
-		// always a queue that exists.
+		// A pair with three zeros is dropped, so every entry is a queue that exists.
 		if row.Due == 0 && row.Later == 0 && row.InRun == 0 {
 			continue
 		}
@@ -669,9 +638,8 @@ func (h *Console) Queue(w http.ResponseWriter, r *http.Request, principal auth.P
 		TargetCount  *int32     `json:"target_count,omitempty"`
 		Observations int32      `json:"observations"`
 		Error        *string    `json:"error,omitempty"`
-		// ExternalID is what the platform called the execution. Absent means
-		// nothing started it, which is a different thing from a run nothing has
-		// opened yet, and the two want opposite actions.
+		// ExternalID is the platform's name for the execution. Absent means nothing
+		// started it, which differs from a run nothing has opened yet.
 		ExternalID *string `json:"external_id,omitempty"`
 	}
 	outRuns := make([]run, 0, len(runs))
@@ -682,9 +650,8 @@ func (h *Console) Queue(w http.ResponseWriter, r *http.Request, principal auth.P
 			Kind:      row.Kind, Scope: row.Scope, State: row.State,
 			Deadline:  row.Deadline.Time,
 			CreatedAt: row.CreatedAt.Time,
-			// started_at is what separates a run something opened from one
-			// whose provisioning failed, and those two call for opposite
-			// actions.
+			// started_at separates a run something opened from one whose provisioning
+			// failed; they call for opposite actions.
 			StartedAt:    instant(row.StartedAt),
 			FinishedAt:   instant(row.FinishedAt),
 			TargetCount:  row.TargetCount,
@@ -697,19 +664,11 @@ func (h *Console) Queue(w http.ResponseWriter, r *http.Request, principal auth.P
 	writeJSON(w, http.StatusOK, map[string]any{"depths": outDepths, "runs": outRuns})
 }
 
-// Coverage answers what Certificate Transparency has actually delivered under a
-// programme's apexes.
-//
-// It returns numbers and the span they cover, and no score. A coverage
-// confidence collapsed into one figure is the composite score this console is
-// built without, and the argument is the same one: a reader can tell "watched a
-// month, no certificate" from "watched since this morning", and a single number
-// cannot. What is stated instead is every input somebody would have used to
-// compute one.
-//
-// The feed's uptime travels beside the counters because without it an apex the
-// logs are silent about and a socket that was down read identically, and the
-// second is this deployment's problem rather than a fact about the logs.
+// Coverage answers what Certificate Transparency has delivered under a programme's apexes:
+// numbers and the span they cover, no score (one confidence figure is the composite score
+// this console is built without, and cannot tell "watched a month, no certificate" from
+// "watched since this morning"). The feed's uptime travels alongside, or silent logs and a
+// down socket read alike, and the second is this deployment's problem.
 func (h *Console) Coverage(w http.ResponseWriter, r *http.Request, principal auth.Principal) {
 	ctx := r.Context()
 	at := h.now()
@@ -745,23 +704,19 @@ func (h *Console) Coverage(w http.ResponseWriter, r *http.Request, principal aut
 		Dropped      int64      `json:"dropped"`
 		LastName     *time.Time `json:"last_name_at,omitempty"`
 		LastWildcard *time.Time `json:"last_wildcard_at,omitempty"`
-		// SpanFrom is where the feed's record actually starts, and it is not
-		// always WatchedSince. That record is purged past a retention horizon,
-		// so an apex watched for a year would otherwise report a year of span
-		// against six months of recorded minutes and a healthy feed would read
-		// as half down. The span is clipped and says where it was clipped to.
+		// SpanFrom is where the feed's record actually starts, not always
+		// WatchedSince. The record is purged past a retention horizon, so an apex
+		// watched for a year would report a year of span against six months of minutes
+		// and a healthy feed would read as half down. The span is clipped to match.
 		SpanFrom time.Time `json:"span_from"`
-		// FeedMinutes is how many minutes of the span the feed delivered
-		// anything, against SpanMinutes. Two numbers rather than a ratio, for
-		// the reason the whole endpoint gives.
+		// FeedMinutes is how many minutes of the span the feed delivered anything,
+		// against SpanMinutes. Two numbers rather than a ratio, as above.
 		FeedMinutes int64 `json:"feed_minutes"`
 		SpanMinutes int64 `json:"span_minutes"`
 	}
 
-	// One query per distinct span rather than one per apex. The apexes of a
-	// programme almost always enter the set together, so this is one statement
-	// in practice, and the alternative is a scan of the whole feed record per
-	// row on a console request.
+	// One query per distinct span, not per apex. Apexes usually enter together, so
+	// this is one statement, instead of a feed-record scan per row.
 	uptimes := map[time.Time]int64{}
 	horizon := at.Add(-maintenance.FeedMinuteRetention)
 
@@ -804,12 +759,9 @@ func (h *Console) Coverage(w http.ResponseWriter, r *http.Request, principal aut
 	writeJSON(w, http.StatusOK, map[string]any{"apexes": out})
 }
 
-// reclassify re-evaluates the programme against the perimeter it is given.
-//
-// The set is compiled by the caller and passed in, because the two things that
-// happen on a rule write need the same one: what a rule declares has to be
-// classified by the perimeter that now includes it, and compiling twice would
-// be two reads of a table that cannot have changed between them.
+// reclassify re-evaluates the programme against the given perimeter. The caller
+// compiles the set and passes it in, since a rule write needs the same one for
+// seeding and for classifying.
 func (h *Console) reclassify(
 	ctx context.Context, q *sqlcgen.Queries, programID uuid.UUID, at time.Time, set *scope.Set,
 ) (effect, error) {
@@ -823,27 +775,18 @@ func (h *Console) reclassify(
 	}, nil
 }
 
-// refusedPattern is a pattern the entry path could not read, told apart from a
-// failure of ours so a typo does not look like an outage.
+// refusedPattern is a pattern the entry path could not read, kept apart from our
+// own failures so a typo does not look like an outage.
 type refusedPattern struct{ reason string }
 
 func (r *refusedPattern) Error() string { return r.reason }
 
-// seed creates what an include names, when the matcher names something.
-//
-// `fqdn` and `url_prefix` are the two that point at a thing rather than at a
-// shape: one is a host to probe, the other a path to render. An `apex` names
-// where to start looking and a run finds what is under it, a `cidr` names a
-// range nobody can enumerate from, and a `regex` names a shape rather than a
-// thing, so none of the three declares anything.
-//
-// The same path the assets form uses, because it is the same act: it creates the
-// chain a URL needs, gives the host the due date, and lets the declared path earn
-// its render once the service has answered. The lineage says which of the two
-// acts it was.
-//
-// Exclusions never seed. Naming something to take it out of a perimeter is not a
-// reason to put it in one.
+// seed creates what an include names, when the matcher names something. `fqdn` and
+// `url_prefix` point at a thing (a host to probe, a path to render); `apex` says where to
+// start, `cidr` is a range nobody can enumerate from and `regex` a shape, so those declare
+// nothing. It uses the assets form's path, being the same act: it creates the chain a URL
+// needs, gives the host its due date and lets the path earn its render. Exclusions never
+// seed: taking something out of a perimeter is no reason to put it in one.
 func (h *Console) seed(
 	ctx context.Context, q *sqlcgen.Queries, principal auth.Principal,
 	programID uuid.UUID, set *scope.Set, body ruleBody,
@@ -867,10 +810,8 @@ func (h *Console) seed(
 	if err != nil {
 		return nil, err
 	}
-	// A pattern the entry path cannot represent is refused rather than stored.
-	// A rule that names something this system has no way to hold is a rule that
-	// will not do what it says, and the refusal reaches somebody looking at the
-	// form.
+	// A pattern the entry path cannot represent is refused, not stored: such a rule
+	// would not do what it says. The refusal reaches whoever is on the form.
 	if len(entered.Refused) > 0 {
 		return nil, &refusedPattern{reason: entered.Refused[0].Reason}
 	}
@@ -893,9 +834,8 @@ func (h *Console) stale(
 		h.unavailable(ctx, w, "read programme failed", err)
 		return
 	}
-	// The refusal is not a syntax error. The caller based a decision on a state
-	// that no longer exists, and the only honest answer is to say so, so it can
-	// reread before rewriting.
+	// Not a syntax error: the caller decided on a state that no longer exists, and
+	// must reread before rewriting.
 	fail(w, http.StatusConflict, "stale_version",
 		"the programme moved since it was read, so nothing was written")
 }
@@ -928,17 +868,13 @@ func (h *Console) unavailable(ctx context.Context, w http.ResponseWriter, messag
 	fail(w, http.StatusInternalServerError, "unavailable", "the request could not be served")
 }
 
-// refuseOrFail tells a constraint the caller broke from a failure that is ours.
-//
-// The model carries named checks on the state, the kind, the matcher and the
-// authorization window, and every one of them describes an input somebody
-// typed. Answering 500 to those would make the screen unusable while the fault
-// is entirely on the form.
+// refuseOrFail tells a constraint the caller broke from a failure of ours. The
+// named checks (state, kind, matcher, authorization window) all describe typed
+// input; a 500 would make the screen unusable for a form fault.
 func (h *Console) refuseOrFail(ctx context.Context, w http.ResponseWriter, message string, err error) {
 	var violation *pgconn.PgError
-	// Class 23 is integrity: a check, a foreign key, a not-null. Everything
-	// else in that catalogue is ours, and answering 400 to a broken connection
-	// would tell somebody to fix their form.
+	// Class 23 is integrity (check, foreign key, not-null). Anything else is ours,
+	// and a 400 on a broken connection would send someone to fix their form.
 	if errors.As(err, &violation) && strings.HasPrefix(violation.Code, "23") {
 		fail(w, http.StatusBadRequest, "refused", violation.Message)
 		return
@@ -946,7 +882,7 @@ func (h *Console) refuseOrFail(ctx context.Context, w http.ResponseWriter, messa
 	h.unavailable(ctx, w, message, err)
 }
 
-// read decodes a body of a bounded size.
+// read decodes a body of bounded size.
 func read[T any](w http.ResponseWriter, r *http.Request) (T, bool) {
 	var body T
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16))
@@ -958,7 +894,7 @@ func read[T any](w http.ResponseWriter, r *http.Request) (T, bool) {
 }
 
 // validRule checks what the database would refuse anyway, so the message names
-// the field rather than the constraint.
+// the field and not the constraint.
 func validRule(body ruleBody) error {
 	switch body.Kind {
 	case scope.Include, scope.Exclude:
@@ -973,19 +909,16 @@ func validRule(body ruleBody) error {
 	if body.Pattern == "" {
 		return errors.New("a rule needs a pattern")
 	}
-	// Compiled here so a pattern that cannot compile is refused before it is
-	// written. A rule sitting in the table that the perimeter cannot read makes
-	// every later reclassification fail, and the write that broke it is long
-	// gone by then.
+	// Compiled here so an uncompilable pattern is refused before it is stored; in
+	// the table it would fail every later reclassification, long after the write.
 	if _, err := scope.Compile([]scope.Rule{{
 		Kind: body.Kind, Matcher: body.Matcher, Pattern: body.Pattern,
 	}}); err != nil {
 		return err
 	}
-	// And refused if it compiles into something that can never match. That is
-	// the worse failure of the two: a rule that will not compile announces
-	// itself, and one that matches nothing reads as in force while the whole
-	// perimeter it was meant to cover stays unknown and unprobed.
+	// Also refused if it can never match. That is worse: an uncompilable rule
+	// announces itself, while a matchless one reads as in force and leaves the
+	// perimeter it should cover unknown and unprobed.
 	return scope.Unmatchable(body.Matcher, body.Pattern)
 }
 
@@ -1008,10 +941,8 @@ func interval(d time.Duration) pgtype.Interval {
 	return pgtype.Interval{Microseconds: d.Microseconds(), Valid: true}
 }
 
-// actor is who is writing, and it is null while the credential belongs to the
-// organization rather than to a person.
-//
-// Said here rather than left implicit: an attribution column believed to be
+// actor is who is writing; null while the credential belongs to the
+// organization, not a person. Explicit, since an attribution column believed
 // populated is worse than an absent one.
 func actor(principal auth.Principal) pgtype.UUID {
 	if principal.ActorID == nil {
@@ -1045,9 +976,8 @@ func instant(at pgtype.Timestamptz) *time.Time {
 }
 
 // The four program statements return the same columns on purpose, and these
-// are the four adapters that say so. sqlc generates a distinct type per
-// statement, so one shape for one object costs four functions here; three
-// hand-written shapes would cost a field forgotten in one of them.
+// adapters say so. sqlc generates a type per statement; four small functions
+// beat three hand-written shapes where a field could be forgotten.
 
 func readProgram(row sqlcgen.ListProgramsRow) program {
 	return program{
@@ -1122,9 +1052,8 @@ func readRuleUpdated(row sqlcgen.UpdateRuleRow, at time.Time) rule {
 	}
 }
 
-// inForce answers the window against the instant the write used, which is the
-// clock that wrote the values being compared. Reaching for now() here would put
-// the application's clock on one side and the database's on the other.
+// inForce answers the window against the instant the write used, the clock that
+// wrote the values, not now().
 func inForce(from, to pgtype.Timestamptz, at time.Time) bool {
 	if from.Valid && from.Time.After(at) {
 		return false
@@ -1133,11 +1062,8 @@ func inForce(from, to pgtype.Timestamptz, at time.Time) bool {
 }
 
 // readInterval renders a cadence as the duration string the form takes back.
-//
-// Months and days are carried as their own components, and a cadence expressed
-// in either would come back as "0s" if only the microseconds were read. Nothing
-// writes one today; reading all three is what keeps that true when something
-// does.
+// Months and days are separate components that read as "0s" from microseconds
+// alone. Nothing writes them today; reading all three keeps that safe.
 func readInterval(value pgtype.Interval) string {
 	if !value.Valid {
 		return ""

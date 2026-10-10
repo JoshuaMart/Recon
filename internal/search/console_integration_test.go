@@ -19,10 +19,9 @@ import (
 	"github.com/JoshuaMart/recon/internal/search"
 )
 
-// A host is a header and its services are rows, and the fold happens server
-// side. Folding an already fetched page breaks at the page boundary: a host
-// whose services fall on either side renders as two partial groups with two
-// wrong counts.
+// A host is a header and its services are rows, folded server-side. Folding a
+// fetched page breaks at the page boundary: a host split across pages renders as two
+// partial groups with wrong counts.
 func TestTheListFoldsByHostAcrossPages(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -94,18 +93,16 @@ func TestTheListFoldsByHostAcrossPages(t *testing.T) {
 	}
 }
 
-// The cursor bounds the group and never the row. Bounding the rows looks like a
-// free narrowing and lets a host through twice: dropping the rows above the
-// cursor changes what max() is computed from, so the host comes back with a
+// The cursor bounds the group, never the row. A row bound looks like a free
+// narrowing but changes what max() is computed from, so the host returns with a
 // smaller maximum and passes the bound again.
 func TestAHostIsNotReturnedTwice(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
 	base := time.Now().UTC().Add(-time.Hour)
-	// The shape that catches it: a host whose newest asset puts it on page one
-	// and whose older assets would still satisfy a row level bound taken from
-	// that page's cursor.
+	// The catching shape: a host whose newest asset puts it on page one and whose older
+	// assets would still satisfy a row-level bound from that page's cursor.
 	h.asset(t, h.org, "spread.target.test:443/tcp", map[string]any{"last_seen": base.Add(50 * time.Minute)})
 	h.asset(t, h.org, "spread.target.test:80/tcp", map[string]any{"last_seen": base})
 	h.asset(t, h.org, "later.target.test", map[string]any{"last_seen": base.Add(30 * time.Minute)})
@@ -147,9 +144,8 @@ func TestAHostIsNotReturnedTwice(t *testing.T) {
 	}
 }
 
-// The two statements read under the same filter, which is what makes the counts
-// true. Reading every asset of the host instead would make the fold disagree
-// with the facets beside it.
+// Both statements read under the same filter, making the counts true; reading every
+// asset of the host would make the fold disagree with the facets.
 func TestAGroupShowsOnlyWhatTheFilterMatched(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -174,9 +170,8 @@ func TestAGroupShowsOnlyWhatTheFilterMatched(t *testing.T) {
 	})
 }
 
-// A group cursor and a list cursor are not interchangeable. They encode the
-// same pair and mean different columns, so swapping them has to be a refusal
-// rather than a walk that silently restarts.
+// Group and list cursors are not interchangeable: same pair, different columns, so
+// swapping them must be refused and not silently restart the walk.
 func TestTheTwoCursorsAreNotInterchangeable(t *testing.T) {
 	flat := search.Cursor{LastSeen: time.Now(), AssetID: uuid.New()}.String()
 	if _, err := search.ParseGroupCursor(flat); err == nil {
@@ -192,9 +187,8 @@ func TestTheTwoCursorsAreNotInterchangeable(t *testing.T) {
 	}
 }
 
-// The favicon images travel once per page, keyed by hash, rather than once per
-// asset. A shared favicon is the interesting case, which is the whole reason
-// one copy is stored.
+// Favicon images travel once per page keyed by hash, not per asset: a shared favicon
+// is the interesting case and the reason one copy is stored.
 func TestTheFaviconsTravelOncePerPage(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -217,23 +211,19 @@ func TestTheFaviconsTravelOncePerPage(t *testing.T) {
 		if !strings.HasPrefix(page.Favicons["shared"], "data:image/png;base64,") {
 			t.Errorf("favicon = %q, want a data URI", page.Favicons["shared"])
 		}
-		// A hash whose image is above the bound is not stored, and it is left
-		// out rather than mapped to an empty string: a page that received ""
-		// would render a broken image where the honest answer is no image.
+		// A hash whose image exceeds the bound is not stored, and is left out, not mapped to
+		// "": that would render a broken image where the answer is no image.
 		if _, present := page.Favicons["missing"]; present {
 			t.Error("a hash with no stored image came back with a value")
 		}
 	})
 }
 
-// The favicon is faceted, and the sidebar gets the images to draw it with.
-//
-// It is the fastest identity signal an inventory has, and without a facet the
-// only way to ask "which icons does this perimeter share" was to click one badge
-// at a time on a row that happened to carry one. The first version of the facet
-// list refused it on the grounds that a key of `attributes` would have to
-// aggregate through a GIN index; the filter runs once into a CTE and every facet
-// groups over that, so it costs what a column costs.
+// The favicon is faceted and the sidebar gets the images to draw it. It is the
+// fastest identity signal an inventory has; without a facet, "which icons does this
+// perimeter share" took one badge click at a time. An earlier facet list refused it,
+// believing a key of `attributes` aggregates through the GIN index; the filter runs
+// once into a CTE and every facet groups over that, costing what a column costs.
 func TestTheFaviconIsFacetedWithItsImages(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -267,9 +257,8 @@ func TestTheFaviconIsFacetedWithItsImages(t *testing.T) {
 			t.Fatalf("terms = %+v, want the shared icon first with two assets", favicons.Terms)
 		}
 
-		// And the images come with it. Taken from the page's rows instead, the
-		// most shared icon in a perimeter is routinely one no row on screen
-		// carries, and the entry draws as a blank square with a count beside it.
+		// And the images come with it: from the page's rows, the most shared icon is often
+		// one no row carries and would draw as a blank square with a count.
 		for _, term := range favicons.Terms {
 			if !strings.HasPrefix(page.Favicons[term.Value], "data:") {
 				t.Errorf("the facet ranks %q and the sidebar got no image for it", term.Value)
@@ -278,9 +267,9 @@ func TestTheFaviconIsFacetedWithItsImages(t *testing.T) {
 	})
 }
 
-// The asset view is the one read path that touches the journal, and each row of
-// it is a change: the journal is deduplicated on write, so two consecutive rows
-// of one layer are two distinct states by construction.
+// The asset view is the one read path touching the journal, and each row is a change:
+// the journal is deduplicated on write, so consecutive rows of one layer are distinct
+// states.
 func TestTheAssetViewReadsTheJournalAsChanges(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -341,17 +330,15 @@ func TestTheAssetViewReadsTheJournalAsChanges(t *testing.T) {
 	})
 }
 
-// The cap is stated on screen when it cuts, and the layers it cut are named:
-// "the timeline was truncated" on a page with four panels does not say which
-// one to distrust.
+// The cap is stated on screen when it cuts, naming the layers: "the timeline was
+// truncated" on a four-panel page does not say which to distrust.
 func TestTheTimelineSaysWhichLayerItCut(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 
 	id := h.asset(t, h.org, "busy.target.test:443/tcp", map[string]any{"port": 443})
-	// Inside the current month, because observation is partitioned by month and
-	// there is deliberately no default partition: a row whose month is missing
-	// fails loudly rather than landing somewhere it has to be found later.
+	// Inside the current month: observation is partitioned by month with no default
+	// partition, so a row whose month is missing fails loudly.
 	base := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -time.Now().UTC().Day()+1)
 	for i := 0; i < search.TimelineCap+5; i++ {
 		at := base.Add(time.Duration(i) * time.Hour)
@@ -378,10 +365,9 @@ func TestTheTimelineSaysWhichLayerItCut(t *testing.T) {
 			t.Errorf("truncated = %v, want http alone: dns was not cut and saying so "+
 				"would make the whole page suspect", detail.Truncated)
 		}
-		// The last displayed entry of the cut layer still carries its diff. The
-		// row past the cap is read as its comparison partner and never shown,
-		// so this entry does not say "not compared" while the previous state is
-		// one row away.
+		// The last displayed entry of the cut layer still carries its diff: the row past the
+		// cap is its comparison partner and is never shown, so the entry does not say "not
+		// compared" with the previous state a row away.
 		var last search.Change
 		for _, entry := range detail.Timeline {
 			if entry.Layer == "http" {
@@ -503,13 +489,11 @@ func TestTheFeedDrainsWithoutRepeating(t *testing.T) {
 	})
 }
 
-// The feed reads behind a watermark, and that is what stops it skipping.
-//
-// first_seen is stamped by the application inside the ingestion transaction, so
-// stamp order and commit order are not the same: a run that stamps early and
-// commits late lands after one that stamped later and committed at once. A feed
-// reading up to the present emits the second, advances past it, and never sees
-// the first. Nothing about that is visible, which is what makes it worth a test.
+// The feed reads behind a watermark, which stops it skipping. first_seen is stamped
+// by the application inside the ingestion transaction, so stamp order differs from
+// commit order: a run stamping early and committing late lands after one stamped
+// later. A feed reading to the present emits the second, advances past it and never
+// sees the first, invisibly.
 func TestTheFeedDoesNotSkipASlowCommit(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -550,9 +534,8 @@ func TestTheFeedDoesNotSkipASlowCommit(t *testing.T) {
 	})
 }
 
-// A feed with no cursor starts at the present. A tab opening is asking what is
-// happening now, and replaying the inventory the list already shows would spend
-// the first minutes of every connection on it.
+// A feed with no cursor starts at the present: a tab opening asks what is happening
+// now, and replaying the inventory the list shows wastes the first minutes.
 func TestAFreshFeedStartsAtThePresent(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -571,10 +554,9 @@ func TestAFreshFeedStartsAtThePresent(t *testing.T) {
 		}
 	})
 
-	// After the connection opened, and read once the watermark has moved past
-	// it. The lag is what the second clock is for: an asset is emitted when
-	// every transaction that could have stamped it has landed, not the instant
-	// it becomes visible.
+	// After the connection opened and read once the watermark has moved past it. The lag
+	// is what the second clock is for: an asset is emitted when every transaction that
+	// could have stamped it has landed, not when it becomes visible.
 	h.arrival(t, "new.target.test", opened.Add(time.Second))
 	later := opened.Add(2 * search.FeedLag)
 	h.scoped(t, h.org, func(tx pgx.Tx) {
@@ -592,9 +574,8 @@ func TestAFreshFeedStartsAtThePresent(t *testing.T) {
 	})
 }
 
-// No composite score, no severity, no environment label. Held on the contract
-// rather than on a screen: a field absent from a template is one somebody adds
-// back, and a field absent from the wire is one nothing can draw.
+// No composite score, severity or environment label, held on the wire contract: a
+// field absent from a template gets added back, one absent from the wire cannot be drawn.
 func TestTheRowCarriesNoJudgement(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -624,8 +605,7 @@ func TestTheRowCarriesNoJudgement(t *testing.T) {
 }
 
 // A script hash carries no badge and stays searchable and counted. It was a
-// granularity error, so the granularity is what changes: a real inventory
-// produced 464 hash badges across 50 rows.
+// granularity error: a real inventory produced 464 hash badges across 50 rows.
 func TestAScriptHashIsCountedWithoutABadge(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -717,12 +697,10 @@ func itoa(value int) string {
 	return digits
 }
 
-// The boundary between the list and the journal, demonstrated from both sides.
-//
-// One half alone proves nothing. With SELECT ON observation revoked, the list,
-// the facets and the export must work: that is principle 1. And the asset view
-// must fail: without that, the day somebody makes the list read the journal,
-// the first half still passes because the privilege came back in the meantime.
+// The boundary between the list and the journal, shown from both sides. With SELECT
+// ON observation revoked the list, facets and export must work, and the asset view
+// must fail; otherwise the day the list starts reading the journal, the first half
+// still passes because the privilege came back.
 func TestTheListNeverTouchesTheJournal(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

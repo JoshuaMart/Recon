@@ -1,19 +1,11 @@
 /**
- * Reading an observation payload without pretending it has a schema.
+ * Reading an observation payload without pretending it has a schema. The asset view reads each
+ * layer's last observation twice, curated into panels and whole into the raw fold; this is the first
+ * half and the only place that knows a path into a payload, so a Go rename breaks one file.
  *
- * The asset view reads the last observation of each layer twice: once curated, into the
- * panels somebody actually looks at, and once whole, into the raw fold. This module
- * is the first half, and it is the only place in the console that knows a path into
- * a payload.
- *
- * Every accessor is total: an absent key, a key of the wrong type and a producer that
- * renamed something all give `undefined` rather than a thrown page. That matters more
- * here than in most parsing code — the payload is written by a probe against a hostile
- * target, and the console renders it. The curated half being wrong must never cost the
- * raw half, which is what the fold shows and which needs no schema at all.
- *
- * The paths are those of the projection and internal/probe, and they are named here once so
- * that a rename in Go breaks one file rather than six components.
+ * Every accessor is total: an absent key, wrong type or renamed field gives `undefined`, never a
+ * thrown page. The payload comes from a probe against a hostile target, and a wrong curated half
+ * must never cost the raw half, which needs no schema.
  */
 
 import type { Evidence } from './types';
@@ -42,11 +34,9 @@ export function layerOf(evidence: Evidence[], layer: string): Evidence | undefin
 }
 
 /**
- * Headers, lowercased.
- *
- * HTTP header names are case insensitive and a producer echoes whatever the target
- * sent, so a lookup on the spelling of the day is a lookup that misses. A repeated
- * header arrives as an array and is joined rather than dropped.
+ * Headers, lowercased. Names are case insensitive and a producer echoes what the target sent,
+ * so a lookup on the spelling of the day misses. A repeated header arrives as an array and is
+ * joined, not dropped.
  */
 export function headersOf(value: unknown): Record<string, string> {
 	const out: Record<string, string> = {};
@@ -72,11 +62,9 @@ export interface Hop {
 }
 
 /**
- * The chain, from the payload.
- *
- * `http-check` writes `code` on a hop and the fingerprinter writes `status_code`, so
- * both are read. That divergence is real and this is the cheapest place to absorb it:
- * the alternative is a component that renders one producer and blanks on the other.
+ * The chain, from the payload. `http-check` writes `code` on a hop and the fingerprinter
+ * `status_code`, so both are read: a real divergence, cheapest to absorb here instead of a
+ * component that renders one producer and blanks on the other.
  */
 export function hopsOf(evidence: Evidence | undefined): Hop[] {
 	return list(bag(evidence?.data).chain).map((raw) => {
@@ -109,10 +97,9 @@ export interface Certificate {
 }
 
 /**
- * The certificate, or nothing when no handshake ever completed.
- *
- * Nothing rather than an empty object: "no TLS" and "TLS whose fields are all empty"
- * are different sentences, and only the first one is ever true here.
+ * The certificate, or nothing when no handshake ever completed. Nothing, not an empty object:
+ * "no TLS" and "TLS with all fields empty" are different sentences, and only the first is ever
+ * true here.
  */
 export function certificateOf(evidence: Evidence | undefined): Certificate | undefined {
 	const tls = bag(bag(evidence?.data).tls);
@@ -132,16 +119,10 @@ export function certificateOf(evidence: Evidence | undefined): Certificate | und
 }
 
 /**
- * The security headers the panel reports on, present or absent.
- *
- * This is an allowlist, which the pivot rules refuse and which is right here for the
- * opposite reason: the value of the block is that it names what is **missing**, and a
- * denylist cannot name an absence. What it costs is that a header nobody listed does
- * not appear in this block — it appears in the raw fold, which shows every key and is
- * where the denylist rule keeps applying.
- *
- * No score, no letter, no colour that ranks them. A header is a fact; a grade would be
- * the composite severity the jalon 7 forbids on an asset.
+ * The security headers the panel reports on, present or absent. An allowlist, which the pivot rules
+ * refuse and which is right here: the block's value is naming what is missing, and a denylist cannot
+ * name an absence. Unlisted headers stay in the raw fold. No score, letter or ranking colour: a grade
+ * would be the composite severity forbidden on an asset.
  */
 const securityNames: { name: string; label: string }[] = [
 	{ name: 'strict-transport-security', label: 'Strict-Transport-Security' },
@@ -172,12 +153,9 @@ export interface Script {
 }
 
 /**
- * The internal scripts of a render, which is where their hashes belong.
- *
- * the three absences took them off the card at 464 badges for 50 rows, and said in the same breath
- * that they stay a pivot in the search and in this view. External ones are dropped for
- * the reason the pivot rules give: a bundle served from a public CDN groups without
- * discriminating.
+ * The internal scripts of a render, where their hashes belong. They left the card (464 badges
+ * for 50 rows) and stay a pivot in search and this view. External ones are dropped for the
+ * pivot rules' reason: a bundle from a public CDN groups without discriminating.
  */
 export function scriptsOf(evidence: Evidence | undefined): Script[] {
 	const scripts = list(bag(evidence?.data).scripts)
@@ -187,15 +165,11 @@ export function scriptsOf(evidence: Evidence | undefined): Script[] {
 		})
 		.filter((script) => script.internal && (script.hash || script.url));
 
-	// Deduplicated here, because the payload is not deduplicated anywhere. The
-	// producer records what the page loaded, and a page that loads the same
-	// bundle from two tags records it twice; the control plane only collapses
-	// them later, when it counts the pivot.
+	// Deduplicated here, as nothing else deduplicates the payload: a page loading one bundle from
+	// two tags records it twice, and the control plane only collapses them when counting the pivot.
 	//
-	// Two identical lines would be wrong on a counted list anyway, and the
-	// screen has a harder reason: a keyed each block over a repeated hash throws
-	// in Svelte, so the whole asset view fails to render rather than showing a
-	// line twice.
+	// Two identical lines are wrong on a counted list anyway, and the screen has a harder reason: a
+	// keyed each block over a repeated hash throws in Svelte, so the whole asset view fails to render.
 	const seen = new Set<string>();
 	return scripts.filter((script) => {
 		const key = script.hash ?? script.url ?? '';
@@ -227,9 +201,8 @@ export function renderFacts(evidence: Evidence | undefined): RenderFacts {
 		llms: typeof metadata.llms_txt === 'boolean' ? metadata.llms_txt : undefined,
 		cname: text(network.cname),
 		cookieNames: Object.keys(bag(data.cookies)),
-		// Deduplicated for the reason the scripts are: normalization sorts this
-		// list and never collapses it, and a repeated host is a keyed each block
-		// over a repeated key, which throws.
+		// Deduplicated like the scripts: normalization sorts this list but does not collapse it, and a
+		// repeated host in a keyed each block throws.
 		externalHosts: [...new Set(list(data.external_hosts).filter((host): host is string => typeof host === 'string'))]
 	};
 }
@@ -241,12 +214,10 @@ export interface Ports {
 }
 
 /**
- * The ports, counted rather than listed.
- *
- * `evidence.ts` hides `scanned_ports`, `closed_ports` and `filtered_ports` from the raw
- * tree because a hundred numbers identical on every asset are the probe's settings
- * echoed once per row. The **count** is a different thing: it separates "nothing else
- * is open" from "nothing else was tried", and those two are not the same finding.
+ * The ports, counted rather than listed. `evidence.ts` hides `scanned_ports`, `closed_ports`
+ * and `filtered_ports` from the raw tree (a hundred numbers identical on every asset are the
+ * probe's settings echoed per row). The count is different: it separates "nothing else is open"
+ * from "nothing else was tried", which are not the same finding.
  */
 export function portsOf(evidence: Evidence | undefined): Ports {
 	const data = bag(evidence?.data);

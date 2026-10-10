@@ -1,17 +1,11 @@
-// Package external answers the one question the inventory cannot: is somebody
-// else's domain still registered.
+// Package external answers the one question the inventory cannot: is someone else's domain
+// still registered. The dangerous half of external_host_dead is invisible to the cross
+// reference: an own host dies visibly, but a third party whose domain expired is
+// re-registrable by anyone (the classic supply chain case).
 //
-// It exists because the dangerous half of external_host_dead is the one the
-// cross reference cannot see. A host in the organization's own inventory has a
-// lifecycle and dies visibly; a genuine third party whose domain expired is
-// re-registrable by anyone, which is the classic supply chain case, and nothing
-// in this system would ever have looked at it.
-//
-// What it may do is strictly bounded, and the bound is what makes the permission
-// defensible: it resolves the name and its apex, and it never opens a TCP
-// connection, never sends an HTTP request and never renders. A query to a public
-// resolver reaches neither the domain nor its infrastructure, which is the same
-// reasoning that gives a resolution no cost against a programme's budget.
+// Its permission is bounded, which makes it defensible: it resolves the name and its apex
+// and never opens a TCP connection, sends an HTTP request or renders. A public resolver
+// query reaches neither the domain nor its infrastructure, so it costs no programme budget.
 package external
 
 import (
@@ -31,16 +25,12 @@ import (
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
-// Resolver answers whether an apex is still registered.
-//
-// An interface because the alternative is a test that depends on somebody's
-// expired domain staying expired, which is a test that goes red on a Tuesday
-// for a reason nobody can act on.
+// Resolver answers whether an apex is still registered. An interface so no test
+// depends on someone's expired domain staying expired.
 type Resolver interface {
 	// Registered is false only on an authoritative "no such domain". A timeout,
-	// a refusal or a broken resolver are none of the three, and treating them
-	// as an expiry would raise a critical alert on every asset of every tenant
-	// the first time the local resolver had a bad minute.
+	// refusal or broken resolver are not, and treating them as expiry would raise a
+	// critical alert on every asset of every tenant at the first bad minute.
 	Registered(ctx context.Context, apex string) (bool, error)
 }
 
@@ -58,12 +48,10 @@ func NewDNS(timeout time.Duration) *DNS {
 	return &DNS{resolver: net.DefaultResolver, timeout: timeout}
 }
 
-// Registered asks for the apex's name servers.
-//
-// NS rather than A, and the difference decides the finding. A registered domain
-// parked with no address still has name servers; an expired one answers
-// NXDOMAIN to everything. Asking for an address would read a parked domain as
-// re-registrable, which is a critical alert about nothing.
+// Registered asks for the apex's name servers. NS, not A: a parked registered
+// domain with no address still has name servers, an expired one answers NXDOMAIN
+// to everything, and asking for an address would call a parked domain
+// re-registrable.
 func (d *DNS) Registered(ctx context.Context, apex string) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, d.timeout)
 	defer cancel()
@@ -90,11 +78,9 @@ type Sweep struct {
 	log      *slog.Logger
 }
 
-// New builds it.
-//
-// On the system pool, because it serves every tenant in one tick and the set of
-// third party hosts is deduplicated across all of them: the same public CDN
-// appears in every inventory and is worth one lookup rather than one per tenant.
+// New builds it. On the system pool: it serves every tenant in one tick, and
+// third-party hosts are deduplicated across them (a public CDN is one lookup,
+// not one per tenant).
 func New(pool *pgxpool.Pool, resolver Resolver, interval time.Duration, batch int, log *slog.Logger) *Sweep {
 	if interval <= 0 {
 		interval = 6 * time.Hour
@@ -132,18 +118,14 @@ type reference struct {
 	program uuid.UUID
 	key     string
 	host    string
-	// recorded is what the last tick concluded about this asset's hosts. A
-	// lookup that fails has to leave those alone, so it travels with the row
-	// rather than being read again at write time.
+	// recorded is what the last tick concluded about this asset's hosts. A failed
+	// lookup must leave those alone, so it travels with the row.
 	recorded []string
 }
 
-// Once resolves every distinct apex once and writes what it found.
-//
-// It walks the whole set rather than one capped page. A fixed cap with a fixed
-// order would sweep the same lowest identifiers on every tick, so anything past
-// it would be permanently invisible: an expired domain referenced only by a
-// high identifier would never be resolved and never told.
+// Once resolves every distinct apex once and writes what it found. It walks the
+// whole set, not one capped page: a fixed cap in a fixed order would sweep the
+// same lowest identifiers every tick and leave the rest permanently unseen.
 func (s *Sweep) Once(ctx context.Context) error {
 	queries := sqlcgen.New(s.pool)
 
@@ -181,10 +163,9 @@ func (s *Sweep) Once(ctx context.Context) error {
 			})
 			apexes[apex] = false
 		}
-		// A page ends on an asset boundary, so a short page is the end of the
-		// walk. The cursor is the asset rather than the pair, which is what
-		// keeps every host of one asset in the same page and therefore in the
-		// same verdict.
+		// A page ends on an asset boundary, so a short page ends the walk. The cursor is
+		// the asset, not the pair, keeping every host of one asset in one page and one
+		// verdict.
 		if len(rows) < s.batch {
 			break
 		}
@@ -193,11 +174,9 @@ func (s *Sweep) Once(ctx context.Context) error {
 		return nil
 	}
 
-	// One lookup per distinct apex, which is dozens for a whole deployment
-	// rather than one per reference. The host itself is never resolved: a name
-	// that no longer answers under a domain that is still registered is a
-	// dangling subdomain at somebody else's, which is not re-registrable and not
-	// the same finding.
+	// One lookup per distinct apex (dozens per deployment), not per reference. The
+	// host itself is never resolved: a dead name under a still-registered domain is a
+	// dangling subdomain at someone else's, not re-registrable and not this finding.
 	gone := map[string]bool{}
 	unknown := map[string]bool{}
 	for apex := range apexes {
@@ -206,9 +185,8 @@ func (s *Sweep) Once(ctx context.Context) error {
 		}
 		registered, err := s.resolver.Registered(ctx, apex)
 		if err != nil {
-			// Not a verdict, and therefore not an answer either. A resolver
-			// having a bad minute is not a domain expiring, and it is not a
-			// domain coming back: whatever the last tick concluded stands.
+			// Not a verdict, so not an answer: a bad resolver minute is neither an expiry nor
+			// a return. Whatever the last tick concluded stands.
 			s.log.WarnContext(ctx, "could not resolve a third party apex", "apex", apex, "error", err)
 			unknown[apex] = true
 			continue
@@ -216,9 +194,8 @@ func (s *Sweep) Once(ctx context.Context) error {
 		gone[apex] = !registered
 	}
 
-	// Grouped per asset, because the verdict is written onto the asset as one
-	// list. Writing it per reference would have the last host of an asset erase
-	// the others.
+	// Grouped per asset, as the verdict is written onto the asset as one list;
+	// per reference, the last host would erase the others.
 	dead := map[uuid.UUID][]string{}
 	owner := map[uuid.UUID]reference{}
 	for _, ref := range references {
@@ -228,9 +205,8 @@ func (s *Sweep) Once(ctx context.Context) error {
 		case gone[apex]:
 			dead[ref.asset] = append(dead[ref.asset], ref.host)
 		case unknown[apex] && ref.was(ref.host):
-			// Carried forward untouched. Dropping it here and re-adding it on
-			// the next successful tick would read as a new finding, so one
-			// timeout would re-send every critical alert this list covers.
+			// Carried forward untouched. Dropping it and re-adding it next tick would read as
+			// a new finding, so one timeout would re-send every critical alert here.
 			dead[ref.asset] = append(dead[ref.asset], ref.host)
 		}
 	}
@@ -239,10 +215,9 @@ func (s *Sweep) Once(ctx context.Context) error {
 	written := 0
 	for asset, ref := range owner {
 		hosts := dead[asset]
-		// A list that says what it already said is not written. In steady
-		// state that is every asset carrying an external host, so writing them
-		// all would be thousands of transactions and thousands of dead row
-		// versions every tick, to store what was already there.
+		// A list repeating what it said is not written. In steady state that is every
+		// asset with an external host: thousands of transactions and dead row versions
+		// per tick to store what is there.
 		if same(hosts, ref.recorded) {
 			continue
 		}
@@ -271,8 +246,8 @@ func (r reference) was(host string) bool {
 	return false
 }
 
-// same compares two lists that are both built in the walk order of one asset's
-// external hosts, so they are comparable element by element.
+// same compares two lists built in the walk order of one asset's external hosts,
+// so they compare element by element.
 func same(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -344,12 +319,10 @@ func (s *Sweep) record(ctx context.Context, ref reference, hosts []string) (int,
 	return len(events), nil
 }
 
-// Apex is the registrable domain of a name.
-//
-// Through the public suffix list rather than "the last two labels", because
-// "example.co.uk" has three and "example.com" has two, and getting it wrong
-// means resolving a public suffix, which always resolves, so every finding
-// under it silently disappears.
+// Apex is the registrable domain of a name. Through the public suffix list, not
+// "the last two labels" ("example.co.uk" has three): a wrong answer resolves a
+// public suffix, which always resolves, and every finding under it silently
+// disappears.
 func Apex(host string) string {
 	if host == "" {
 		return ""
@@ -361,14 +334,11 @@ func Apex(host string) string {
 	return apex
 }
 
-// decode reads the list the statement returned.
-//
-// Through both shapes on purpose. The column is jsonb, and what a driver hands
-// back for one is a decoding decision rather than a contract: bytes on one path
-// and a decoded slice on another. A type assertion on the one that happened to
-// come back first would fail silently on the other, and the failure here reads
-// as "this host is newly dead", which is a critical alert re-sent on every tick
-// for as long as the domain stays gone.
+// decode reads the list the statement returned, through both shapes on purpose.
+// The column is jsonb and what a driver returns for it is a decoding decision,
+// not a contract (bytes on one path, a decoded slice on another). Asserting the
+// wrong one fails silently and reads as "this host is newly dead": a critical
+// alert re-sent every tick while the domain stays gone.
 func decode(value any) []string {
 	var raw []byte
 	switch typed := value.(type) {

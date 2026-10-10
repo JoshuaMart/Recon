@@ -1,14 +1,10 @@
-// The tenant guard declares, it does not deduce.
+// The tenant guard declares; it does not deduce. A guard looking for org_id in a query's text
+// cannot decide isolation: a correlated subquery with a.org_id = b.org_id satisfies it while
+// returning every tenant. So every query says what it is, and this checks that it said
+// something, that nothing simple and exact contradicts it, and that a crossing carries a reason.
 //
-// A guard that looks for org_id in the text of a query cannot decide isolation:
-// a correlated subquery carrying a.org_id = b.org_id satisfies it while
-// returning every tenant. So the burden is inverted. Every query says what it
-// is, this checks that it said something, that what it said is not contradicted
-// by something simple and exact, and that a crossing carries a reason.
-//
-// The list of cross-org queries it produces is the point. It is the exact
-// specification of what asm_sys has to cover, and it does not exist while
-// undetected cross-tenant queries pass in silence.
+// The resulting list of cross-org queries is the point: the exact specification of what asm_sys
+// must cover, which does not exist while undetected crossings pass silently.
 package store_test
 
 import (
@@ -24,9 +20,9 @@ import (
 const (
 	// scoped names org_id itself, as a filter or as a value it supplies.
 	scoped = "scoped"
-	// keyed is confined to one identifier, and isolated by the policy behind
-	// it. It is the form most statements take, and calling it scoped would put
-	// it in the column that says "this one carries its own filter".
+	// keyed is confined to one identifier and isolated by the policy behind it, the form
+	// most statements take. Calling it scoped would put it in the column saying "carries
+	// its own filter".
 	keyed = "keyed"
 	// crossOrg crosses tenants on purpose. It is the column that specifies the
 	// system role, so it is the one that has to stay short and reasoned.
@@ -102,12 +98,9 @@ func TestEveryQueryDeclaresItsTenancy(t *testing.T) {
 	}
 }
 
-// TestTheCrossingsAreTheOnesArguedFor pins the inventory.
-//
-// Not because the list must never grow, but because it must never grow by
-// accident. A query that starts crossing tenants is a deployment decision: it
-// has to move onto the system pool, and that is not something a reviewer
-// notices in a diff of SQL.
+// Pins the inventory of crossings, not because the list must never grow but because it
+// must not grow by accident: a query that starts crossing tenants is a deployment
+// decision (it must move to the system pool) that a reviewer would not notice in a SQL diff.
 func TestTheCrossingsAreTheOnesArguedFor(t *testing.T) {
 	expected := []string{
 		"ApexSet",
@@ -146,10 +139,8 @@ func TestTheCrossingsAreTheOnesArguedFor(t *testing.T) {
 	}
 }
 
-// tenantTables reads the tables carrying org_id out of the migrations.
-//
-// From the catalog rather than from a list kept by hand, because a list kept by
-// hand is exactly what forgets the table added last week.
+// tenantTables reads the tables carrying org_id out of the migrations, from the catalog
+// and not a hand-kept list, which forgets the table added last week.
 func tenantTables(t *testing.T) map[string]bool {
 	t.Helper()
 
@@ -228,9 +219,8 @@ func parse(file, content string, tables map[string]bool) []query {
 		m := nameLine.FindStringSubmatch(strings.TrimSpace(lines[at]))
 		q := query{name: m[1], file: file, line: at + 1}
 
-		// The preamble is the unbroken run of comment and blank lines just
-		// above the name. Reading further would let a declaration belonging to
-		// the previous statement answer for this one.
+		// The preamble is the unbroken run of comment and blank lines above the name; reading
+		// further would let the previous statement's declaration answer for this one.
 		start := at
 		for start > 0 {
 			prev := strings.TrimSpace(lines[start-1])
@@ -278,11 +268,9 @@ func stripComments(body string) string {
 	return strings.Join(kept, "\n")
 }
 
-// mentions finds the tenant tables a statement names.
-//
-// Word boundaries rather than substrings: "org" appears inside "org_id" and
-// inside "program", and either would make every statement in the repository
-// touch the tenant table.
+// mentions finds the tenant tables a statement names. Word boundaries, not substrings:
+// "org" appears inside "org_id" and "program", and would make every statement touch the
+// tenant table.
 func mentions(body string, tables map[string]bool) []string {
 	var found []string
 	for table := range tables {
