@@ -442,6 +442,13 @@ outage: resolution fails, the events stay queued, and the stuck queue alert does
 of alerts. Failures are retried with a bounded backoff and counted by a metric: a dead webhook is an
 observability outage, not a transport detail.
 
+**A refused message is not a dead channel.** A webhook that answers 400, 413 or 422 is up and has refused
+that payload, so the event stays queued and the next one is still sent. Any other failure marks the channel
+down for the rest of the tick. Treating both alike once let a single event that Discord found too long hold
+back every event behind it for a week. The text a template receives is also clipped to 1 800 characters,
+under Discord's limit of 2 000, and a redirect chain is summarised as its path and the names of the headers
+that moved, never their values.
+
 ## 12.7 Volume and retention
 
 `notification_event` grows at the same order of magnitude as `observation` without the benefit of

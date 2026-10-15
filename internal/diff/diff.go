@@ -190,6 +190,10 @@ func Summarise(changes []Change) string {
 	}
 	parts := make([]string, 0, len(changes))
 	for _, change := range changes {
+		if change.Field == "chain" {
+			parts = append(parts, "chain: "+chainLine(change.Before, change.After))
+			continue
+		}
 		switch change.Kind {
 		case KindAdded:
 			parts = append(parts, change.Field+": +"+str.Join(change.Added, ", "))
@@ -254,3 +258,97 @@ func named(value map[string]any) string {
 // reflect.DeepEqual: both sides share a decoder and normalization, so shapes are
 // comparable, and the cost is a string once per changed field.
 func equal(a, b any) bool { return fmt.Sprintf("%#v", a) == fmt.Sprintf("%#v", b) }
+
+// hop is the part of a redirect hop a reader follows: where it went and what answered.
+type hop struct {
+	url     string
+	status  int
+	title   string
+	headers map[string]any
+}
+
+func hops(v any) []hop {
+	list, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]hop, 0, len(list))
+	for _, entry := range list {
+		fields, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		h := hop{}
+		h.url, _ = fields["url"].(string)
+		h.title, _ = fields["title"].(string)
+		h.headers, _ = fields["headers"].(map[string]any)
+		// Through float64: the payload has been through JSON.
+		if code, ok := fields["status_code"].(float64); ok {
+			h.status = int(code)
+		}
+		out = append(out, h)
+	}
+	return out
+}
+
+// path renders a chain as its URLs and statuses, the sequence a person reads.
+func path(chain []hop) string {
+	steps := make([]string, 0, len(chain))
+	for _, h := range chain {
+		steps = append(steps, fmt.Sprintf("%s (%d)", h.url, h.status))
+	}
+	return str.Join(steps, " → ")
+}
+
+// chainLine says what moved in a redirect chain. Printed whole, a chain carries every
+// header of every hop: one Content-Security-Policy made a 7 000 character notification
+// that Discord refused, and that nobody could have read.
+func chainLine(before, after any) string {
+	was, is := hops(before), hops(after)
+	switch {
+	case len(was) == 0 && len(is) == 0:
+		return "changed"
+	case len(was) == 0:
+		return path(is)
+	case len(is) == 0:
+		return path(was) + ", now none"
+	}
+	if from, to := path(was), path(is); from != to {
+		return to + ", was " + from
+	}
+
+	// Same path, so a hop's content moved: name the headers, never their values.
+	moved := map[string]struct{}{}
+	titles := false
+	for i := range is {
+		if was[i].title != is[i].title {
+			titles = true
+		}
+		for name, value := range is[i].headers {
+			if !equal(was[i].headers[name], value) {
+				moved[name] = struct{}{}
+			}
+		}
+		for name := range was[i].headers {
+			if _, kept := is[i].headers[name]; !kept {
+				moved[name] = struct{}{}
+			}
+		}
+	}
+	parts := make([]string, 0, 2)
+	if len(moved) > 0 {
+		names := make([]string, 0, len(moved))
+		for name := range moved {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		parts = append(parts, "headers changed ("+str.Join(names, ", ")+")")
+	}
+	if titles {
+		parts = append(parts, "title changed")
+	}
+	if len(parts) == 0 {
+		return "changed"
+	}
+	return str.Join(parts, ", ") + " on " + path(is)
+}

@@ -2,6 +2,7 @@ package diff_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/JoshuaMart/recon/internal/diff"
@@ -158,4 +159,42 @@ func index(haystack, needle string) int {
 		}
 	}
 	return -1
+}
+
+// A redirect chain carries every header of every hop. Printed whole, one changed
+// Content-Security-Policy made a notification of several thousand characters that the
+// webhook refused; the line names the headers that moved and the path, never the values.
+func TestAChainChangeNamesTheHeadersNotTheirValues(t *testing.T) {
+	t.Parallel()
+
+	csp := strings.Repeat("script-src 'self' https://cdn.example; ", 200)
+	changes := diff.Compare(
+		payload(t, `{"chain":[{"url":"https://a.test/","status_code":200,
+			"headers":{"server":"nginx","content-security-policy":"default-src 'self'"}}]}`),
+		payload(t, `{"chain":[{"url":"https://a.test/","status_code":200,
+			"headers":{"server":"nginx","content-security-policy":"`+csp+`"}}]}`),
+	)
+
+	line := diff.Summarise(changes)
+	want := "chain: headers changed (content-security-policy) on https://a.test/ (200)"
+	if line != want {
+		t.Fatalf("the line is %q, want %q", line, want)
+	}
+}
+
+// When the path itself moved, the path is the news.
+func TestAChainChangeShowsThePathWhenItMoved(t *testing.T) {
+	t.Parallel()
+
+	changes := diff.Compare(
+		payload(t, `{"chain":[{"url":"https://a.test/","status_code":200,"headers":{}}]}`),
+		payload(t, `{"chain":[{"url":"https://a.test/","status_code":302,"headers":{"x":"1"}},
+			{"url":"https://login.a.test/","status_code":200,"headers":{}}]}`),
+	)
+
+	line := diff.Summarise(changes)
+	want := "chain: https://a.test/ (302) → https://login.a.test/ (200), was https://a.test/ (200)"
+	if line != want {
+		t.Fatalf("the line is %q, want %q", line, want)
+	}
 }

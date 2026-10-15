@@ -5,9 +5,13 @@ package notify_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -25,6 +29,11 @@ type fixture struct {
 	calls   *atomic.Int64
 	fail    *atomic.Bool
 	server  *httptest.Server
+
+	// refuse answers 400 to a body containing it, as Discord does to a message too long.
+	refuse atomic.Value
+	mu     sync.Mutex
+	bodies []string
 }
 
 // perimeter builds a programme, a channel and an endpoint that counts what it
@@ -38,11 +47,19 @@ func perimeter(t *testing.T) *fixture {
 		calls: &atomic.Int64{}, fail: &atomic.Bool{},
 	}
 
-	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if f.fail.Load() {
 			http.Error(w, "boom", http.StatusInternalServerError)
 			return
 		}
+		body, _ := io.ReadAll(r.Body)
+		if marker, _ := f.refuse.Load().(string); marker != "" && strings.Contains(string(body), marker) {
+			http.Error(w, `{"content": ["Must be 2000 or fewer in length."]}`, http.StatusBadRequest)
+			return
+		}
+		f.mu.Lock()
+		f.bodies = append(f.bodies, string(body))
+		f.mu.Unlock()
 		f.calls.Add(1)
 	}))
 	t.Cleanup(f.server.Close)
@@ -201,6 +218,65 @@ func TestAWebhookOutageLosesNothingAndResumes(t *testing.T) {
 	}
 	if n := f.count(t, `SELECT count(*) FROM notification_event WHERE notified_at IS NOT NULL`); n != 3 {
 		t.Fatalf("%d events went out once the webhook recovered", n)
+	}
+}
+
+// One payload the endpoint refuses is that message's problem, not the channel's. It used
+// to mark the channel broken for the tick, so an event refused for its length held back
+// every event behind it, at every tick, for a week in production.
+func TestARefusedEventDoesNotHoldBackTheOthers(t *testing.T) {
+	f := perimeter(t)
+	ctx := context.Background()
+
+	f.arrivals(t, notify.KindTitleChanged, notify.Medium, 4)
+	// The oldest, so it is read first, as the stuck event was.
+	exec(t, f.pool, `UPDATE notification_event SET payload = '{"summary":"poison"}'::jsonb,
+		created_at = created_at - interval '1 hour'
+		WHERE id = (SELECT min(id) FROM notification_event)`)
+	f.refuse.Store("poison")
+
+	summary, err := f.notifier(t).Once(ctx)
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if summary.Sent != 3 || summary.Failed != 1 {
+		t.Fatalf("one refused event read as %+v, want 3 sent and 1 failed", summary)
+	}
+	// The refused one stays queued, so the stuck queue alert still reports it.
+	if n := f.count(t, `SELECT count(*) FROM notification_event WHERE notified_at IS NULL`); n != 1 {
+		t.Fatalf("%d events are still queued, want the refused one", n)
+	}
+}
+
+// A diff can be any length and a webhook has a limit. The text is clipped before the
+// template sees it, so the endpoint receives a message it accepts.
+func TestALongSummaryIsClippedBeforeItIsSent(t *testing.T) {
+	f := perimeter(t)
+	ctx := context.Background()
+
+	f.arrivals(t, notify.KindChainChanged, notify.Medium, 1)
+	long := strings.Repeat("é", 3*notify.MaxText)
+	exec(t, f.pool, `UPDATE notification_event SET payload = jsonb_build_object('summary', $1::text)`, long)
+
+	if _, err := f.notifier(t).Once(ctx); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.bodies) != 1 {
+		t.Fatalf("%d messages were received", len(f.bodies))
+	}
+	var sent struct {
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(f.bodies[0]), &sent); err != nil {
+		t.Fatalf("decode the payload: %v", err)
+	}
+	if n := len([]rune(sent.Content)); n > notify.MaxText {
+		t.Fatalf("the message carries %d characters, over %d", n, notify.MaxText)
+	}
+	if !strings.HasSuffix(sent.Content, "…") {
+		t.Fatalf("a clipped message does not say so: %q", sent.Content[len(sent.Content)-20:])
 	}
 }
 

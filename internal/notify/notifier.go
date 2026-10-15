@@ -3,10 +3,12 @@ package notify
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -251,6 +253,15 @@ func (n *Notifier) deliver(
 			return
 		}
 		if err := n.sender.Send(ctx, channel, message); err != nil {
+			// A refused payload says nothing about the channel. Marking it broken let one
+			// oversized event hold back every event behind it, tick after tick, for days.
+			var rejected *Rejected
+			if errors.As(err, &rejected) && rejected.OfTheMessage() {
+				n.log.ErrorContext(ctx, "notification refused by the channel",
+					"event", event.ID, "kind", event.Kind, "channel", channel.ID, "error", err)
+				summary.Failed++
+				return
+			}
 			broken[channel.ID] = struct{}{}
 			// The event stays queued. A dead webhook is an observability outage, and the stuck
 			// queue alert says so.
@@ -294,10 +305,23 @@ func (n *Notifier) message(event sqlcgen.PendingEventsRow) Message {
 		message.Asset = *event.AssetKey
 	}
 	if line, ok := payload["summary"].(string); ok {
-		message.Summary = line
+		message.Summary = clip(line)
 	}
-	message.Text = Line(message)
+	message.Text = clip(Line(message))
 	return message
+}
+
+// MaxText bounds the text a template receives, in characters. Discord refuses a message
+// over 2 000 and a refused event used to be retried forever; the margin leaves a custom
+// template room to wrap it. The full diff stays in the payload.
+const MaxText = 1800
+
+func clip(text string) string {
+	if utf8.RuneCountInString(text) <= MaxText {
+		return text
+	}
+	runes := []rune(text)
+	return string(runes[:MaxText-1]) + "…"
 }
 
 // Line is the sentence a notification leads with. It is what someone reads on a

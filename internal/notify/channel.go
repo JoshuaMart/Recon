@@ -125,7 +125,27 @@ func (s *Sender) Send(ctx context.Context, channel Channel, message Message) err
 	// becoming silent alert loss.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		detail, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
-		return fmt.Errorf("send: %s: %s", resp.Status, bytes.TrimSpace(detail))
+		return &Rejected{Code: resp.StatusCode, Status: resp.Status, Detail: string(bytes.TrimSpace(detail))}
 	}
 	return nil
+}
+
+// Rejected is an endpoint that answered, with a status other than 2xx.
+type Rejected struct {
+	Code   int
+	Status string
+	Detail string
+}
+
+func (r *Rejected) Error() string { return fmt.Sprintf("send: %s: %s", r.Status, r.Detail) }
+
+// OfTheMessage reports a refusal of this payload rather than of the channel: the
+// endpoint is up and the next message may well pass. 401, 403 and 404 stay channel
+// failures, since a revoked or deleted webhook refuses everything.
+func (r *Rejected) OfTheMessage() bool {
+	switch r.Code {
+	case http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
+		return true
+	}
+	return false
 }
