@@ -191,6 +191,15 @@ func (m *Matcher) Handle(ctx context.Context, frame *Frame) {
 		sightings, malformed = set.Sightings(frame.Data.LeafCert.AllDomains)
 	}
 
+	// Nearly every certificate matches nothing: count it and skip the maps below.
+	if len(sightings) == 0 {
+		m.mu.Lock()
+		m.frames++
+		m.malformed += int64(malformed)
+		m.mu.Unlock()
+		return
+	}
+
 	at := m.now()
 	byProgram := map[uuid.UUID]*pending{}
 

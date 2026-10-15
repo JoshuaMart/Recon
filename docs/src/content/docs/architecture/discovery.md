@@ -405,6 +405,28 @@ certificate can produce is real and it is tens rather than hundreds.
 the wire and does not have to be inferred.
 :::
 
+:::caution[Measured again in production, 15 October 2026]
+The headroom above did not hold. The benchmark timed the walk alone: the JSON was decoded while the
+fixture loaded, and no socket was read. In production a frame cost about **125 µs** of CPU, and the feed
+skipped about **1 %** of certificates for the matcher.
+
+A `perf` profile of the control plane put the walk at **4 %** of its CPU. The rest was the plumbing: 27 %
+reading the websocket, a quarter of it allocating a buffer per message, 26 % in `encoding/json`, and
+most of what remained in the Go scheduler and the GC. Each certificate arrives alone, so the goroutine
+sleeps and wakes once per message, and on a VM where the hypervisor steals 40 % of the CPU on average
+those wakeups are what cost.
+
+The losses follow that steal, not the database. Three changes answer them:
+
+- **The session reuses one buffer**, rather than one allocation per message.
+- **Frames are decoded with `fastjson`**, reading only the fields `Frame` holds, about three times
+  faster than `encoding/json`. A test holds it to the same output over the pinned stream.
+- **The feed queues 20 000 messages per client** instead of 300, so a stall of a few seconds delays
+  certificates rather than losing them.
+
+The throughput test now times the decode as well as the walk.
+:::
+
 ### What the console reads, and what stays out of the registry
 
 `discovery_source` does **not** join the [search registry](/architecture/search/#what-the-registry-holds).

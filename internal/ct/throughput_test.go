@@ -15,13 +15,15 @@ import (
 // The corrected assertion, made testable. "The service absorbs the full CT stream on a
 // single core" names certstream-server-go, which is deployed and whose throughput is an
 // image's property. Recon owns the matcher: decoding a frame and walking every SAN
-// through the set, on one goroutine.
+// through the set, on one goroutine. The decode is inside the clock: it was outside
+// once, and that hid the larger half of the cost.
 //
 // There is no queue between socket and walk, the strongest form of the assertion: the
 // read loop calls the matcher synchronously, so one that could not keep up would apply
 // backpressure to the socket instead of growing an unbounded buffer.
 func TestTheMatcherOutrunsTheStreamOnOneGoroutine(t *testing.T) {
 	frames := fixture(t)
+	raw := rawFixture(t)
 	if len(frames) < 50 {
 		t.Fatalf("the fixture holds %d frames", len(frames))
 	}
@@ -39,17 +41,24 @@ func TestTheMatcherOutrunsTheStreamOnOneGoroutine(t *testing.T) {
 	set := ct.NewSet(claims)
 
 	const rounds = 40
+	var (
+		decoder ct.Decoder
+		frame   ct.Frame
+	)
 	started := time.Now()
 	matched := 0
 	for range rounds {
-		for _, f := range frames {
-			found, _ := set.Sightings(f.Data.LeafCert.AllDomains)
+		for _, line := range raw {
+			if err := decoder.Decode(line, &frame); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			found, _ := set.Sightings(frame.Data.LeafCert.AllDomains)
 			matched += len(found)
 		}
 	}
 	elapsed := time.Since(started)
 
-	handled := rounds * len(frames)
+	handled := rounds * len(raw)
 	rate := float64(handled) / elapsed.Seconds()
 
 	// The feed delivers about two thousand certificates a second at steady state and about

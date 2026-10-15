@@ -1,8 +1,8 @@
 package ct
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -88,14 +88,24 @@ func (f *Feed) session(ctx context.Context) error {
 	f.log.InfoContext(ctx, "certificate transparency feed connected",
 		"url", f.url, "apexes", f.matcher.Apexes())
 
+	// One buffer and one decoder for the whole session: conn.Read allocated each message
+	// anew, which the production profile showed feeding the GC thousands of times a second.
+	var (
+		buf     bytes.Buffer
+		decoder Decoder
+		frame   Frame
+	)
 	for {
-		_, data, err := conn.Read(ctx)
+		_, reader, err := conn.Reader(ctx)
 		if err != nil {
 			return err
 		}
+		buf.Reset()
+		if _, err := buf.ReadFrom(reader); err != nil {
+			return err
+		}
 
-		var frame Frame
-		if err := json.Unmarshal(data, &frame); err != nil {
+		if err := decoder.Decode(buf.Bytes(), &frame); err != nil {
 			// One unreadable message is no reason to drop a working socket. Counted, not
 			// logged: at thousands of frames a second a line each would be the outage.
 			f.matcher.undecodable()

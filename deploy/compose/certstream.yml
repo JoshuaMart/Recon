@@ -24,6 +24,12 @@ general:
   disable_default_logs: false
   drop_old_logs: true
 
+  # Messages queued per client before the feed skips certificates for it. The default of
+  # 300 is about 110 ms of stream: in production, VM steal stalled the matcher longer than
+  # that, losing about 1 % of certificates. 20 000 is about 7 s, held only while it lags.
+  buffer_sizes:
+    websocket: 20000
+
   # Off, by decision. This resumes the aggregator's own reading of the logs after a restart, not
   # the gap a disconnected matcher has: there is no per-client buffer either way, so that window
   # is lost whatever this says. Turning it on replays everything since the stored index on every
