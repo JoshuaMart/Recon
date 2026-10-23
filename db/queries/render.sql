@@ -8,7 +8,10 @@ SET next_render_at = LEAST(COALESCE(ac.next_render_at, sqlc.arg(now)::timestampt
 FROM program p
 WHERE ac.asset_id = sqlc.arg(asset_id) AND p.id = ac.program_id AND p.state = 'active'
   AND ac.scope_status = 'in_scope' AND ac.lifecycle <> 'archived'
-  AND ((ac.kind = 'service' AND ac.http_state IS NOT NULL) OR ac.kind = 'url');
+  AND ((ac.kind = 'service' AND ac.http_state IS NOT NULL)
+       OR (ac.kind = 'url' AND EXISTS (
+            SELECT 1 FROM asset u JOIN asset_current s ON s.asset_id = u.parent_asset_id
+            WHERE u.id = ac.asset_id AND s.http_state IS NOT NULL)));
 
 -- One page of the due renders, in queue order.
 -- name: DueRenders :many
@@ -38,7 +41,8 @@ SET redirect_hosts = sqlc.narg(redirect_hosts), header_names = sqlc.narg(header_
     cookie_names = sqlc.narg(cookie_names), script_hashes = sqlc.narg(script_hashes),
     favicon_hash = sqlc.narg(favicon_hash), external_hosts = sqlc.narg(external_hosts),
     web_sockets = sqlc.narg(web_sockets), has_robots = sqlc.narg(has_robots),
-    has_sitemap = sqlc.narg(has_sitemap), has_llms_txt = sqlc.narg(has_llms_txt), waf = sqlc.narg(waf)
+    has_sitemap = sqlc.narg(has_sitemap), has_llms_txt = sqlc.narg(has_llms_txt), waf = sqlc.narg(waf),
+    headers = sqlc.narg(headers)::jsonb
 WHERE asset_id = sqlc.arg(asset_id);
 
 -- name: ListTech :many

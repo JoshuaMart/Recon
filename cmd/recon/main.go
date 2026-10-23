@@ -22,6 +22,7 @@ import (
 
 	"github.com/JoshuaMart/recon/internal/api"
 	"github.com/JoshuaMart/recon/internal/config"
+	"github.com/JoshuaMart/recon/internal/enrich"
 	"github.com/JoshuaMart/recon/internal/fingerprint"
 	"github.com/JoshuaMart/recon/internal/ingest"
 	"github.com/JoshuaMart/recon/internal/inventory"
@@ -197,7 +198,16 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, st *store.S
 	for _, d := range vc.DeadOrigins {
 		sigs = append(sigs, ingest.Signature{Name: d.Name, Statuses: d.Statuses, Server: d.Server, Title: d.Title})
 	}
+	geo, err := enrich.Open(cfg.GeoIPDir)
+	if err != nil {
+		return fmt.Errorf("geoip: %w", err)
+	}
+	if geo == nil {
+		log.InfoContext(ctx, "no GeoLite2 files: ASN and country stay empty", "dir", cfg.GeoIPDir)
+	}
+	defer geo.Close()
 	sched := &runs.Scheduler{
+		GeoIP: geo,
 		Store: st, Log: log, Slots: cfg.FastRecon.Slots, Timeout: cfg.FastRecon.Timeout,
 		Ports: cfg.Discovery.Ports, Tick: 5 * time.Second, Now: time.Now,
 		Verification: vc.Enabled, Batch: vc.Batch, ArchiveAfter: vc.ArchiveAfter, Cadences: &cad, Signatures: sigs,

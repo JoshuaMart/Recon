@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/JoshuaMart/recon/internal/enrich"
 	"github.com/JoshuaMart/recon/internal/ingest"
 	"github.com/JoshuaMart/recon/internal/lifecycle"
 	"github.com/JoshuaMart/recon/internal/scope"
@@ -44,6 +45,7 @@ type Scheduler struct {
 	Cadences     *lifecycle.Cadences
 	Signatures   []ingest.Signature
 	Rand         func() float64
+	GeoIP        *enrich.GeoIP
 
 	wg sync.WaitGroup
 }
@@ -296,7 +298,7 @@ func (s *Scheduler) ingest(ctx context.Context, r sqlcgen.Run, apex string, raw 
 	now := s.now()
 	sum, err := ingest.Ingest(ctx, q, ingest.Input{
 		Run: r, Apex: apex, Report: rep, Now: now, Log: s.Log,
-		Signatures: s.Signatures, Cadences: s.Cadences, Rand: s.Rand, Ports: s.Ports,
+		Signatures: s.Signatures, Cadences: s.Cadences, Rand: s.Rand, Ports: s.Ports, GeoIP: s.GeoIP,
 	})
 	if err != nil {
 		return ingest.Summary{}, err

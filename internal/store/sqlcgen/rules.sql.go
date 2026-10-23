@@ -17,8 +17,8 @@ UPDATE scope_rule SET valid_to = $2::timestamptz WHERE id = $1 AND valid_to IS N
 `
 
 type CloseRuleParams struct {
-	ID  uuid.UUID
-	Now time.Time
+	ID  uuid.UUID `json:"id"`
+	Now time.Time `json:"now"`
 }
 
 func (q *Queries) CloseRule(ctx context.Context, arg CloseRuleParams) (int64, error) {
@@ -34,8 +34,8 @@ SELECT id, program_id, kind, matcher, pattern, origin, note, valid_from, valid_t
 `
 
 type GetRuleParams struct {
-	ProgramID uuid.UUID
-	ID        uuid.UUID
+	ProgramID uuid.UUID `json:"program_id"`
+	ID        uuid.UUID `json:"id"`
 }
 
 func (q *Queries) GetRule(ctx context.Context, arg GetRuleParams) (ScopeRule, error) {
@@ -60,8 +60,8 @@ SELECT id, program_id, kind, matcher, pattern, origin, note, valid_from, valid_t
 `
 
 type ListOpenRulesByOriginParams struct {
-	ProgramID uuid.UUID
-	Origin    string
+	ProgramID uuid.UUID `json:"program_id"`
+	Origin    string    `json:"origin"`
 }
 
 func (q *Queries) ListOpenRulesByOrigin(ctx context.Context, arg ListOpenRulesByOriginParams) ([]ScopeRule, error) {
@@ -136,13 +136,13 @@ RETURNING id, program_id, kind, matcher, pattern, origin, note, valid_from, vali
 `
 
 type OpenRuleParams struct {
-	ProgramID uuid.UUID
-	Kind      string
-	Matcher   string
-	Pattern   string
-	Origin    string
-	Note      *string
-	Now       time.Time
+	ProgramID uuid.UUID `json:"program_id"`
+	Kind      string    `json:"kind"`
+	Matcher   string    `json:"matcher"`
+	Pattern   string    `json:"pattern"`
+	Origin    string    `json:"origin"`
+	Note      *string   `json:"note"`
+	Now       time.Time `json:"now"`
 }
 
 // OpenRule returns no row when the same rule is already open.

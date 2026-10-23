@@ -26,8 +26,8 @@ DELETE FROM asset_tech WHERE asset_id = $1 AND name = $2
 `
 
 type DeleteTechParams struct {
-	AssetID uuid.UUID
-	Name    string
+	AssetID uuid.UUID `json:"asset_id"`
+	Name    string    `json:"name"`
 }
 
 func (q *Queries) DeleteTech(ctx context.Context, arg DeleteTechParams) error {
@@ -45,21 +45,21 @@ LIMIT $3 OFFSET $2
 `
 
 type DueRendersParams struct {
-	Now  time.Time
-	Skip int32
-	Lim  int32
+	Now  time.Time `json:"now"`
+	Skip int32     `json:"skip"`
+	Lim  int32     `json:"lim"`
 }
 
 type DueRendersRow struct {
-	AssetID        uuid.UUID
-	ProgramID      uuid.UUID
-	Kind           string
-	Key            string
-	Host           string
-	Port           *int32
-	Scheme         *string
-	RenderPriority int16
-	NextRenderAt   *time.Time
+	AssetID        uuid.UUID  `json:"asset_id"`
+	ProgramID      uuid.UUID  `json:"program_id"`
+	Kind           string     `json:"kind"`
+	Key            string     `json:"key"`
+	Host           string     `json:"host"`
+	Port           *int32     `json:"port"`
+	Scheme         *string    `json:"scheme"`
+	RenderPriority int16      `json:"render_priority"`
+	NextRenderAt   *time.Time `json:"next_render_at"`
 }
 
 // One page of the due renders, in queue order.
@@ -111,14 +111,14 @@ RETURNING id, asset_id, key, thumb_key, phash, bytes, width, height, taken_at
 `
 
 type InsertScreenshotParams struct {
-	AssetID  uuid.UUID
-	Key      string
-	ThumbKey string
-	Phash    int64
-	Bytes    int32
-	Width    int32
-	Height   int32
-	Now      time.Time
+	AssetID  uuid.UUID `json:"asset_id"`
+	Key      string    `json:"key"`
+	ThumbKey string    `json:"thumb_key"`
+	Phash    int64     `json:"phash"`
+	Bytes    int32     `json:"bytes"`
+	Width    int32     `json:"width"`
+	Height   int32     `json:"height"`
+	Now      time.Time `json:"now"`
 }
 
 func (q *Queries) InsertScreenshot(ctx context.Context, arg InsertScreenshotParams) (Screenshot, error) {
@@ -243,13 +243,13 @@ SET category = EXCLUDED.category, version_raw = EXCLUDED.version_raw, version = 
 `
 
 type PutTechParams struct {
-	AssetID    uuid.UUID
-	Name       string
-	Category   string
-	VersionRaw string
-	Version    []int32
-	Cpe        *string
-	Proof      []byte
+	AssetID    uuid.UUID `json:"asset_id"`
+	Name       string    `json:"name"`
+	Category   string    `json:"category"`
+	VersionRaw string    `json:"version_raw"`
+	Version    []int32   `json:"version"`
+	Cpe        *string   `json:"cpe"`
+	Proof      []byte    `json:"proof"`
 }
 
 func (q *Queries) PutTech(ctx context.Context, arg PutTechParams) error {
@@ -274,8 +274,8 @@ GROUP BY ac.render_priority ORDER BY ac.render_priority DESC
 `
 
 type RenderQueueDepthRow struct {
-	RenderPriority int16
-	Depth          int32
+	RenderPriority int16 `json:"render_priority"`
+	Depth          int32 `json:"depth"`
 }
 
 // Counted with the same filters as DueRenders, so the depth is what will render.
@@ -320,9 +320,9 @@ WHERE asset_id = $3
 `
 
 type ScheduleRenderParams struct {
-	Next       time.Time
-	RenderedAt *time.Time
-	AssetID    uuid.UUID
+	Next       time.Time  `json:"next"`
+	RenderedAt *time.Time `json:"rendered_at"`
+	AssetID    uuid.UUID  `json:"asset_id"`
 }
 
 func (q *Queries) ScheduleRender(ctx context.Context, arg ScheduleRenderParams) error {
@@ -371,8 +371,8 @@ SELECT count(*)::int AS count, COALESCE(sum(bytes), 0)::bigint AS bytes FROM scr
 `
 
 type ScreenshotStorageRow struct {
-	Count int32
-	Bytes int64
+	Count int32 `json:"count"`
+	Bytes int64 `json:"bytes"`
 }
 
 func (q *Queries) ScreenshotStorage(ctx context.Context) (ScreenshotStorageRow, error) {
@@ -387,8 +387,8 @@ SELECT id, asset_id, key, thumb_key, phash, bytes, width, height, taken_at FROM 
 `
 
 type ScreenshotsBeyondParams struct {
-	AssetID uuid.UUID
-	Keep    int32
+	AssetID uuid.UUID `json:"asset_id"`
+	Keep    int32     `json:"keep"`
 }
 
 // The screenshots of an asset beyond the newest n, to delete.
@@ -428,23 +428,25 @@ SET redirect_hosts = $1, header_names = $2,
     cookie_names = $3, script_hashes = $4,
     favicon_hash = $5, external_hosts = $6,
     web_sockets = $7, has_robots = $8,
-    has_sitemap = $9, has_llms_txt = $10, waf = $11
-WHERE asset_id = $12
+    has_sitemap = $9, has_llms_txt = $10, waf = $11,
+    headers = $12::jsonb
+WHERE asset_id = $13
 `
 
 type SetRenderCurrentParams struct {
-	RedirectHosts []string
-	HeaderNames   []string
-	CookieNames   []string
-	ScriptHashes  []string
-	FaviconHash   *string
-	ExternalHosts []string
-	WebSockets    []string
-	HasRobots     *bool
-	HasSitemap    *bool
-	HasLlmsTxt    *bool
-	Waf           *string
-	AssetID       uuid.UUID
+	RedirectHosts []string  `json:"redirect_hosts"`
+	HeaderNames   []string  `json:"header_names"`
+	CookieNames   []string  `json:"cookie_names"`
+	ScriptHashes  []string  `json:"script_hashes"`
+	FaviconHash   *string   `json:"favicon_hash"`
+	ExternalHosts []string  `json:"external_hosts"`
+	WebSockets    []string  `json:"web_sockets"`
+	HasRobots     *bool     `json:"has_robots"`
+	HasSitemap    *bool     `json:"has_sitemap"`
+	HasLlmsTxt    *bool     `json:"has_llms_txt"`
+	Waf           *string   `json:"waf"`
+	Headers       []byte    `json:"headers"`
+	AssetID       uuid.UUID `json:"asset_id"`
 }
 
 func (q *Queries) SetRenderCurrent(ctx context.Context, arg SetRenderCurrentParams) error {
@@ -460,6 +462,7 @@ func (q *Queries) SetRenderCurrent(ctx context.Context, arg SetRenderCurrentPara
 		arg.HasSitemap,
 		arg.HasLlmsTxt,
 		arg.Waf,
+		arg.Headers,
 		arg.AssetID,
 	)
 	return err
@@ -484,9 +487,9 @@ WHERE a.id = ac.asset_id AND a.parent_asset_id = $3 AND ac.kind = 'url'
 `
 
 type TriggerChildURLsParams struct {
-	Now       time.Time
-	Priority  int16
-	ServiceID *uuid.UUID
+	Now       time.Time  `json:"now"`
+	Priority  int16      `json:"priority"`
+	ServiceID *uuid.UUID `json:"service_id"`
 }
 
 // Declared URLs on a service earn their render once the service answers.
@@ -505,13 +508,16 @@ SET next_render_at = LEAST(COALESCE(ac.next_render_at, $1::timestamptz), $1::tim
 FROM program p
 WHERE ac.asset_id = $3 AND p.id = ac.program_id AND p.state = 'active'
   AND ac.scope_status = 'in_scope' AND ac.lifecycle <> 'archived'
-  AND ((ac.kind = 'service' AND ac.http_state IS NOT NULL) OR ac.kind = 'url')
+  AND ((ac.kind = 'service' AND ac.http_state IS NOT NULL)
+       OR (ac.kind = 'url' AND EXISTS (
+            SELECT 1 FROM asset u JOIN asset_current s ON s.asset_id = u.parent_asset_id
+            WHERE u.id = ac.asset_id AND s.http_state IS NOT NULL)))
 `
 
 type TriggerRenderParams struct {
-	Now      time.Time
-	Priority int16
-	AssetID  uuid.UUID
+	Now      time.Time `json:"now"`
+	Priority int16     `json:"priority"`
+	AssetID  uuid.UUID `json:"asset_id"`
 }
 
 // A trigger never adds a row: it pulls the date in and raises the priority.

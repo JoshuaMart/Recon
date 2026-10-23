@@ -26,14 +26,14 @@ RETURNING old.asset_id, old.program_id, old.lifecycle
 `
 
 type ArchiveStaleParams struct {
-	Now    time.Time
-	Before time.Time
+	Now    time.Time `json:"now"`
+	Before time.Time `json:"before"`
 }
 
 type ArchiveStaleRow struct {
-	AssetID   uuid.UUID
-	ProgramID uuid.UUID
-	Lifecycle string
+	AssetID   uuid.UUID `json:"asset_id"`
+	ProgramID uuid.UUID `json:"program_id"`
+	Lifecycle string    `json:"lifecycle"`
 }
 
 func (q *Queries) ArchiveStale(ctx context.Context, arg ArchiveStaleParams) ([]ArchiveStaleRow, error) {
@@ -98,9 +98,9 @@ LIMIT $3
 `
 
 type DueFullParams struct {
-	ProgramID uuid.UUID
-	Now       time.Time
-	Lim       int32
+	ProgramID uuid.UUID `json:"program_id"`
+	Now       time.Time `json:"now"`
+	Lim       int32     `json:"lim"`
 }
 
 func (q *Queries) DueFull(ctx context.Context, arg DueFullParams) ([]string, error) {
@@ -132,9 +132,9 @@ LIMIT $3
 `
 
 type DueResolveParams struct {
-	ProgramID uuid.UUID
-	Now       time.Time
-	Lim       int32
+	ProgramID uuid.UUID `json:"program_id"`
+	Now       time.Time `json:"now"`
+	Lim       int32     `json:"lim"`
 }
 
 func (q *Queries) DueResolve(ctx context.Context, arg DueResolveParams) ([]string, error) {
@@ -165,10 +165,10 @@ RETURNING id, program_id, kind, stage, wildcard_id, state, trigger, queued_at, s
 `
 
 type EnqueueVerificationParams struct {
-	ProgramID uuid.UUID
-	Stage     string
-	Targets   []string
-	Now       time.Time
+	ProgramID uuid.UUID `json:"program_id"`
+	Stage     string    `json:"stage"`
+	Targets   []string  `json:"targets"`
+	Now       time.Time `json:"now"`
 }
 
 func (q *Queries) EnqueueVerification(ctx context.Context, arg EnqueueVerificationParams) (Run, error) {
@@ -208,9 +208,9 @@ WHERE ac.program_id = p.id AND p.id = $1 AND p.state = 'active'
 `
 
 type FillProgramScheduleParams struct {
-	ID            uuid.UUID
-	Now           time.Time
-	JitterSeconds float64
+	ID            uuid.UUID `json:"id"`
+	Now           time.Time `json:"now"`
+	JitterSeconds float64   `json:"jitter_seconds"`
 }
 
 // An in-scope host of an active program with no due date gets a resolve within
@@ -229,13 +229,17 @@ SET next_render_at = $2::timestamptz + make_interval(secs => random() * $3::floa
 FROM program p
 WHERE ac.program_id = p.id AND p.id = $1 AND p.state = 'active'
   AND ac.scope_status = 'in_scope' AND ac.lifecycle <> 'archived' AND ac.next_render_at IS NULL
-  AND ((ac.kind = 'service' AND ac.http_state IS NOT NULL) OR ac.kind = 'url')
+  AND ((ac.kind = 'service' AND ac.http_state IS NOT NULL)
+       -- A declared URL earns its render once its service has answered.
+       OR (ac.kind = 'url' AND EXISTS (
+            SELECT 1 FROM asset u JOIN asset_current s ON s.asset_id = u.parent_asset_id
+            WHERE u.id = ac.asset_id AND s.http_state IS NOT NULL)))
 `
 
 type FillRenderScheduleParams struct {
-	ID            uuid.UUID
-	Now           time.Time
-	JitterSeconds float64
+	ID            uuid.UUID `json:"id"`
+	Now           time.Time `json:"now"`
+	JitterSeconds float64   `json:"jitter_seconds"`
 }
 
 // A web service or declared URL that may be rendered and has no date gets one,
@@ -253,15 +257,15 @@ SELECT a.id, a.first_seen, a.scope_status FROM asset a WHERE a.program_id = $1 A
 `
 
 type GetAssetByKeyParams struct {
-	ProgramID uuid.UUID
-	Kind      string
-	Key       string
+	ProgramID uuid.UUID `json:"program_id"`
+	Kind      string    `json:"kind"`
+	Key       string    `json:"key"`
 }
 
 type GetAssetByKeyRow struct {
-	ID          uuid.UUID
-	FirstSeen   time.Time
-	ScopeStatus string
+	ID          uuid.UUID `json:"id"`
+	FirstSeen   time.Time `json:"first_seen"`
+	ScopeStatus string    `json:"scope_status"`
 }
 
 func (q *Queries) GetAssetByKey(ctx context.Context, arg GetAssetByKeyParams) (GetAssetByKeyRow, error) {
@@ -308,8 +312,8 @@ SELECT a.id, a.port FROM asset a WHERE a.parent_asset_id = $1 AND a.kind = 'serv
 `
 
 type ListChildServicesRow struct {
-	ID   uuid.UUID
-	Port *int32
+	ID   uuid.UUID `json:"id"`
+	Port *int32    `json:"port"`
 }
 
 func (q *Queries) ListChildServices(ctx context.Context, parentAssetID *uuid.UUID) ([]ListChildServicesRow, error) {
@@ -357,13 +361,13 @@ SET informative_failures = EXCLUDED.informative_failures, non_informative_failur
 `
 
 type PutLayerParams struct {
-	AssetID                uuid.UUID
-	Layer                  string
-	InformativeFailures    int32
-	NonInformativeFailures int32
-	FirstFailureAt         *time.Time
-	LastOkAt               *time.Time
-	Now                    time.Time
+	AssetID                uuid.UUID  `json:"asset_id"`
+	Layer                  string     `json:"layer"`
+	InformativeFailures    int32      `json:"informative_failures"`
+	NonInformativeFailures int32      `json:"non_informative_failures"`
+	FirstFailureAt         *time.Time `json:"first_failure_at"`
+	LastOkAt               *time.Time `json:"last_ok_at"`
+	Now                    time.Time  `json:"now"`
 }
 
 func (q *Queries) PutLayer(ctx context.Context, arg PutLayerParams) error {
@@ -385,9 +389,9 @@ WHERE program_id = $1 AND kind = 'fqdn' AND key = $2 AND scope_status = 'in_scop
 `
 
 type ScheduleFullNowParams struct {
-	ProgramID uuid.UUID
-	Key       string
-	Now       time.Time
+	ProgramID uuid.UUID `json:"program_id"`
+	Key       string    `json:"key"`
+	Now       time.Time `json:"now"`
 }
 
 func (q *Queries) ScheduleFullNow(ctx context.Context, arg ScheduleFullNowParams) error {
@@ -403,11 +407,11 @@ WHERE asset_id = $1
 `
 
 type SetScheduleParams struct {
-	AssetID       uuid.UUID
-	BackoffTier   int32
-	NextResolveAt *time.Time
-	NextFullAt    *time.Time
-	CheckedAt     *time.Time
+	AssetID       uuid.UUID  `json:"asset_id"`
+	BackoffTier   int32      `json:"backoff_tier"`
+	NextResolveAt *time.Time `json:"next_resolve_at"`
+	NextFullAt    *time.Time `json:"next_full_at"`
+	CheckedAt     *time.Time `json:"checked_at"`
 }
 
 func (q *Queries) SetSchedule(ctx context.Context, arg SetScheduleParams) error {

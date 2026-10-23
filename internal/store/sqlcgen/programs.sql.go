@@ -19,10 +19,10 @@ RETURNING id, origin, platform, slug, name, bounty, state, archived_by, auto_sca
 `
 
 type CreateManualProgramParams struct {
-	Name     string
-	Platform *string
-	AutoScan *string
-	Now      time.Time
+	Name     string    `json:"name"`
+	Platform *string   `json:"platform"`
+	AutoScan *string   `json:"auto_scan"`
+	Now      time.Time `json:"now"`
 }
 
 func (q *Queries) CreateManualProgram(ctx context.Context, arg CreateManualProgramParams) (Program, error) {
@@ -82,9 +82,9 @@ ORDER BY lower(p.name), p.id
 `
 
 type ListProgramsRow struct {
-	Program   Program
-	OpenRules int32
-	Wildcards int32
+	Program   Program `json:"program"`
+	OpenRules int32   `json:"open_rules"`
+	Wildcards int32   `json:"wildcards"`
 }
 
 func (q *Queries) ListPrograms(ctx context.Context) ([]ListProgramsRow, error) {
@@ -162,10 +162,10 @@ UPDATE program SET state = $2, archived_by = $3, updated_at = $4::timestamptz WH
 `
 
 type SetProgramStateParams struct {
-	ID         uuid.UUID
-	State      string
-	ArchivedBy *string
-	Now        time.Time
+	ID         uuid.UUID `json:"id"`
+	State      string    `json:"state"`
+	ArchivedBy *string   `json:"archived_by"`
+	Now        time.Time `json:"now"`
 }
 
 func (q *Queries) SetProgramState(ctx context.Context, arg SetProgramStateParams) error {
@@ -186,12 +186,12 @@ RETURNING id, origin, platform, slug, name, bounty, state, archived_by, auto_sca
 `
 
 type UpdateProgramParams struct {
-	ID         uuid.UUID
-	Name       string
-	State      string
-	ArchivedBy *string
-	AutoScan   *string
-	Now        time.Time
+	ID         uuid.UUID `json:"id"`
+	Name       string    `json:"name"`
+	State      string    `json:"state"`
+	ArchivedBy *string   `json:"archived_by"`
+	AutoScan   *string   `json:"auto_scan"`
+	Now        time.Time `json:"now"`
 }
 
 func (q *Queries) UpdateProgram(ctx context.Context, arg UpdateProgramParams) (Program, error) {
@@ -231,11 +231,11 @@ RETURNING id, origin, platform, slug, name, bounty, state, archived_by, auto_sca
 `
 
 type UpsertSyncedProgramParams struct {
-	Platform *string
-	Slug     *string
-	Name     string
-	Bounty   *bool
-	Now      time.Time
+	Platform *string   `json:"platform"`
+	Slug     *string   `json:"slug"`
+	Name     string    `json:"name"`
+	Bounty   *bool     `json:"bounty"`
+	Now      time.Time `json:"now"`
 }
 
 func (q *Queries) UpsertSyncedProgram(ctx context.Context, arg UpsertSyncedProgramParams) (Program, error) {

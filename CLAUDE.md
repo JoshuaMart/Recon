@@ -11,8 +11,9 @@ report becomes assets, deduplicated observations and changes. Verification probe
 program and moves assets through the state machine (`internal/lifecycle`, pure functions). It is off
 in the local stack (`VERIFICATION_ENABLED`) because it scans every in-scope host. Renders are
 dispatched to the Fingerprinter (`internal/render`), paced and polite, and give technologies with
-parsed versions, a fingerprint observation and a deduplicated screenshot. Phase 5 (search language)
-is next. The design in `docs/` is the source of
+parsed versions, a fingerprint observation and a deduplicated screenshot. The search language
+(`internal/search`) parses text to an AST that prints back, and compiles it to parameterized SQL; a
+test runs every query of `search.md`, so a new example there must work. Phase 6 (interface) is next. The design in `docs/` is the source of
 truth, and code follows it.
 
 ## Read before working

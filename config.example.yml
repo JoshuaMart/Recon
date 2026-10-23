@@ -50,6 +50,8 @@ render:
   periodic: 504h       # next render after a successful one (21 d)
   retry: 6h            # next render after the target did not answer
 
+geoip_dir: /data/geoip   # GeoLite2-ASN.mmdb and GeoLite2-City.mmdb; absent files disable enrichment
+
 screenshots:
   dir: /data/screenshots
   quality: 70          # JPEG quality of the stored image and thumbnail

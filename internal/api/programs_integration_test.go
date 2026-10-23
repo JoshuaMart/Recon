@@ -122,3 +122,97 @@ func TestUnknownAndMalformedIDsAnswer404(t *testing.T) {
 		t.Errorf("sync without ScopesExtractor = %d %v", code, body)
 	}
 }
+
+func TestSearchRoutes(t *testing.T) {
+	c := newClient(t)
+	code, p := c.do("POST", "/api/programs", `{"name":"Acme"}`)
+	if code != 201 {
+		t.Fatal(code)
+	}
+	pid := p["id"].(string)
+	if code, _ := c.do("POST", "/api/programs/"+pid+"/rules", `{"kind":"include","matcher":"apex","pattern":"acme.com"}`); code != 201 {
+		t.Fatal(code)
+	}
+	code, body := c.do("POST", "/api/programs/"+pid+"/assets", `{"entries":["https://app.acme.com/portal"]}`)
+	if code != 200 {
+		t.Fatalf("declare = %d %v", code, body)
+	}
+
+	code, body = c.do("GET", "/api/search?q=techs:nginx", "")
+	if code != 400 || body["error"] != "unknown_field" || body["suggest"] != "tech" {
+		t.Errorf("unknown field = %d %v", code, body)
+	}
+	if code, body = c.do("GET", "/api/search?q=title:%22x", ""); code != 400 || body["error"] != "syntax_error" {
+		t.Errorf("syntax error = %d %v", code, body)
+	}
+	code, body = c.do("GET", "/api/search?view=assets&q=apex:acme.com", "")
+	rows, _ := body["rows"].([]any)
+	if code != 200 || len(rows) != 3 || body["query"] != "apex:acme.com" {
+		t.Fatalf("search = %d %v", code, body)
+	}
+	if code, body = c.do("GET", "/api/search/fields", ""); code != 200 || len(body["fields"].([]any)) < 30 {
+		t.Errorf("fields = %d", code)
+	}
+	if code, body = c.do("GET", "/api/search/facets?view=assets", ""); code != 200 || body["facets"] == nil {
+		t.Errorf("facets = %d %v", code, body)
+	}
+
+	// The asset view and triage, on the declared URL.
+	var urlID string
+	for _, r := range rows {
+		row := r.(map[string]any)
+		if row["kind"] == "url" {
+			urlID = row["asset_id"].(string)
+		}
+	}
+	code, body = c.do("GET", "/api/assets/"+urlID, "")
+	if code != 200 || body["asset"].(map[string]any)["discovery_source"] != "manual" || body["triage"].(map[string]any)["state"] != "new" {
+		t.Fatalf("asset view = %d %v", code, body)
+	}
+	cur := body["current"].(map[string]any)
+	if cur["lifecycle"] != "candidate" || cur["next_render_at"] != nil {
+		t.Errorf("a declared URL whose service never answered: %v / render at %v", cur["lifecycle"], cur["next_render_at"])
+	}
+	code, body = c.do("PATCH", "/api/assets/"+urlID+"/triage", `{"state":"interesting","tags":["IDOR"," idor ","todo"],"seen":true}`)
+	if code != 200 || body["state"] != "interesting" || len(body["tags"].([]any)) != 2 || body["seen_at"] == nil {
+		t.Fatalf("triage = %d %v", code, body)
+	}
+	_, body = c.do("GET", "/api/search?view=assets&q=triage:interesting%20tag:idor", "")
+	if rows := body["rows"].([]any); len(rows) != 1 {
+		t.Errorf("triage filter = %v", body)
+	}
+	if code, _ := c.do("PATCH", "/api/assets/"+urlID+"/triage", `{"state":"loved"}`); code != 400 {
+		t.Errorf("bad triage state = %d", code)
+	}
+}
+
+func TestExportFormats(t *testing.T) {
+	c := newClient(t)
+	_, p := c.do("POST", "/api/programs", `{"name":"Acme"}`)
+	pid := p["id"].(string)
+	c.do("POST", "/api/programs/"+pid+"/rules", `{"kind":"include","matcher":"apex","pattern":"acme.com"}`)
+	c.do("POST", "/api/programs/"+pid+"/assets", `{"entries":["https://app.acme.com/portal","api.acme.com"]}`)
+	for format, want := range map[string]string{
+		"urls":  "https://app.acme.com/portal\n",
+		"hosts": "app.acme.com\n",
+	} {
+		req, _ := http.NewRequestWithContext(t.Context(), "GET", c.srv.URL+"/api/search/export?format="+format+"&q=kind:url", nil)
+		req.Header.Set("Authorization", "Bearer "+testKey)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		if res.StatusCode != 200 || string(b) != want {
+			t.Errorf("export %s = %d %q, want %q", format, res.StatusCode, b, want)
+		}
+	}
+	req, _ := http.NewRequestWithContext(t.Context(), "GET", c.srv.URL+"/api/search/export?format=xml", nil)
+	req.Header.Set("Authorization", "Bearer "+testKey)
+	res, _ := http.DefaultClient.Do(req)
+	res.Body.Close()
+	if res.StatusCode != 400 {
+		t.Errorf("unknown format = %d", res.StatusCode)
+	}
+}

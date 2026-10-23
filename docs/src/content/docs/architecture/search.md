@@ -136,13 +136,21 @@ flowchart LR
   UI never disagree.
 - **Every value is a bind parameter.** No string concatenation reaches SQL.
 - **An unknown field is an error, not an empty result.** An empty page reads as an empty inventory.
+- **A negation keeps what has no value.** `-cdn:*` matches every asset with no CDN: each term is false,
+  never unknown, when its column is empty, so `NOT` cannot drop rows silently.
+- **An age is "less than this long ago".** `first_seen:<7d` is first seen in the last seven days,
+  `first_seen:>7d` before that.
 
 ## Results
 
 | View | Rows | Use |
 |---|---|---|
-| Services | one row per web service, with screenshot, status, title, technologies | the default |
-| Hosts | one row per host, its services folded in | triage by name |
+| Services | one row per service or declared URL, with screenshot, status, title, technologies | the default |
+| Hosts | one row per host that matches or has a matching service, its matching services folded in | triage by name |
+| Assets | every kind, nothing folded | names, addresses, candidates |
+
+A query naming `kind:` is not narrowed by the view. Results are newest first (`first_seen`), paged
+with an opaque cursor tied to the view, so a cursor from one view is refused by another.
 
 ### Facets
 
@@ -153,11 +161,13 @@ programs, CDN, lifecycle, triage. A facet value that would add a term already in
 
 A **pivot** is a value that links assets nothing else connects: a favicon hash, an internal script
 hash, a cookie name. Each asset view shows, per pivot, how many other assets share it, and clicking it
-runs the search. A value found everywhere (a CDN script, `PHPSESSID`) is hidden as generic.
+runs the search. A value found everywhere (a CDN script, `PHPSESSID`) is hidden as generic: shared by
+assets of five programs or more, or shared by no other asset at all.
 
 ### Export
 
-Any result exports as CSV, JSON, or a plain list of URLs or hosts, ready to pipe into another tool.
+Any result exports as CSV, JSON, or a plain list of URLs or hosts, ready to pipe into another tool, up to
+100 000 rows.
 
 ## Saved searches
 
@@ -167,7 +177,10 @@ essentials, see [notifications](/architecture/notifications/#saved-search-alerts
 
 | Example | Query |
 |---|---|
-| Exposed Docker or Kubernetes | `port:2375,2376,6443,10250 state:active` |
+| Exposed Docker or Kubernetes | `port:2375,2376,6443,10250 -state:inactive,archived` |
 | Old Jenkins | `tech:jenkins@<2.440` |
-| New login pages | `title:*login*,*sign in* first_seen:<24h` |
-| Open databases | `port:3306,5432,27017,6379,9200 state:active` |
+| New login pages | `title:*login*,"*sign in*" first_seen:<24h` |
+| Open databases | `port:3306,5432,27017,6379,9200 -state:inactive,archived` |
+
+A port that speaks no HTTP leaves its service a `candidate` ([lifecycle](/architecture/lifecycle/#state-machine)),
+so these examples exclude the dead rather than asking for `active`.

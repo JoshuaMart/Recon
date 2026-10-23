@@ -15,8 +15,8 @@ SELECT ensure_month_partition($1::text, ($2::timestamptz)::date)
 `
 
 type EnsureMonthPartitionParams struct {
-	Parent string
-	Month  time.Time
+	Parent string    `json:"parent"`
+	Month  time.Time `json:"month"`
 }
 
 func (q *Queries) EnsureMonthPartition(ctx context.Context, arg EnsureMonthPartitionParams) error {

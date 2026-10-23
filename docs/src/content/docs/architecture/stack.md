@@ -161,7 +161,8 @@ internal/
   ct/                 matcher
   fingerprint/        Fingerprinter client, render normalization, versions, screenshots, storage
   render/             dispatcher (pacing, politeness), render ingestion
-  search/             parser, AST, compiler, facets
+  search/             parser, AST printed back, field registry, compiler, views, facets, export
+  enrich/             GeoLite2 lookups: ASN, AS organization, country
   notify/             evaluator, windows, channels
   bbot/               import parser
   api/                HTTP handlers

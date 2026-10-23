@@ -50,8 +50,8 @@ WHERE program_id = $1 AND last_seen_at < $2::timestamptz AND gone_at IS NULL
 `
 
 type MarkUntrackedGoneParams struct {
-	ProgramID uuid.UUID
-	Now       time.Time
+	ProgramID uuid.UUID `json:"program_id"`
+	Now       time.Time `json:"now"`
 }
 
 func (q *Queries) MarkUntrackedGone(ctx context.Context, arg MarkUntrackedGoneParams) error {
@@ -67,11 +67,11 @@ DO UPDATE SET reason = EXCLUDED.reason, last_seen_at = EXCLUDED.last_seen_at, go
 `
 
 type UpsertUntrackedParams struct {
-	ProgramID uuid.UUID
-	Value     string
-	Type      string
-	Reason    string
-	Now       time.Time
+	ProgramID uuid.UUID `json:"program_id"`
+	Value     string    `json:"value"`
+	Type      string    `json:"type"`
+	Reason    string    `json:"reason"`
+	Now       time.Time `json:"now"`
 }
 
 func (q *Queries) UpsertUntracked(ctx context.Context, arg UpsertUntrackedParams) error {

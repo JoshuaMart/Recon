@@ -27,7 +27,7 @@ flowchart LR
 | **2 Recon and ingestion** ✓ | assets and scope classification, assets declared by rules and by hand, the run queue and the `serve` runner, report ingestion, normalization, dedup, changes, auto-scan | a recon on a real wildcard fills the inventory, a second run writes almost no new observations |
 | **3 Verification and lifecycle** ✓ | due dates, verification runs, qualification, state machine, backoff | a host taken down goes `flapping` then `inactive`, a timeout never does |
 | **4 Fingerprinting** ✓ | render triggers, `asset_tech`, versions, screenshots and storage | every new service gets a render, screenshot sizes measured |
-| **5 Search language** | parser, compiler, fields, facets, pivots, export | every example of the search page returns what it says |
+| **5 Search language** ✓ | parser, compiler, fields, facets, pivots, export | every example of the search page returns what it says |
 | **6 Interface** | the screens, triage, wildcards view | a full hunt session without touching the API |
 | **7 Changes and notifications** | change rows, feed, saved search alerts, Discord | a week of use sends only what the defaults list |
 | **8 CT and BBOT** | CT matcher, candidate flow, BBOT import | a certificate for a new name under a wildcard is probed within a minute |

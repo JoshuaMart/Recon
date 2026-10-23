@@ -34,7 +34,10 @@ SET lifecycle = $2, lifecycle_since = sqlc.arg(now)::timestamptz, last_changed =
 WHERE asset_id = $1;
 
 -- name: SetDNSCurrent :exec
-UPDATE asset_current SET dns_state = $2, ips = $3, cname = $4, cdn = sqlc.narg(cdn) WHERE asset_id = $1;
+UPDATE asset_current
+SET dns_state = $2, ips = $3, cname = $4, cdn = sqlc.narg(cdn),
+    asn = sqlc.narg(asn), asn_org = sqlc.narg(asn_org), country = sqlc.narg(country)
+WHERE asset_id = $1;
 
 -- name: SetTCPCurrent :exec
 UPDATE asset_current SET tcp_state = $2 WHERE asset_id = $1;
@@ -42,7 +45,8 @@ UPDATE asset_current SET tcp_state = $2 WHERE asset_id = $1;
 -- name: SetHTTPCurrent :exec
 UPDATE asset_current
 SET http_state = $2, status_code = sqlc.narg(status_code), title = sqlc.narg(title), server = sqlc.narg(server),
-    final_url = sqlc.narg(final_url), scheme = COALESCE(sqlc.narg(scheme), scheme), ips = sqlc.narg(ips), cdn = sqlc.narg(cdn)
+    final_url = sqlc.narg(final_url), scheme = COALESCE(sqlc.narg(scheme), scheme), ips = sqlc.narg(ips), cdn = sqlc.narg(cdn),
+    asn = sqlc.narg(asn), asn_org = sqlc.narg(asn_org), country = sqlc.narg(country)
 WHERE asset_id = $1;
 
 -- name: MarkChanged :exec

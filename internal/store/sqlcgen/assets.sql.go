@@ -25,7 +25,7 @@ func (q *Queries) CountWildcardAssets(ctx context.Context, wildcardID *uuid.UUID
 }
 
 const getAssetCurrent = `-- name: GetAssetCurrent :one
-SELECT asset_id, program_id, kind, key, host, port, scheme, scope_status, lifecycle, dns_state, tcp_state, http_state, ips, cname, cdn, status_code, title, server, final_url, first_seen, last_seen, last_changed, next_resolve_at, next_full_at, backoff_tier, lifecycle_since, last_checked_at, next_render_at, render_priority, last_render_at, redirect_hosts, header_names, cookie_names, script_hashes, favicon_hash, external_hosts, web_sockets, has_robots, has_sitemap, has_llms_txt, waf FROM asset_current WHERE asset_id = $1
+SELECT asset_id, program_id, kind, key, host, port, scheme, scope_status, lifecycle, dns_state, tcp_state, http_state, ips, cname, cdn, status_code, title, server, final_url, first_seen, last_seen, last_changed, next_resolve_at, next_full_at, backoff_tier, lifecycle_since, last_checked_at, next_render_at, render_priority, last_render_at, redirect_hosts, header_names, cookie_names, script_hashes, favicon_hash, external_hosts, web_sockets, has_robots, has_sitemap, has_llms_txt, waf, headers, asn, asn_org, country FROM asset_current WHERE asset_id = $1
 `
 
 func (q *Queries) GetAssetCurrent(ctx context.Context, assetID uuid.UUID) (AssetCurrent, error) {
@@ -73,6 +73,10 @@ func (q *Queries) GetAssetCurrent(ctx context.Context, assetID uuid.UUID) (Asset
 		&i.HasSitemap,
 		&i.HasLlmsTxt,
 		&i.Waf,
+		&i.Headers,
+		&i.Asn,
+		&i.AsnOrg,
+		&i.Country,
 	)
 	return i, err
 }
@@ -84,16 +88,16 @@ ON CONFLICT (asset_id) DO NOTHING
 `
 
 type InsertAssetCurrentParams struct {
-	AssetID     uuid.UUID
-	ProgramID   uuid.UUID
-	Kind        string
-	Key         string
-	Host        string
-	Port        *int32
-	Scheme      *string
-	ScopeStatus string
-	Lifecycle   string
-	Now         time.Time
+	AssetID     uuid.UUID `json:"asset_id"`
+	ProgramID   uuid.UUID `json:"program_id"`
+	Kind        string    `json:"kind"`
+	Key         string    `json:"key"`
+	Host        string    `json:"host"`
+	Port        *int32    `json:"port"`
+	Scheme      *string   `json:"scheme"`
+	ScopeStatus string    `json:"scope_status"`
+	Lifecycle   string    `json:"lifecycle"`
+	Now         time.Time `json:"now"`
 }
 
 func (q *Queries) InsertAssetCurrent(ctx context.Context, arg InsertAssetCurrentParams) error {
@@ -117,13 +121,13 @@ SELECT id, kind, key, host, port, scheme, scope_status FROM asset WHERE program_
 `
 
 type ListProgramAssetsRow struct {
-	ID          uuid.UUID
-	Kind        string
-	Key         string
-	Host        string
-	Port        *int32
-	Scheme      *string
-	ScopeStatus string
+	ID          uuid.UUID `json:"id"`
+	Kind        string    `json:"kind"`
+	Key         string    `json:"key"`
+	Host        string    `json:"host"`
+	Port        *int32    `json:"port"`
+	Scheme      *string   `json:"scheme"`
+	ScopeStatus string    `json:"scope_status"`
 }
 
 func (q *Queries) ListProgramAssets(ctx context.Context, programID uuid.UUID) ([]ListProgramAssetsRow, error) {
@@ -159,8 +163,8 @@ UPDATE asset_current SET last_changed = $2::timestamptz WHERE asset_id = $1
 `
 
 type MarkChangedParams struct {
-	AssetID uuid.UUID
-	Now     time.Time
+	AssetID uuid.UUID `json:"asset_id"`
+	Now     time.Time `json:"now"`
 }
 
 func (q *Queries) MarkChanged(ctx context.Context, arg MarkChangedParams) error {
@@ -174,8 +178,8 @@ UPDATE asset_current SET scope_status = $2 WHERE asset_id = $1
 `
 
 type SetAssetScopeParams struct {
-	AssetID     uuid.UUID
-	ScopeStatus string
+	AssetID     uuid.UUID `json:"asset_id"`
+	ScopeStatus string    `json:"scope_status"`
 }
 
 func (q *Queries) SetAssetScope(ctx context.Context, arg SetAssetScopeParams) error {
@@ -184,15 +188,21 @@ func (q *Queries) SetAssetScope(ctx context.Context, arg SetAssetScopeParams) er
 }
 
 const setDNSCurrent = `-- name: SetDNSCurrent :exec
-UPDATE asset_current SET dns_state = $2, ips = $3, cname = $4, cdn = $5 WHERE asset_id = $1
+UPDATE asset_current
+SET dns_state = $2, ips = $3, cname = $4, cdn = $5,
+    asn = $6, asn_org = $7, country = $8
+WHERE asset_id = $1
 `
 
 type SetDNSCurrentParams struct {
-	AssetID  uuid.UUID
-	DnsState *string
-	Ips      []netip.Addr
-	Cname    []string
-	Cdn      *string
+	AssetID  uuid.UUID    `json:"asset_id"`
+	DnsState *string      `json:"dns_state"`
+	Ips      []netip.Addr `json:"ips"`
+	Cname    []string     `json:"cname"`
+	Cdn      *string      `json:"cdn"`
+	Asn      *int32       `json:"asn"`
+	AsnOrg   *string      `json:"asn_org"`
+	Country  *string      `json:"country"`
 }
 
 func (q *Queries) SetDNSCurrent(ctx context.Context, arg SetDNSCurrentParams) error {
@@ -202,6 +212,9 @@ func (q *Queries) SetDNSCurrent(ctx context.Context, arg SetDNSCurrentParams) er
 		arg.Ips,
 		arg.Cname,
 		arg.Cdn,
+		arg.Asn,
+		arg.AsnOrg,
+		arg.Country,
 	)
 	return err
 }
@@ -209,20 +222,24 @@ func (q *Queries) SetDNSCurrent(ctx context.Context, arg SetDNSCurrentParams) er
 const setHTTPCurrent = `-- name: SetHTTPCurrent :exec
 UPDATE asset_current
 SET http_state = $2, status_code = $3, title = $4, server = $5,
-    final_url = $6, scheme = COALESCE($7, scheme), ips = $8, cdn = $9
+    final_url = $6, scheme = COALESCE($7, scheme), ips = $8, cdn = $9,
+    asn = $10, asn_org = $11, country = $12
 WHERE asset_id = $1
 `
 
 type SetHTTPCurrentParams struct {
-	AssetID    uuid.UUID
-	HttpState  *string
-	StatusCode *int32
-	Title      *string
-	Server     *string
-	FinalUrl   *string
-	Scheme     *string
-	Ips        []netip.Addr
-	Cdn        *string
+	AssetID    uuid.UUID    `json:"asset_id"`
+	HttpState  *string      `json:"http_state"`
+	StatusCode *int32       `json:"status_code"`
+	Title      *string      `json:"title"`
+	Server     *string      `json:"server"`
+	FinalUrl   *string      `json:"final_url"`
+	Scheme     *string      `json:"scheme"`
+	Ips        []netip.Addr `json:"ips"`
+	Cdn        *string      `json:"cdn"`
+	Asn        *int32       `json:"asn"`
+	AsnOrg     *string      `json:"asn_org"`
+	Country    *string      `json:"country"`
 }
 
 func (q *Queries) SetHTTPCurrent(ctx context.Context, arg SetHTTPCurrentParams) error {
@@ -236,6 +253,9 @@ func (q *Queries) SetHTTPCurrent(ctx context.Context, arg SetHTTPCurrentParams) 
 		arg.Scheme,
 		arg.Ips,
 		arg.Cdn,
+		arg.Asn,
+		arg.AsnOrg,
+		arg.Country,
 	)
 	return err
 }
@@ -247,9 +267,9 @@ WHERE asset_id = $1
 `
 
 type SetLifecycleParams struct {
-	AssetID   uuid.UUID
-	Lifecycle string
-	Now       time.Time
+	AssetID   uuid.UUID `json:"asset_id"`
+	Lifecycle string    `json:"lifecycle"`
+	Now       time.Time `json:"now"`
 }
 
 func (q *Queries) SetLifecycle(ctx context.Context, arg SetLifecycleParams) error {
@@ -262,8 +282,8 @@ UPDATE asset_current SET tcp_state = $2 WHERE asset_id = $1
 `
 
 type SetTCPCurrentParams struct {
-	AssetID  uuid.UUID
-	TcpState *string
+	AssetID  uuid.UUID `json:"asset_id"`
+	TcpState *string   `json:"tcp_state"`
 }
 
 func (q *Queries) SetTCPCurrent(ctx context.Context, arg SetTCPCurrentParams) error {
@@ -278,9 +298,9 @@ WHERE asset_id = $1
 `
 
 type TouchAssetCurrentParams struct {
-	AssetID     uuid.UUID
-	ScopeStatus string
-	Now         time.Time
+	AssetID     uuid.UUID `json:"asset_id"`
+	ScopeStatus string    `json:"scope_status"`
+	Now         time.Time `json:"now"`
 }
 
 func (q *Queries) TouchAssetCurrent(ctx context.Context, arg TouchAssetCurrentParams) error {
@@ -305,26 +325,26 @@ RETURNING asset.id, asset.first_seen, asset.scope_status, COALESCE((SELECT scope
 `
 
 type UpsertAssetParams struct {
-	ProgramID       uuid.UUID
-	Kind            string
-	Key             string
-	Host            string
-	Port            *int32
-	Scheme          *string
-	ParentAssetID   *uuid.UUID
-	WildcardID      *uuid.UUID
-	DiscoverySource string
-	DiscoveryPath   []byte
-	ScopeStatus     string
-	Now             time.Time
-	Sighting        bool
+	ProgramID       uuid.UUID  `json:"program_id"`
+	Kind            string     `json:"kind"`
+	Key             string     `json:"key"`
+	Host            string     `json:"host"`
+	Port            *int32     `json:"port"`
+	Scheme          *string    `json:"scheme"`
+	ParentAssetID   *uuid.UUID `json:"parent_asset_id"`
+	WildcardID      *uuid.UUID `json:"wildcard_id"`
+	DiscoverySource string     `json:"discovery_source"`
+	DiscoveryPath   []byte     `json:"discovery_path"`
+	ScopeStatus     string     `json:"scope_status"`
+	Now             time.Time  `json:"now"`
+	Sighting        bool       `json:"sighting"`
 }
 
 type UpsertAssetRow struct {
-	ID             uuid.UUID
-	FirstSeen      time.Time
-	ScopeStatus    string
-	OldScopeStatus string
+	ID             uuid.UUID `json:"id"`
+	FirstSeen      time.Time `json:"first_seen"`
+	ScopeStatus    string    `json:"scope_status"`
+	OldScopeStatus string    `json:"old_scope_status"`
 }
 
 // UpsertAsset creates an asset or, when it exists, records the sighting and the

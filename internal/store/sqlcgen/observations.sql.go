@@ -19,10 +19,10 @@ WHERE id = $3 AND observed_at = $4
 `
 
 type ConfirmObservationParams struct {
-	Now        time.Time
-	Version    *string
-	ID         int64
-	ObservedAt time.Time
+	Now        time.Time `json:"now"`
+	Version    *string   `json:"version"`
+	ID         int64     `json:"id"`
+	ObservedAt time.Time `json:"observed_at"`
 }
 
 func (q *Queries) ConfirmObservation(ctx context.Context, arg ConfirmObservationParams) error {
@@ -42,14 +42,14 @@ VALUES ($1, $2, $3, $4, $5::jsonb,
 `
 
 type InsertChangeParams struct {
-	AssetID   uuid.UUID
-	ProgramID uuid.UUID
-	Kind      string
-	Layer     *string
-	Before    []byte
-	After     []byte
-	RunID     *uuid.UUID
-	Now       time.Time
+	AssetID   uuid.UUID  `json:"asset_id"`
+	ProgramID uuid.UUID  `json:"program_id"`
+	Kind      string     `json:"kind"`
+	Layer     *string    `json:"layer"`
+	Before    []byte     `json:"before"`
+	After     []byte     `json:"after"`
+	RunID     *uuid.UUID `json:"run_id"`
+	Now       time.Time  `json:"now"`
 }
 
 func (q *Queries) InsertChange(ctx context.Context, arg InsertChangeParams) error {
@@ -73,13 +73,13 @@ VALUES ($1, $2, $3, $4::jsonb, $5::timestamptz,
 `
 
 type InsertObservationParams struct {
-	AssetID uuid.UUID
-	Layer   string
-	Outcome string
-	Data    []byte
-	Now     time.Time
-	RunID   *uuid.UUID
-	Version *string
+	AssetID uuid.UUID  `json:"asset_id"`
+	Layer   string     `json:"layer"`
+	Outcome string     `json:"outcome"`
+	Data    []byte     `json:"data"`
+	Now     time.Time  `json:"now"`
+	RunID   *uuid.UUID `json:"run_id"`
+	Version *string    `json:"version"`
 }
 
 func (q *Queries) InsertObservation(ctx context.Context, arg InsertObservationParams) error {
@@ -104,18 +104,18 @@ LIMIT 1
 `
 
 type LastObservationParams struct {
-	Outcome string
-	Data    []byte
-	AssetID uuid.UUID
-	Layer   string
+	Outcome string    `json:"outcome"`
+	Data    []byte    `json:"data"`
+	AssetID uuid.UUID `json:"asset_id"`
+	Layer   string    `json:"layer"`
 }
 
 type LastObservationRow struct {
-	ID         int64
-	ObservedAt time.Time
-	Outcome    string
-	Data       []byte
-	Same       bool
+	ID         int64     `json:"id"`
+	ObservedAt time.Time `json:"observed_at"`
+	Outcome    string    `json:"outcome"`
+	Data       []byte    `json:"data"`
+	Same       bool      `json:"same"`
 }
 
 func (q *Queries) LastObservation(ctx context.Context, arg LastObservationParams) (LastObservationRow, error) {

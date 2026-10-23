@@ -74,7 +74,11 @@ SET next_render_at = sqlc.arg(now)::timestamptz + make_interval(secs => random()
 FROM program p
 WHERE ac.program_id = p.id AND p.id = $1 AND p.state = 'active'
   AND ac.scope_status = 'in_scope' AND ac.lifecycle <> 'archived' AND ac.next_render_at IS NULL
-  AND ((ac.kind = 'service' AND ac.http_state IS NOT NULL) OR ac.kind = 'url');
+  AND ((ac.kind = 'service' AND ac.http_state IS NOT NULL)
+       -- A declared URL earns its render once its service has answered.
+       OR (ac.kind = 'url' AND EXISTS (
+            SELECT 1 FROM asset u JOIN asset_current s ON s.asset_id = u.parent_asset_id
+            WHERE u.id = ac.asset_id AND s.http_state IS NOT NULL)));
 
 -- name: ScheduleFullNow :exec
 UPDATE asset_current SET next_full_at = sqlc.arg(now)::timestamptz

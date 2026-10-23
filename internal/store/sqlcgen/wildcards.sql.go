@@ -19,10 +19,10 @@ ON CONFLICT (rule_id) DO NOTHING
 `
 
 type CreateWildcardParams struct {
-	ProgramID uuid.UUID
-	RuleID    uuid.UUID
-	Apex      string
-	Now       time.Time
+	ProgramID uuid.UUID `json:"program_id"`
+	RuleID    uuid.UUID `json:"rule_id"`
+	Apex      string    `json:"apex"`
+	Now       time.Time `json:"now"`
 }
 
 func (q *Queries) CreateWildcard(ctx context.Context, arg CreateWildcardParams) error {
@@ -48,25 +48,25 @@ ORDER BY w.last_recon_at NULLS FIRST, w.created_at, w.id
 `
 
 type ListWildcardsParams struct {
-	DefaultAutoScan string
-	ProgramID       *uuid.UUID
-	IncludeInactive bool
+	DefaultAutoScan string     `json:"default_auto_scan"`
+	ProgramID       *uuid.UUID `json:"program_id"`
+	IncludeInactive bool       `json:"include_inactive"`
 }
 
 type ListWildcardsRow struct {
-	ID           uuid.UUID
-	ProgramID    uuid.UUID
-	RuleID       uuid.UUID
-	Apex         string
-	LastReconAt  *time.Time
-	LastReconRun *uuid.UUID
-	AssetsFound  int32
-	CreatedAt    time.Time
-	ProgramName  string
-	Platform     *string
-	ProgramState string
-	Active       bool
-	AutoScan     string
+	ID           uuid.UUID  `json:"id"`
+	ProgramID    uuid.UUID  `json:"program_id"`
+	RuleID       uuid.UUID  `json:"rule_id"`
+	Apex         string     `json:"apex"`
+	LastReconAt  *time.Time `json:"last_recon_at"`
+	LastReconRun *uuid.UUID `json:"last_recon_run"`
+	AssetsFound  int32      `json:"assets_found"`
+	CreatedAt    time.Time  `json:"created_at"`
+	ProgramName  string     `json:"program_name"`
+	Platform     *string    `json:"platform"`
+	ProgramState string     `json:"program_state"`
+	Active       bool       `json:"active"`
+	AutoScan     string     `json:"auto_scan"`
 }
 
 func (q *Queries) ListWildcards(ctx context.Context, arg ListWildcardsParams) ([]ListWildcardsRow, error) {

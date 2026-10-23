@@ -33,8 +33,8 @@ UPDATE scope_sync SET last_error = $1::text, last_error_at = $2::timestamptz
 `
 
 type SyncFailedParams struct {
-	Error string
-	Now   time.Time
+	Error string    `json:"error"`
+	Now   time.Time `json:"now"`
 }
 
 func (q *Queries) SyncFailed(ctx context.Context, arg SyncFailedParams) error {
@@ -56,8 +56,8 @@ UPDATE scope_sync SET last_success_at = $1::timestamptz, last_summary = $2::json
 `
 
 type SyncSucceededParams struct {
-	Now     time.Time
-	Summary []byte
+	Now     time.Time `json:"now"`
+	Summary []byte    `json:"summary"`
 }
 
 func (q *Queries) SyncSucceeded(ctx context.Context, arg SyncSucceededParams) error {

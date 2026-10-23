@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/JoshuaMart/recon/internal/canon"
+	"github.com/JoshuaMart/recon/internal/enrich"
 	"github.com/JoshuaMart/recon/internal/inventory"
 	"github.com/JoshuaMart/recon/internal/lifecycle"
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
@@ -61,6 +62,8 @@ type Input struct {
 	// Ports is the port list the run swept: a known service on a port outside
 	// it was not measured.
 	Ports []int
+	// GeoIP enriches addresses; nil leaves ASN and country empty.
+	GeoIP *enrich.GeoIP
 }
 
 func (in Input) verify() bool { return in.Run.Kind == "verification" }
@@ -193,8 +196,10 @@ func (g *ingester) host(ctx context.Context, h Host) error {
 			return err
 		}
 	}
+	nw := g.in.GeoIP.First(ips)
 	if err := g.w.Q.SetDNSCurrent(ctx, sqlcgen.SetDNSCurrentParams{
 		AssetID: host.ID, DnsState: &dnsState, Ips: ips, Cname: dns.CNAME, Cdn: cdn,
+		Asn: optInt32(nw.ASN), AsnOrg: optStr(nw.ASOrg), Country: optStr(nw.Country),
 	}); err != nil {
 		return err
 	}
@@ -363,9 +368,11 @@ func (g *ingester) service(ctx context.Context, hostID uuid.UUID, name string, p
 	if outcome == Fail {
 		httpState = "dead_origin"
 	}
+	nw := g.in.GeoIP.First(ips)
 	if err := g.w.Q.SetHTTPCurrent(ctx, sqlcgen.SetHTTPCurrentParams{
 		AssetID: svc.ID, HttpState: &httpState, StatusCode: optInt32(d.StatusCode), Title: optStr(d.Title),
 		Server: optStr(d.Server), FinalUrl: optStr(d.FinalURL), Scheme: optStr(d.Scheme), Ips: ips, Cdn: cdn,
+		Asn: optInt32(nw.ASN), AsnOrg: optStr(nw.ASOrg), Country: optStr(nw.Country),
 	}); err != nil {
 		return err
 	}

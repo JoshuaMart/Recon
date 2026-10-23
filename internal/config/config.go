@@ -37,6 +37,9 @@ type Config struct {
 	Verification    Verification    `koanf:"verification"`
 	Render          Render          `koanf:"render"`
 	Screenshots     Screenshots     `koanf:"screenshots"`
+	// GeoIPDir holds GeoLite2-ASN.mmdb and GeoLite2-City.mmdb. Without them,
+	// ASN and country stay empty.
+	GeoIPDir string `koanf:"geoip_dir"`
 }
 
 // Render is the Fingerprinter and the render cadences. An empty URL leaves
@@ -152,6 +155,7 @@ func Defaults() Config {
 			Concurrency: 20, Timeout: 2 * time.Minute, Periodic: 21 * 24 * time.Hour, Retry: 6 * time.Hour,
 		},
 		Screenshots: Screenshots{Dir: "/data/screenshots", Quality: 70, Keep: 3},
+		GeoIPDir:    "/data/geoip",
 		Verification: Verification{
 			Enabled: true, Batch: 500, Resolve: 24 * time.Hour, Full: 72 * time.Hour,
 			Dormant: 7 * 24 * time.Hour, ArchiveAfter: 30 * 24 * time.Hour,

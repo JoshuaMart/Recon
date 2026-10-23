@@ -380,10 +380,16 @@ func current(id uuid.UUID, d fingerprint.Data, techs []fingerprint.Technology) s
 		}
 	}
 	robots, llms, sitemap := d.Robots, d.LLMsTXT, d.Sitemap != ""
+	// The last hop's headers, for header.<name> filters: the page that answered.
+	var headers []byte
+	if len(d.Chain) > 0 {
+		headers, _ = json.Marshal(d.Chain[len(d.Chain)-1].Headers)
+	}
 	return sqlcgen.SetRenderCurrentParams{
 		AssetID: id, RedirectHosts: set(redirectHosts), HeaderNames: set(headerNames), CookieNames: d.CookieNames,
 		ScriptHashes: set(scriptHashes), FaviconHash: optStr(d.FaviconHash), ExternalHosts: d.ExternalHosts,
 		WebSockets: d.WebSockets, HasRobots: &robots, HasSitemap: &sitemap, HasLlmsTxt: &llms, Waf: waf,
+		Headers: headers,
 	}
 }
 

@@ -24,8 +24,8 @@ RETURNING id, program_id, kind, stage, wildcard_id, state, trigger, queued_at, s
 `
 
 type ClaimQueuedRunParams struct {
-	Now      time.Time
-	Deadline time.Time
+	Now      time.Time `json:"now"`
+	Deadline time.Time `json:"deadline"`
 }
 
 func (q *Queries) ClaimQueuedRun(ctx context.Context, arg ClaimQueuedRunParams) (Run, error) {
@@ -70,12 +70,12 @@ RETURNING id, program_id, kind, stage, wildcard_id, state, trigger, queued_at, s
 `
 
 type EnqueueRunParams struct {
-	ProgramID  uuid.UUID
-	Kind       string
-	Stage      string
-	Trigger    string
-	WildcardID *uuid.UUID
-	Now        time.Time
+	ProgramID  uuid.UUID  `json:"program_id"`
+	Kind       string     `json:"kind"`
+	Stage      string     `json:"stage"`
+	Trigger    string     `json:"trigger"`
+	WildcardID *uuid.UUID `json:"wildcard_id"`
+	Now        time.Time  `json:"now"`
 }
 
 func (q *Queries) EnqueueRun(ctx context.Context, arg EnqueueRunParams) (Run, error) {
@@ -129,12 +129,12 @@ WHERE id = $6 AND state = 'running'
 `
 
 type FinishRunParams struct {
-	State      string
-	Now        time.Time
-	Error      *string
-	ReportMeta []byte
-	Ingest     []byte
-	ID         uuid.UUID
+	State      string    `json:"state"`
+	Now        time.Time `json:"now"`
+	Error      *string   `json:"error"`
+	ReportMeta []byte    `json:"report_meta"`
+	Ingest     []byte    `json:"ingest"`
+	ID         uuid.UUID `json:"id"`
 }
 
 func (q *Queries) FinishRun(ctx context.Context, arg FinishRunParams) (int64, error) {
@@ -184,15 +184,15 @@ SELECT w.id, w.program_id, w.rule_id, w.apex, w.last_recon_at, w.last_recon_run,
 `
 
 type GetWildcardRow struct {
-	ID           uuid.UUID
-	ProgramID    uuid.UUID
-	RuleID       uuid.UUID
-	Apex         string
-	LastReconAt  *time.Time
-	LastReconRun *uuid.UUID
-	AssetsFound  int32
-	CreatedAt    time.Time
-	RuleInForce  bool
+	ID           uuid.UUID  `json:"id"`
+	ProgramID    uuid.UUID  `json:"program_id"`
+	RuleID       uuid.UUID  `json:"rule_id"`
+	Apex         string     `json:"apex"`
+	LastReconAt  *time.Time `json:"last_recon_at"`
+	LastReconRun *uuid.UUID `json:"last_recon_run"`
+	AssetsFound  int32      `json:"assets_found"`
+	CreatedAt    time.Time  `json:"created_at"`
+	RuleInForce  bool       `json:"rule_in_force"`
 }
 
 func (q *Queries) GetWildcard(ctx context.Context, id uuid.UUID) (GetWildcardRow, error) {
@@ -254,13 +254,13 @@ LIMIT $2
 `
 
 type ListRunsParams struct {
-	ProgramID *uuid.UUID
-	Lim       int32
+	ProgramID *uuid.UUID `json:"program_id"`
+	Lim       int32      `json:"lim"`
 }
 
 type ListRunsRow struct {
-	Run  Run
-	Apex *string
+	Run  Run     `json:"run"`
+	Apex *string `json:"apex"`
 }
 
 func (q *Queries) ListRuns(ctx context.Context, arg ListRunsParams) ([]ListRunsRow, error) {
@@ -307,9 +307,9 @@ WHERE wildcard.id = $3
 `
 
 type MarkWildcardReconParams struct {
-	Now   time.Time
-	RunID *uuid.UUID
-	ID    uuid.UUID
+	Now   time.Time  `json:"now"`
+	RunID *uuid.UUID `json:"run_id"`
+	ID    uuid.UUID  `json:"id"`
 }
 
 func (q *Queries) MarkWildcardRecon(ctx context.Context, arg MarkWildcardReconParams) error {
@@ -322,8 +322,8 @@ SELECT w.id FROM wildcard w WHERE w.program_id = $1 AND w.created_at = $2::times
 `
 
 type NewWildcardsParams struct {
-	ProgramID uuid.UUID
-	Now       time.Time
+	ProgramID uuid.UUID `json:"program_id"`
+	Now       time.Time `json:"now"`
 }
 
 func (q *Queries) NewWildcards(ctx context.Context, arg NewWildcardsParams) ([]uuid.UUID, error) {
@@ -358,13 +358,13 @@ LIMIT $2
 `
 
 type OldestWildcardsParams struct {
-	ProgramID *uuid.UUID
-	Lim       int32
+	ProgramID *uuid.UUID `json:"program_id"`
+	Lim       int32      `json:"lim"`
 }
 
 type OldestWildcardsRow struct {
-	ID        uuid.UUID
-	ProgramID uuid.UUID
+	ID        uuid.UUID `json:"id"`
+	ProgramID uuid.UUID `json:"program_id"`
 }
 
 func (q *Queries) OldestWildcards(ctx context.Context, arg OldestWildcardsParams) ([]OldestWildcardsRow, error) {

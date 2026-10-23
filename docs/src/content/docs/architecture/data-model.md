@@ -130,7 +130,7 @@ A change is written in the same transaction as what caused it. Whether you have 
 | identity | program, kind, key, host, apex, port, scheme, scope status |
 | lifecycle | lifecycle, `dns_state`, `tcp_state`, `http_state`, `fingerprint_streak` |
 | scheduling | `next_resolve_at`, `next_full_at`, `next_render_at`, `render_priority`, `backoff_tier` |
-| network | IPs, ASN, AS organization, country, CDN. On a service, copied from its host at ingestion |
+| network | IPs, ASN, AS organization, country, CDN. On a service, copied from its host at ingestion. ASN and country come from local GeoLite2 files, read from the first address |
 | HTTP (FastRecon) | status code, title, server, final URL |
 | render (Fingerprinter) | redirect hosts, header names, cookie names, script hashes, favicon hash, external hosts, web sockets, metadata flags, WAF |
 | dates | `first_seen`, `last_seen`, `last_changed`, `last_render_at` |
