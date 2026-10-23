@@ -53,3 +53,37 @@ func TestParseErrors(t *testing.T) {
 		t.Errorf("an empty query is everything: %v %v", n, err)
 	}
 }
+
+// A quoted literal that would read as something else printed bare stays
+// quoted, so printing back never changes what a query means.
+func TestPrintingBackKeepsMeaning(t *testing.T) {
+	for _, in := range []string{`title:"<script>"`, `title:">x"`, `title:"1..2"`, `title:"/x/"`, `host:"a b"`} {
+		n, err := Parse(in)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", in, err)
+		}
+		again, err := Parse(n.String())
+		if err != nil {
+			t.Errorf("%q printed %q, which does not parse: %v", in, n.String(), err)
+			continue
+		}
+		a, b := n.(Term).Values[0], again.(Term).Values[0]
+		if a.Lit != b.Lit || a.Op != b.Op || a.To != b.To || a.Regex != b.Regex {
+			t.Errorf("%q printed %q, which means %+v instead of %+v", in, n.String(), b, a)
+		}
+	}
+}
+
+func TestRegexWithAnEscapedSlash(t *testing.T) {
+	n, err := Parse(`final_url:/\/admin\// status:200`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := n.(And).Left.(Term).Values[0]
+	if !v.Regex || v.Lit != `\/admin\/` {
+		t.Errorf("regex = %+v", v)
+	}
+	if n.String() != `final_url:/\/admin\// status:200` {
+		t.Errorf("prints %q", n.String())
+	}
+}

@@ -18,13 +18,19 @@ FROM asset_current WHERE favicon_hash = sqlc.arg(value)::text;
 
 -- name: PivotScript :one
 SELECT count(*) FILTER (WHERE asset_id <> sqlc.arg(self))::int AS others, count(DISTINCT program_id)::int AS programs
-FROM asset_current WHERE sqlc.arg(value)::text = ANY(script_hashes);
+FROM asset_current WHERE script_hashes @> ARRAY[sqlc.arg(value)::text];
 
 -- name: PivotCookie :one
 SELECT count(*) FILTER (WHERE asset_id <> sqlc.arg(self))::int AS others, count(DISTINCT program_id)::int AS programs
-FROM asset_current WHERE sqlc.arg(value)::text = ANY(cookie_names);
+FROM asset_current WHERE cookie_names @> ARRAY[sqlc.arg(value)::text];
 
 -- name: ListChildren :many
 SELECT ac.asset_id, ac.kind, ac.key, ac.lifecycle, ac.status_code, ac.title
 FROM asset a JOIN asset_current ac ON ac.asset_id = a.id
 WHERE a.parent_asset_id = $1 ORDER BY ac.key;
+
+-- name: EnsureTriage :exec
+INSERT INTO triage (asset_id) VALUES ($1) ON CONFLICT (asset_id) DO NOTHING;
+
+-- name: LockTriage :one
+SELECT * FROM triage WHERE asset_id = $1 FOR UPDATE;

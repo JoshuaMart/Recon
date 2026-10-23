@@ -98,9 +98,11 @@ func (v Value) String() string {
 	return v.Op + quote(v.Lit)
 }
 
-// quote prints a literal, quoted when it holds what would end it.
+// quote prints a literal, quoted when printed bare it would end early or read
+// as something else: a comparison, a regex, a range.
 func quote(s string) string {
-	if s == "" || strings.ContainsAny(s, " \t,()\"@") {
+	if s == "" || strings.ContainsAny(s, " \t,()\"@") || strings.Contains(s, "..") ||
+		strings.HasPrefix(s, "<") || strings.HasPrefix(s, ">") || strings.HasPrefix(s, "/") {
 		return `"` + strings.ReplaceAll(strings.ReplaceAll(s, `\`, `\\`), `"`, `\"`) + `"`
 	}
 	return s
@@ -301,12 +303,24 @@ func (p *parser) values(atStops bool) ([]Value, error) {
 func (p *parser) value(atStops bool) (Value, error) {
 	var v Value
 	if p.peek() == '/' {
-		end := strings.IndexByte(p.src[p.pos+1:], '/')
+		// The regex ends at the first slash not escaped: \/ is a slash inside
+		// it, which both Go's and PostgreSQL's regex read as a literal slash.
+		end := -1
+		for i := p.pos + 1; i < len(p.src); i++ {
+			if p.src[i] == '\\' {
+				i++
+				continue
+			}
+			if p.src[i] == '/' {
+				end = i
+				break
+			}
+		}
 		if end < 0 {
 			return v, p.errf("a regex is not closed")
 		}
-		v.Lit, v.Regex = p.src[p.pos+1:p.pos+1+end], true
-		p.pos += end + 2
+		v.Lit, v.Regex = p.src[p.pos+1:end], true
+		p.pos = end + 1
 		return v, nil
 	}
 	for _, op := range []string{">=", "<=", ">", "<"} {

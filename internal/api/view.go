@@ -203,51 +203,54 @@ func (s *server) patchTriage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	ctx := r.Context()
-	if _, err := s.Store.Q.GetAsset(ctx, id); errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, http.StatusNotFound, "not_found", "id not found")
-		return
-	} else if err != nil {
-		s.internal(w, r, err)
+	if body.State != nil && !slices.Contains(triageStates, *body.State) {
+		writeError(w, http.StatusBadRequest, "bad_field", "state is new, seen, interesting or ignored")
 		return
 	}
-	cur, err := s.Store.Q.GetTriage(ctx, id)
-	if errors.Is(err, pgx.ErrNoRows) {
-		cur = sqlcgen.Triage{AssetID: id, State: "new", Tags: []string{}}
-	} else if err != nil {
-		s.internal(w, r, err)
-		return
-	}
-	if body.State != nil {
-		if !slices.Contains(triageStates, *body.State) {
-			writeError(w, http.StatusBadRequest, "bad_field", "state is new, seen, interesting or ignored")
-			return
+	// One transaction with the row locked: two edits in flight (marking seen
+	// while a tag is added) apply one after the other instead of one erasing
+	// the other.
+	s.inTx(w, r, func(q *sqlcgen.Queries) (int, any, error) {
+		ctx := r.Context()
+		if _, err := q.GetAsset(ctx, id); errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "not_found", "id not found")
+			return 0, nil, errHandled
+		} else if err != nil {
+			return 0, nil, err
 		}
-		cur.State = *body.State
-	}
-	if body.Tags != nil {
-		tags := []string{}
-		for _, t := range *body.Tags {
-			if t = strings.ToLower(strings.TrimSpace(t)); t != "" && !slices.Contains(tags, t) {
-				tags = append(tags, t)
+		if err := q.EnsureTriage(ctx, id); err != nil {
+			return 0, nil, err
+		}
+		cur, err := q.LockTriage(ctx, id)
+		if err != nil {
+			return 0, nil, err
+		}
+		if body.State != nil {
+			cur.State = *body.State
+		}
+		if body.Tags != nil {
+			tags := []string{}
+			for _, t := range *body.Tags {
+				if t = strings.ToLower(strings.TrimSpace(t)); t != "" && !slices.Contains(tags, t) {
+					tags = append(tags, t)
+				}
+			}
+			cur.Tags = tags
+		}
+		if body.Note != nil {
+			cur.Note = body.Note
+		}
+		if body.Seen {
+			now := s.now()
+			cur.SeenAt = &now
+			if cur.State == "new" {
+				cur.State = "seen"
 			}
 		}
-		cur.Tags = tags
-	}
-	if body.Note != nil {
-		cur.Note = body.Note
-	}
-	if body.Seen {
-		now := s.now()
-		cur.SeenAt = &now
-		if cur.State == "new" {
-			cur.State = "seen"
+		row, err := q.PutTriage(ctx, sqlcgen.PutTriageParams{AssetID: id, State: cur.State, Tags: cur.Tags, Note: cur.Note, SeenAt: cur.SeenAt})
+		if err != nil {
+			return 0, nil, err
 		}
-	}
-	row, err := s.Store.Q.PutTriage(ctx, sqlcgen.PutTriageParams{AssetID: id, State: cur.State, Tags: cur.Tags, Note: cur.Note, SeenAt: cur.SeenAt})
-	if err != nil {
-		s.internal(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, row)
+		return http.StatusOK, row, nil
+	})
 }

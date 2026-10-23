@@ -67,9 +67,9 @@ func (s *server) searchFields(w http.ResponseWriter, _ *http.Request) {
 func (s *server) searchExport(w http.ResponseWriter, r *http.Request) {
 	req := s.searchRequest(r)
 	format := r.URL.Query().Get("format")
-	// The query is checked before anything is written, so a refusal is still
-	// a clean 400.
-	if _, err := search.Parse(req.Query); err != nil {
+	// The query is compiled before anything is written, so an unknown field is
+	// still a 400 and never an empty 200 that reads as an empty inventory.
+	if err := search.Validate(req); err != nil {
 		s.searchError(w, r, err)
 		return
 	}
@@ -116,7 +116,8 @@ func (s *server) searchExport(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_field", "format is json, csv, urls or hosts")
 		return
 	}
-	if err := search.Export(r.Context(), s.Store.Pool, req, write); err != nil {
+	light := format == "urls" || format == "hosts"
+	if err := search.Export(r.Context(), s.Store.Pool, req, light, write); err != nil {
 		// Headers are sent: the client sees a truncated body, the log says why.
 		s.Log.ErrorContext(r.Context(), "export", "err", err)
 	}

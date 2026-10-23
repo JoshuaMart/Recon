@@ -46,7 +46,8 @@ type Row struct {
 	FirstSeen    time.Time  `json:"first_seen"`
 	LastSeen     time.Time  `json:"last_seen"`
 	LastChanged  *time.Time `json:"last_changed"`
-	// Services are, in the hosts view, the host's matching services.
+	// Services are, in the hosts view, the host's matching services. A host is
+	// a name or an address.
 	Services []string `json:"services,omitempty"`
 }
 
@@ -166,9 +167,9 @@ func Search(ctx context.Context, pool *pgxpool.Pool, req Request) (Page, error) 
 	if req.View == ViewHosts {
 		sql = `WITH m AS (SELECT ac.program_id, ac.host, ac.kind, ac.key FROM ` + From + ` WHERE ` + c.Where + `)
 SELECT ` + selectRow + `,
-  (SELECT array_agg(m2.key ORDER BY m2.key) FROM m m2 WHERE m2.program_id = ac.program_id AND m2.host = ac.host AND m2.kind <> 'fqdn')
+  (SELECT array_agg(m2.key ORDER BY m2.key) FROM m m2 WHERE m2.program_id = ac.program_id AND m2.host = ac.host AND m2.kind IN ('service', 'url'))
 FROM ` + From + `
-WHERE ac.kind = 'fqdn' AND EXISTS (SELECT 1 FROM m WHERE m.program_id = ac.program_id AND m.host = ac.host)` +
+WHERE ac.kind IN ('fqdn', 'ip') AND EXISTS (SELECT 1 FROM m WHERE m.program_id = ac.program_id AND m.host = ac.host)` +
 			after + `
 ORDER BY ac.first_seen DESC, ac.asset_id DESC LIMIT ` + lim
 	} else {
@@ -229,7 +230,8 @@ var facets = []struct {
 }
 
 // Facets counts the matching rows per value of each facet, the 20 most
-// frequent of each.
+// frequent of each, in one query: the filter is evaluated once, into a
+// materialized set every facet counts over.
 func Facets(ctx context.Context, pool *pgxpool.Pool, req Request) (map[string][]Count, error) {
 	if req.View == "" {
 		req.View = ViewServices
@@ -238,43 +240,59 @@ func Facets(ctx context.Context, pool *pgxpool.Pool, req Request) (map[string][]
 	if err != nil {
 		return nil, err
 	}
-	out := map[string][]Count{}
-	for _, f := range facets {
-		sql := `WITH m AS (SELECT ac.asset_id FROM ` + From + ` WHERE ` + c.Where + `)
-SELECT ` + f.expr + ` AS v, count(DISTINCT m.asset_id) FROM m
+	parts := make([]string, 0, len(facets))
+	for i, f := range facets {
+		parts = append(parts, fmt.Sprintf(`SELECT %d AS f, %s AS v, count(DISTINCT m.asset_id) AS n FROM m
 JOIN asset_current ac ON ac.asset_id = m.asset_id
 JOIN program p ON p.id = ac.program_id
-LEFT JOIN triage tr ON tr.asset_id = m.asset_id ` + f.join + `
-WHERE ` + f.expr + ` IS NOT NULL
-GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 20`
-		rows, err := pool.Query(ctx, sql, c.Args...)
-		if err != nil {
-			return nil, fmt.Errorf("facet %s: %w", f.name, err)
-		}
-		counts := []Count{}
-		for rows.Next() {
-			var v string
-			var n int
-			if err := rows.Scan(&v, &n); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			counts = append(counts, Count{Value: v, Count: n, Term: Term{Field: f.term, Values: []Value{{Lit: v}}}.String()})
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
+LEFT JOIN triage tr ON tr.asset_id = m.asset_id %s
+WHERE %s IS NOT NULL GROUP BY 2`, i, f.expr, f.join, f.expr))
+	}
+	sql := `WITH m AS MATERIALIZED (SELECT ac.asset_id FROM ` + From + ` WHERE ` + c.Where + `),
+counts AS (` + strings.Join(parts, "\nUNION ALL\n") + `)
+SELECT f, v, n FROM (
+  SELECT f, v, n, row_number() OVER (PARTITION BY f ORDER BY n DESC, v) AS rank FROM counts
+) ranked WHERE rank <= 20 ORDER BY f, n DESC, v`
+	rows, err := pool.Query(ctx, sql, c.Args...)
+	if err != nil {
+		return nil, fmt.Errorf("facets: %w", err)
+	}
+	defer rows.Close()
+	out := map[string][]Count{}
+	for _, f := range facets {
+		out[f.name] = []Count{}
+	}
+	for rows.Next() {
+		var i, n int
+		var v string
+		if err := rows.Scan(&i, &v, &n); err != nil {
 			return nil, err
 		}
-		out[f.name] = counts
+		f := facets[i]
+		out[f.name] = append(out[f.name], Count{Value: v, Count: n, Term: Term{Field: f.term, Values: []Value{{Lit: v}}}.String()})
 	}
-	return out, nil
+	return out, rows.Err()
+}
+
+// Validate parses and compiles a request without running it, so a refusal can
+// be answered before a streamed body starts.
+func Validate(req Request) error {
+	_, _, err := prepare(req)
+	return err
 }
 
 // MaxExport bounds an export.
 const MaxExport = 100_000
 
-// Export streams every matching row to fn, up to MaxExport.
-func Export(ctx context.Context, pool *pgxpool.Pool, req Request, fn func(Row) error) error {
+// selectLight is selectRow without its correlated subqueries, for exports of
+// URLs or hosts that use neither technologies nor thumbnails.
+const selectLight = `ac.asset_id, ac.program_id, p.name, ac.kind, ac.key, ac.host, ac.port, ac.scheme,
+  ac.scope_status, ac.lifecycle, ac.status_code, ac.title, ac.server, ac.final_url, ac.cdn, ac.waf, ac.country,
+  '{}'::text[], NULL::text, COALESCE(tr.state, 'new'), ac.first_seen, ac.last_seen, ac.last_changed`
+
+// Export streams every matching row to fn, up to MaxExport. light skips the
+// technologies and thumbnails.
+func Export(ctx context.Context, pool *pgxpool.Pool, req Request, light bool, fn func(Row) error) error {
 	if req.View == "" {
 		req.View = ViewServices
 	}
@@ -283,7 +301,11 @@ func Export(ctx context.Context, pool *pgxpool.Pool, req Request, fn func(Row) e
 		return err
 	}
 	args := append(c.Args, MaxExport)
-	rows, err := pool.Query(ctx, `SELECT `+selectRow+` FROM `+From+` WHERE `+c.Where+
+	cols := selectRow
+	if light {
+		cols = selectLight
+	}
+	rows, err := pool.Query(ctx, `SELECT `+cols+` FROM `+From+` WHERE `+c.Where+
 		` ORDER BY ac.first_seen DESC, ac.asset_id DESC LIMIT $`+strconv.Itoa(len(args)), args...)
 	if err != nil {
 		return err

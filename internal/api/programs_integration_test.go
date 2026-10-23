@@ -208,11 +208,44 @@ func TestExportFormats(t *testing.T) {
 			t.Errorf("export %s = %d %q, want %q", format, res.StatusCode, b, want)
 		}
 	}
-	req, _ := http.NewRequestWithContext(t.Context(), "GET", c.srv.URL+"/api/search/export?format=xml", nil)
+	// A query that parses and does not compile is refused before the body starts.
+	req, _ := http.NewRequestWithContext(t.Context(), "GET", c.srv.URL+"/api/search/export?format=urls&q=techs:nginx", nil)
 	req.Header.Set("Authorization", "Bearer "+testKey)
 	res, _ := http.DefaultClient.Do(req)
 	res.Body.Close()
 	if res.StatusCode != 400 {
+		t.Errorf("export with an unknown field = %d, want 400", res.StatusCode)
+	}
+	req, _ = http.NewRequestWithContext(t.Context(), "GET", c.srv.URL+"/api/search/export?format=xml", nil)
+	req.Header.Set("Authorization", "Bearer "+testKey)
+	res, _ = http.DefaultClient.Do(req)
+	res.Body.Close()
+	if res.StatusCode != 400 {
 		t.Errorf("unknown format = %d", res.StatusCode)
+	}
+}
+
+// Two triage edits in flight both land: one marks the asset seen, the other
+// tags it.
+func TestConcurrentTriageEditsBothLand(t *testing.T) {
+	c := newClient(t)
+	_, p := c.do("POST", "/api/programs", `{"name":"Acme"}`)
+	pid := p["id"].(string)
+	c.do("POST", "/api/programs/"+pid+"/rules", `{"kind":"include","matcher":"apex","pattern":"acme.com"}`)
+	c.do("POST", "/api/programs/"+pid+"/assets", `{"entries":["api.acme.com"]}`)
+	_, page := c.do("GET", "/api/search?view=assets&q=host:api.acme.com", "")
+	id := page["rows"].([]any)[0].(map[string]any)["asset_id"].(string)
+	for range 10 {
+		done := make(chan struct{}, 2)
+		go func() { c.do("PATCH", "/api/assets/"+id+"/triage", `{"tags":["todo"]}`); done <- struct{}{} }()
+		go func() { c.do("PATCH", "/api/assets/"+id+"/triage", `{"note":"look at /admin"}`); done <- struct{}{} }()
+		<-done
+		<-done
+		_, a := c.do("GET", "/api/assets/"+id, "")
+		tr := a["triage"].(map[string]any)
+		if tags, _ := tr["tags"].([]any); len(tags) != 1 || tr["note"] != "look at /admin" {
+			t.Fatalf("one edit erased the other: %v", tr)
+		}
+		c.do("PATCH", "/api/assets/"+id+"/triage", `{"tags":[],"note":""}`)
 	}
 }

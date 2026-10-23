@@ -51,18 +51,21 @@ func Compile(n Node, now time.Time) (Compiled, error) {
 	return Compiled{Where: w, Args: c.args}, nil
 }
 
-// MentionsKind reports whether a query filters on kind itself, in which case
-// a view does not narrow it.
-func MentionsKind(n Node) bool {
+// MentionsKind reports whether a query asks for kinds itself, in which case a
+// view does not narrow it. Only a kind asked for counts: -kind:url in the
+// services view means services without the URLs, not everything else.
+func MentionsKind(n Node) bool { return asksKind(n, true) }
+
+func asksKind(n Node, positive bool) bool {
 	switch v := n.(type) {
 	case And:
-		return MentionsKind(v.Left) || MentionsKind(v.Right)
+		return asksKind(v.Left, positive) || asksKind(v.Right, positive)
 	case Or:
-		return MentionsKind(v.Left) || MentionsKind(v.Right)
+		return asksKind(v.Left, positive) || asksKind(v.Right, positive)
 	case Not:
-		return MentionsKind(v.Node)
+		return asksKind(v.Node, !positive)
 	case Term:
-		return v.Field == "kind"
+		return positive && v.Field == "kind"
 	}
 	return false
 }

@@ -12,6 +12,15 @@ import (
 	"github.com/google/uuid"
 )
 
+const ensureTriage = `-- name: EnsureTriage :exec
+INSERT INTO triage (asset_id) VALUES ($1) ON CONFLICT (asset_id) DO NOTHING
+`
+
+func (q *Queries) EnsureTriage(ctx context.Context, assetID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, ensureTriage, assetID)
+	return err
+}
+
 const getAsset = `-- name: GetAsset :one
 SELECT id, program_id, kind, key, host, port, scheme, parent_asset_id, wildcard_id, discovery_source, discovery_path, scope_status, first_seen, last_seen FROM asset WHERE id = $1
 `
@@ -97,9 +106,26 @@ func (q *Queries) ListChildren(ctx context.Context, parentAssetID *uuid.UUID) ([
 	return items, nil
 }
 
+const lockTriage = `-- name: LockTriage :one
+SELECT asset_id, state, tags, note, seen_at FROM triage WHERE asset_id = $1 FOR UPDATE
+`
+
+func (q *Queries) LockTriage(ctx context.Context, assetID uuid.UUID) (Triage, error) {
+	row := q.db.QueryRow(ctx, lockTriage, assetID)
+	var i Triage
+	err := row.Scan(
+		&i.AssetID,
+		&i.State,
+		&i.Tags,
+		&i.Note,
+		&i.SeenAt,
+	)
+	return i, err
+}
+
 const pivotCookie = `-- name: PivotCookie :one
 SELECT count(*) FILTER (WHERE asset_id <> $1)::int AS others, count(DISTINCT program_id)::int AS programs
-FROM asset_current WHERE $2::text = ANY(cookie_names)
+FROM asset_current WHERE cookie_names @> ARRAY[$2::text]
 `
 
 type PivotCookieParams struct {
@@ -144,7 +170,7 @@ func (q *Queries) PivotFavicon(ctx context.Context, arg PivotFaviconParams) (Piv
 
 const pivotScript = `-- name: PivotScript :one
 SELECT count(*) FILTER (WHERE asset_id <> $1)::int AS others, count(DISTINCT program_id)::int AS programs
-FROM asset_current WHERE $2::text = ANY(script_hashes)
+FROM asset_current WHERE script_hashes @> ARRAY[$2::text]
 `
 
 type PivotScriptParams struct {

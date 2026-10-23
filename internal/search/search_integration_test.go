@@ -428,3 +428,43 @@ func TestFacets(t *testing.T) {
 		}
 	}
 }
+
+func TestNegatedKindKeepsTheView(t *testing.T) {
+	w := setup(t)
+	for _, k := range w.keys(t, "-kind:url program:acme", "") {
+		if !strings.Contains(k, "/tcp") {
+			t.Fatalf("-kind:url in the services view returned %q, not a service", k)
+		}
+	}
+}
+
+func TestHostsViewFoldsUnderAddresses(t *testing.T) {
+	w := setup(t)
+	w.add(t, svc{program: "acme", host: "10.0.0.5", port: 8443, status: 200, title: "Appliance", age: time.Hour})
+	if _, err := w.st.Pool.Exec(context.Background(), `UPDATE asset SET kind = 'ip' WHERE key = '10.0.0.5';
+		UPDATE asset_current SET kind = 'ip' WHERE key = '10.0.0.5'`); err != nil {
+		t.Fatal(err)
+	}
+	page, err := search.Search(context.Background(), w.st.Pool, search.Request{Query: "title:Appliance", View: search.ViewHosts, Limit: 10, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Rows) != 1 || page.Rows[0].Key != "10.0.0.5" || len(page.Rows[0].Services) != 1 {
+		t.Errorf("a service on an address host in the hosts view = %+v", page.Rows)
+	}
+}
+
+func TestLightExportSkipsWhatItDoesNotPrint(t *testing.T) {
+	w := setup(t)
+	var full, light []search.Row
+	req := search.Request{Query: "has:screenshot", Now: now}
+	if err := search.Export(context.Background(), w.st.Pool, req, false, func(r search.Row) error { full = append(full, r); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := search.Export(context.Background(), w.st.Pool, req, true, func(r search.Row) error { light = append(light, r); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(full) != 1 || len(light) != 1 || full[0].Thumbnail == nil || light[0].Thumbnail != nil || light[0].URL() != full[0].URL() {
+		t.Errorf("full %+v\nlight %+v", full, light)
+	}
+}

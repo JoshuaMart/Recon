@@ -47,7 +47,7 @@ class    = digit "xx"                      status classes: 2xx, 4xx
 | `field:a,b` | any of | `port:80,443` |
 | `field:>n` `>=` `<` `<=` | comparison | `status:>=500` |
 | `field:a..b` | inclusive range | `status:400..499` |
-| `field:/re/` | regex | `host:/^dev[0-9]+\./` |
+| `field:/re/` | regex, `\/` for a slash inside it | `host:/^dev[0-9]+\./` |
 | `-term` or `NOT term` | negation | `-cdn:*` |
 | `has:field` | the field has a value | `has:screenshot` |
 | `a OR b`, `( )` | boolean | `(port:9200 OR port:5601)` |
@@ -146,7 +146,7 @@ flowchart LR
 | View | Rows | Use |
 |---|---|---|
 | Services | one row per service or declared URL, with screenshot, status, title, technologies | the default |
-| Hosts | one row per host that matches or has a matching service, its matching services folded in | triage by name |
+| Hosts | one row per host, name or address, that matches or has a matching service, its matching services folded in | triage by name |
 | Assets | every kind, nothing folded | names, addresses, candidates |
 
 A query naming `kind:` is not narrowed by the view. Results are newest first (`first_seen`), paged
