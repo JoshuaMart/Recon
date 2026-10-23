@@ -6,7 +6,7 @@ sidebar:
 ---
 
 Each phase ends with something you can use, and with integration tests for what it added. A phase
-starts once the previous one works end to end.
+starts once the previous one works end to end. ✓ marks a finished phase.
 
 ```mermaid
 flowchart LR
@@ -22,7 +22,7 @@ flowchart LR
 
 | Phase | Delivers | Done when |
 |---|---|---|
-| **0 Foundations** | repo, compose stack, config, migrations, CI, backup and restore | `make up` starts everything, a restore works |
+| **0 Foundations** ✓ | repo, compose stack, config, migrations, CI, backup and restore | `make up` starts everything, a restore works, isolation is checked |
 | **1 Programs and sync** | programs, rules, wildcards, ScopesExtractor sync, manual programs | a real ScopesExtractor instance fills programs, a removed scope closes its rule |
 | **2 Recon and ingestion** | runners, run contract, report ingestion, normalization, dedup | a recon on a real wildcard fills the inventory, a second run writes almost no new observations |
 | **3 Verification and lifecycle** | due dates, verification runs, qualification, state machine, backoff | a host taken down goes `flapping` then `inactive`, a timeout never does |

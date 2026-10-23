@@ -1,0 +1,22 @@
+# The CT feed. Recon's matcher dials the lite endpoint at "/".
+webserver:
+  listen_addr: "0.0.0.0"
+  listen_port: 8080
+  real_ip: false
+  full_url: "/full-stream"
+  lite_url: "/"
+  domains_only_url: "/domains-only"
+  cert_path: ""
+  cert_key_path: ""
+  compression_enabled: false
+
+prometheus:
+  enabled: false
+
+general:
+  disable_default_logs: false
+  drop_old_logs: true
+  buffer_sizes:
+    websocket: 20000
+  recovery:
+    enabled: false

@@ -60,8 +60,9 @@ flowchart TB
   RUN -->|scans| NET
 ```
 
-The Fingerprinter and Chrome sit on a network with internet access and no route to PostgreSQL. Recon
-calls them, they never call back.
+The Fingerprinter and Chrome sit on a network with internet access and no route to PostgreSQL, and the
+database network has no internet access. Recon calls them, they never call back. `make verify-isolation`
+checks both properties on the running stack, each next to a probe that must succeed.
 
 ## Runs
 
@@ -127,14 +128,24 @@ A slot is a run in `starting` or `running`.
 
 ## Backups
 
-A nightly `pg_dump` to the disk, with a retention, and optionally pushed to the same S3 bucket as the
-screenshots. A restore is tested once in phase 0.
+The `backup` service runs `deploy/compose/backup.sh`: a `pg_dump` every night into `var/backups`, pruned
+after a retention. Pushing dumps to the screenshot bucket comes with the S3 backend.
+
+| Command | Does |
+|---|---|
+| `make backup` | a dump now |
+| `make restore-check` | restores the latest dump into a scratch database, checks it, drops it |
+| `make restore FILE=…` | restores a dump over the live database, with recon stopped |
+
+The integration suite runs the same script against the same image, including a restore over damaged
+data and a refusal of a file that is not a dump.
 
 ## Repository
 
 ```
-cmd/recon/            the binary: serve, migrate, import bbot <program> <file>
+cmd/recon/            the binary: serve, migrate, healthcheck, version, later import bbot
 internal/
+  version/            the build version, set at link time
   config/             the only reader of the environment
   store/              sqlc queries
   scope/              rule matching, ScopesExtractor sync
@@ -148,9 +159,11 @@ internal/
   notify/             evaluator, windows, channels
   bbot/               import parser
   api/                HTTP handlers
+db/embed.go           embeds the migrations
 db/migrations/        goose
 db/queries/           SQL for sqlc
 web/                  SvelteKit, built into internal/ui
 docs/                 this site
-deploy/compose/       the stack
+deploy/compose/       the stack, Dockerfile, backup and isolation scripts
+config.example.yml    every setting with its default, checked against the code by a test
 ```

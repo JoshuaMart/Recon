@@ -10,3 +10,6 @@
 
 # Editors.
 .DS_Store
+
+# Local config files.
+/config.yml

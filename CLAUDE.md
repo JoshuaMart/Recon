@@ -5,8 +5,9 @@ every program hunted on, keeps it fresh, and makes it queryable through a filter
 
 ## Status
 
-Design only. Nothing is implemented yet: the next step is phase 0 of the roadmap. The design in `docs/`
-is the source of truth, and code follows it.
+Phase 0 (foundations) is done: the binary serves `/api/health`, migrates at startup, and the compose
+stack runs with backups. Phase 1 (programs and sync) is next. The design in `docs/` is the source of
+truth, and code follows it.
 
 ## Read before working
 
@@ -54,6 +55,21 @@ pgx/v5, goose, koanf. Deployed with Docker Compose on one VPS. Details in `stack
   most. No incident stories in the design.
 - Docs and UI copy are in English, sentence case headings, no em dashes.
 - A test that does not contain the discriminating case measures nothing: check it fails without the fix.
+
+## Commands
+
+```sh
+cp .env.example .env        # then fill it in
+make up                     # build and start the stack, wait until healthy
+make check                  # vet, lint, unit tests, sqlc diff
+make test-integration       # needs Docker, finds the socket from the Docker context
+make verify-isolation       # network isolation of the running stack
+make help                   # everything else
+```
+
+Configuration is read only in `internal/config` (enforced by the linter). `config.example.yml` must
+list every setting with its default, which a test checks. SQL lives in `db/queries`, run `make sqlc`
+after changing it or a migration.
 
 ## Docs site
 

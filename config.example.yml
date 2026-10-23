@@ -1,0 +1,16 @@
+# Every setting, with its default. Pass a copy with: recon serve -config config.yml
+# Any value can be overridden by an environment variable: RECON_ then the path in
+# upper case, with __ between levels (RECON_DATABASE__URL).
+
+public_url: http://localhost:8080
+api_key: ""            # required, at least 32 characters
+
+http:
+  addr: ":8080"
+
+database:
+  url: ""              # required, postgres://user:password@host:5432/recon
+
+log:
+  level: info          # debug, info, warn, error
+  format: json         # json, text

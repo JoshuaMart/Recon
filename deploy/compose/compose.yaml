@@ -1,0 +1,129 @@
+# The whole stack. From the repository root: make up
+#
+# FastRecon is not a service here: a runner starts it per run.
+
+name: recon
+
+networks:
+  # The database and what may reach it. No internet access.
+  control:
+    internal: true
+  # The renderer, its browsers and the CT feed: internet access, no route to the database.
+  scan:
+
+volumes:
+  pgdata:
+
+x-chrome: &chrome
+  networks: [scan]
+  image: chromedp/headless-shell:latest
+  init: true
+  shm_size: 1g
+  command:
+    - --remote-allow-origins=*
+    - --disable-dev-shm-usage
+    - --disable-gpu
+    - --disable-background-networking
+    - --disable-default-apps
+    - --disable-extensions
+    - --disable-sync
+    - --no-first-run
+  logging:
+    driver: none
+  healthcheck:
+    test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/9222' 2>/dev/null"]
+    interval: 3s
+    timeout: 3s
+    retries: 10
+    start_period: 5s
+  restart: unless-stopped
+
+x-pg-env: &pg-env
+  PGHOST: postgres
+  PGUSER: recon
+  PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+  PGDATABASE: recon
+
+services:
+  postgres:
+    networks: [control]
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: recon
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: recon
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "recon", "-d", "recon"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  recon:
+    networks: [control, scan]
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+      args:
+        VERSION: ${RECON_VERSION:-dev}
+    environment:
+      RECON_API_KEY: ${RECON_API_KEY:?set RECON_API_KEY in .env}
+      RECON_PUBLIC_URL: ${RECON_PUBLIC_URL:-http://localhost:8080}
+      RECON_DATABASE__URL: postgres://recon:${POSTGRES_PASSWORD}@postgres:5432/recon?sslmode=disable
+      RECON_LOG__LEVEL: ${RECON_LOG_LEVEL:-info}
+    ports:
+      - "127.0.0.1:${RECON_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/recon", "healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  backup:
+    networks: [control]
+    image: postgres:18-alpine
+    entrypoint: ["/backup.sh"]
+    command: ["loop"]
+    environment:
+      <<: *pg-env
+      BACKUP_HOUR: ${BACKUP_HOUR:-3}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+    volumes:
+      - ./backup.sh:/backup.sh:ro
+      - ../../var/backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  chrome-1: *chrome
+  chrome-2: *chrome
+  chrome-3: *chrome
+
+  fingerprinter:
+    networks: [scan]
+    image: ghcr.io/joshuamart/fingerprinter:latest
+    volumes:
+      - ./fingerprinter.yml:/app/config.yml:ro
+    ports:
+      - "127.0.0.1:${FINGERPRINTER_PORT:-3001}:3001"
+    depends_on:
+      chrome-1: {condition: service_healthy}
+      chrome-2: {condition: service_healthy}
+      chrome-3: {condition: service_healthy}
+    restart: unless-stopped
+
+  certstream:
+    networks: [scan]
+    image: ghcr.io/d-rickyy-b/certstream-server-go:v1.9.0
+    volumes:
+      - ./certstream.yml:/app/config/config.yaml:ro
+    ports:
+      - "127.0.0.1:${CERTSTREAM_PORT:-3002}:8080"
+    restart: unless-stopped
