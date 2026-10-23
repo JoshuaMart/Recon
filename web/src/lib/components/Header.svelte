@@ -70,7 +70,9 @@
 
 <style>
 	header {
+		flex: none;
 		border-bottom: 1px solid var(--line);
+		background: var(--bg);
 	}
 	.bar {
 		max-width: 1440px;

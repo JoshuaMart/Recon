@@ -9,6 +9,7 @@
 	import Shot from '#lib/components/Shot.svelte';
 	import Status from '#lib/components/Status.svelte';
 	import Lifecycle from '#lib/components/Lifecycle.svelte';
+	import More from '#lib/components/More.svelte';
 
 	interface Field {
 		name: string;
@@ -79,10 +80,13 @@
 	});
 
 	async function loadMore() {
-		if (!next) return;
+		if (!next || more) return;
 		more = true;
+		const t = ticket;
 		try {
 			const res = await api.get<Page>('/api/search' + qs({ q, view, cursor: next }));
+			// A page of the previous query is dropped.
+			if (t !== ticket) return;
 			rows = [...rows, ...res.rows];
 			next = res.next;
 		} finally {
@@ -138,7 +142,7 @@
 
 <svelte:head><title>{q ? q + ' · ' : ''}Search · Recon</title></svelte:head>
 
-<div class="page">
+<div class="page search">
 	<section aria-label="Query" class="query-area">
 		<div class="query-row">
 			<form class="query" onsubmit={submit} role="search">
@@ -339,9 +343,7 @@
 					{/each}
 				</div>
 			{/if}
-			{#if next}
-				<button class="btn more" type="button" onclick={loadMore} disabled={more}>{more ? 'Loading…' : 'Load more'}</button>
-			{/if}
+			{#if next && !loading}<More onmore={loadMore} busy={more} />{/if}
 		</section>
 	</div>
 </div>
@@ -697,10 +699,6 @@
 		padding: 0 4px 4px;
 		min-width: 0;
 	}
-	.more {
-		align-self: center;
-		margin-top: 12px;
-	}
 	@media (hover: hover) {
 		.row:hover,
 		.card:hover {
@@ -714,6 +712,35 @@
 		.chip-x:hover {
 			color: var(--text-strong);
 			background: var(--pressed);
+		}
+	}
+	/* A wide screen keeps the query and the facets in view: facets and
+	   results each scroll on their own. */
+	@media (min-width: 721px) {
+		.search {
+			height: 100%;
+			padding-bottom: 0;
+		}
+		.query-area,
+		.search > .error {
+			flex: none;
+		}
+		.body {
+			flex: 1 1 auto;
+			min-height: 0;
+			flex-wrap: nowrap;
+			align-items: stretch;
+		}
+		.facets,
+		.results {
+			min-height: 0;
+			overflow-y: auto;
+			overscroll-behavior: contain;
+			padding-bottom: 32px;
+		}
+		.facets {
+			flex: 0 0 240px;
+			scrollbar-width: thin;
 		}
 	}
 	@media (max-width: 720px) {

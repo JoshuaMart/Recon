@@ -3,6 +3,7 @@
 	import { api, ApiError, qs } from '#lib/api.ts';
 	import { ago, count, daysSince, label } from '#lib/format.ts';
 	import type { Run, Wildcard } from '#lib/types.ts';
+	import Combobox from '#lib/components/Combobox.svelte';
 
 	let wildcards = $state<Wildcard[]>([]);
 	let runs = $state<Run[]>([]);
@@ -44,6 +45,12 @@
 	const programs = $derived(
 		[...new Map(wildcards.map((w) => [w.program_id, w.program_name])).entries()].sort((a, b) => a[1].localeCompare(b[1]))
 	);
+	const programOptions = $derived(
+		programs.map(([id, name]) => {
+			const n = wildcards.filter((w) => w.program_id === id).length;
+			return { value: id, label: name, hint: `${n} wildcard${n === 1 ? '' : 's'}` };
+		})
+	);
 	const platforms = $derived([...new Set(wildcards.map((w) => w.platform ?? 'manual'))].sort());
 	const scoped = $derived(
 		wildcards.filter((w) => (!program || w.program_id === program) && (!platform || (w.platform ?? 'manual') === platform))
@@ -56,6 +63,8 @@
 			return true;
 		})
 	);
+	// What the button will queue: the oldest rows shown, not already in flight.
+	const toScan = $derived(Math.min(Math.max(0, Math.floor(Number(oldest) || 0)), rows.filter((w) => !inFlight.has(w.id)).length));
 	const never = $derived(scoped.filter((w) => !w.last_recon_at).length);
 
 	const recon = (w: Wildcard) => api.post<{ queued: boolean; reason?: string }>(`/api/wildcards/${w.id}/recon`);
@@ -78,7 +87,7 @@
 		busy = true;
 		notice = '';
 		try {
-			const picked = rows.filter((w) => !inFlight.has(w.id)).slice(0, Number(oldest));
+			const picked = rows.filter((w) => !inFlight.has(w.id)).slice(0, toScan);
 			let n = 0;
 			for (const w of picked) if ((await recon(w)).queued) n++;
 			notice = n ? `${n} recon${n === 1 ? '' : 's'} queued, oldest first.` : 'Nothing queued: every wildcard shown is already running or queued.';
@@ -108,9 +117,11 @@
 			</p>
 		</div>
 		<form class="oldest" onsubmit={scanOldest}>
-			<label for="n">Scan the</label>
-			<input id="n" class="input num" type="number" min="1" max="500" bind:value={oldest} />
-			<button class="btn btn-primary" type="submit" disabled={busy || rows.length === 0}>oldest shown</button>
+			<label for="n">How many</label>
+			<input id="n" class="input num" type="number" inputmode="numeric" min="1" max="500" required bind:value={oldest} />
+			<button class="btn btn-primary" type="submit" disabled={busy || toScan === 0}>
+				{busy ? 'Queuing…' : `Scan the ${toScan} oldest`}
+			</button>
 		</form>
 	</div>
 
@@ -120,11 +131,7 @@
 			<button class="seg" type="button" aria-pressed={filter === 'never'} onclick={() => (filter = 'never')}>Never scanned</button>
 			<button class="seg" type="button" aria-pressed={filter === 'old'} onclick={() => (filter = 'old')}>Older than 30 days</button>
 		</div>
-		<label class="sr-only" for="program">Program</label>
-		<select id="program" class="select" bind:value={program}>
-			<option value="">Every program</option>
-			{#each programs as [id, name] (id)}<option value={id}>{name}</option>{/each}
-		</select>
+		<Combobox id="program" label="Program" placeholder="Every program" options={programOptions} bind:value={program} />
 		<label class="sr-only" for="platform">Platform</label>
 		<select id="platform" class="select" bind:value={platform}>
 			<option value="">Every platform</option>
@@ -188,6 +195,12 @@
 	.oldest input {
 		width: 64px;
 		text-align: end;
+		appearance: textfield;
+	}
+	.oldest input::-webkit-inner-spin-button,
+	.oldest input::-webkit-outer-spin-button {
+		appearance: none;
+		margin: 0;
 	}
 	.filters {
 		display: flex;

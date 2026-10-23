@@ -3,6 +3,8 @@
 	import { api, qs } from '#lib/api.ts';
 	import { ago, dateTime, displayKey, label } from '#lib/format.ts';
 	import type { Change, Program } from '#lib/types.ts';
+	import More from '#lib/components/More.svelte';
+	import Combobox from '#lib/components/Combobox.svelte';
 
 	let changes = $state<Change[]>([]);
 	let next = $state<string | undefined>();
@@ -25,6 +27,7 @@
 	}
 
 	async function loadMore() {
+		if (!next || more) return;
 		more = true;
 		const t = ticket;
 		try {
@@ -45,6 +48,8 @@
 		void program;
 		load();
 	});
+
+	const programOptions = $derived(programs.map((p) => ({ value: p.id, label: p.name, hint: p.origin === 'manual' ? 'manual' : (p.platform ?? '') })));
 
 	const tone: Record<string, string> = { new_asset: 'info', lifecycle: 'warn', scope: 'warn' };
 
@@ -69,19 +74,13 @@
 
 <svelte:head><title>Changes · Recon</title></svelte:head>
 
-<div class="page">
+<div class="page feed">
 	<div class="page-head">
 		<div>
 			<h1>Changes</h1>
 			<p>What moved in the inventory, newest first.</p>
 		</div>
-		<div>
-			<label class="sr-only" for="program">Program</label>
-			<select id="program" class="select" bind:value={program}>
-				<option value="">Every program</option>
-				{#each programs as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
-			</select>
-		</div>
+		<Combobox id="program" label="Program" placeholder="Every program" options={programOptions} bind:value={program} />
 	</div>
 
 	<div class="table-wrap">
@@ -103,15 +102,36 @@
 				{/each}
 			</tbody>
 		</table>
+		{#if next && loaded}<More onmore={loadMore} busy={more} />{/if}
 	</div>
-	{#if next}
-		<button class="btn more" type="button" onclick={loadMore} disabled={more}>{more ? 'Loading…' : 'Load more'}</button>
-	{/if}
 </div>
 
 <style>
 	table {
 		min-width: 860px;
+	}
+	/* A wide screen keeps the title, the filter and the column names in view:
+	   only the rows scroll. */
+	@media (min-width: 721px) {
+		.feed {
+			height: 100%;
+			padding-bottom: 24px;
+		}
+		.feed > .page-head {
+			flex: none;
+		}
+		.feed > .table-wrap {
+			flex: 1 1 auto;
+			min-height: 0;
+			overflow: auto;
+			overscroll-behavior: contain;
+		}
+		th {
+			position: sticky;
+			top: 0;
+			z-index: 1;
+			background: var(--surface);
+		}
 	}
 	.nowrap {
 		white-space: nowrap;
@@ -123,8 +143,5 @@
 		color: var(--muted);
 		max-width: 520px;
 		overflow-wrap: anywhere;
-	}
-	.more {
-		align-self: center;
 	}
 </style>

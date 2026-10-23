@@ -8,9 +8,26 @@
 	let { children } = $props();
 </script>
 
-{#if page.url.pathname !== '/login'}
-	<Header />
-{/if}
-<main>
-	{@render children()}
-</main>
+<!-- The bar stays put: only the page under it scrolls. -->
+<div class="shell">
+	{#if page.url.pathname !== '/login'}
+		<Header />
+	{/if}
+	<main>
+		{@render children()}
+	</main>
+</div>
+
+<style>
+	.shell {
+		height: 100dvh;
+		display: flex;
+		flex-direction: column;
+	}
+	main {
+		flex: 1 1 auto;
+		min-height: 0;
+		overflow-y: auto;
+		scrollbar-gutter: stable;
+	}
+</style>

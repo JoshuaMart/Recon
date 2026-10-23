@@ -14,6 +14,7 @@
 	let loaded = $state(false);
 	let filter = $state<'active' | 'paused' | 'archived' | 'all'>('active');
 	let text = $state('');
+	let onPlatform = $state('');
 	let creating = $state(false);
 	let name = $state('');
 	let platform = $state('');
@@ -30,8 +31,16 @@
 	const rows = $derived(
 		programs
 			.filter((p) => filter === 'all' || p.state === filter)
+			.filter((p) => !onPlatform || platformOf(p) === onPlatform)
 			.filter((p) => !text || p.name.toLowerCase().includes(text.toLowerCase()) || (p.platform ?? '').includes(text.toLowerCase()))
 			.sort((a, b) => a.name.localeCompare(b.name))
+	);
+	// A manual program has no platform: it is filed under manual.
+	const platformOf = (p: Program) => (p.origin === 'manual' ? 'manual' : (p.platform ?? 'unknown'));
+	const platforms = $derived(
+		[...new Map(programs.map((p) => [platformOf(p), 0])).keys()]
+			.map((k) => [k, programs.filter((p) => platformOf(p) === k).length] as const)
+			.sort((a, b) => a[0].localeCompare(b[0]))
 	);
 	const by = $derived((s: string) => programs.filter((p) => p.state === s).length);
 
@@ -100,6 +109,11 @@
 		</div>
 		<label class="sr-only" for="find">Find a program</label>
 		<input id="find" class="input" type="search" placeholder="Find a program" bind:value={text} />
+		<label class="sr-only" for="on-platform">Platform</label>
+		<select id="on-platform" class="select" bind:value={onPlatform}>
+			<option value="">Every platform</option>
+			{#each platforms as [p, n] (p)}<option value={p}>{p} ({n})</option>{/each}
+		</select>
 	</div>
 
 	<div class="table-wrap">
