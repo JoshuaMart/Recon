@@ -1,63 +1,54 @@
 ---
 title: Principles
-description: The six invariants of the system. Every implementation decision answers to them.
+description: The rules every implementation decision answers to.
 sidebar:
   order: 2
 ---
 
-## P1: Discovery and verification are two questions, not two tools
+## P1: Absence of proof is not proof of absence
 
-The same engine answers both, with a different input and a different mandate.
+Comparing two enumeration runs never declares an asset dead. A source that rate-limited or a key
+that expired makes a host vanish from a report while nothing changed on the target.
 
-| | Discovery | Verification |
-|---|---|---|
-| Input | a domain, plus the [scope rules](/architecture/scope/) | the hosts already in the inventory |
-| Question | what exists under this perimeter | what still answers |
-| Trigger | a program's cadence, or a scope change | an asset's due date |
-| Authoritative on | presence | absence |
-| Recursion | yes, sources feed sources | no, the target set is fixed |
-| Cost driver | the sources and the size of what they return | the number of due assets |
+```mermaid
+flowchart LR
+  E[Enumeration run] -->|"found it"| P[asset exists]
+  E -.->|"did not find it"| X[conclude nothing]
+  V[Verification run<br/>explicit target list] -->|"answered"| A[alive]
+  V -->|"refused / nxdomain"| D[step toward death]
+```
 
-One binary, one report shape, one ingestion path. What differs is what each run is allowed to
-conclude, which is the subject of P2.
+Only a run over an **explicit list of targets** can move an asset toward death, because only there
+does a missing answer mean something.
 
-## P2: Absence of proof is not proof of absence
+## P2: Nothing is deleted
 
-**Discovery is authoritative on presence and never on absence.** A source that rate-limits, an index
-that moved, a key that expired: the host drops out of the report while nothing changed on the
-target. FastRecon records every source with its status precisely so that this is visible, and
-visibility is all it buys. Recon can refuse to conclude. It cannot conclude.
+An asset ages, changes state and ends up archived. A scope rule is closed, not removed. A program
+leaving a platform is archived. Out of scope today can be in scope in six months, and its history is
+what makes that useful.
 
-Only a run over an **explicit target list** can move an asset toward death, because only there does
-a missing answer mean something. That is why [verification](/architecture/verification/) feeds the
-scanner the inventory rather than the output of enumeration.
+## P3: A failure is qualified before it counts
 
-:::note
-Comparing two enumeration runs to declare assets gone is the classic home-grown ASM bug. It produces
-dozens of false positives a day and teaches its owner to ignore the alerts.
-:::
+A timeout is not a death. A failure counts toward death only when something reached the target and
+reported an absence (`nxdomain`, connection refused). Everything else makes the asset
+**unobservable**, never dead. See [lifecycle](/architecture/lifecycle/#qualifying-a-failure).
 
-## P3: Nothing is ever deleted
+## P4: One producer per value
 
-An asset is never `DELETE`d. It ages, changes state, and ends up archived. An asset out of scope
-today can be in scope in six months, and its history is what makes that useful.
+Each value has exactly one source, so a change means the target changed, not that two tools disagree.
 
-## P4: Control belongs to the control plane
+| Value | Producer |
+|---|---|
+| DNS, open ports, HTTP status, title, server, final URL, CDN | FastRecon |
+| Technologies and versions, WAF, the browser's redirect chain, headers, cookies, scripts, favicon, web sockets, screenshot | Fingerprinter |
+| ASN, AS organization, country | a local IP database, at ingestion |
+| Scope of synced programs | ScopesExtractor |
 
-Scanners are **replaceable capabilities behind a contract**: the input is a run definition, the
-output is a report. Scope, scheduling, correlation, diff and authorization live in the control
-plane. That is where the value sits; the tools that send packets are interchangeable, and two of
-them already are.
+## P5: Notify the essential, show the rest
 
-## P5: No arbitrary code execution in configuration
+A notification is an interruption. Only a handful of events earn one, and anything else is one click
+away in the UI. See [notifications](/architecture/notifications/).
 
-A run is parameterized by **data**: port lists, a stage scope, exclusion patterns, a source
-selection. Never by commands. A design where defining a workflow means writing shell is structurally
-incompatible with letting anyone else use the platform, since editing a workflow would be remote
-code execution by design.
+## P6: Configuration is data
 
-## P6: Scanners are untrusted by assumption
-
-A run receives a frozen perimeter and returns a report. It holds no database credential and no
-visibility onto other tenants. Everything a scanner needs travels in its run definition, and
-everything it claims is re-derived on arrival.
+Port lists, cadences and thresholds are values in a config file. No setting runs a command.

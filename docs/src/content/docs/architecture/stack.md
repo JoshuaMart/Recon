@@ -1,205 +1,156 @@
 ---
-title: Technical base
-description: The tooling and infrastructure choices, and what each one commits the project to.
+title: Stack and deployment
+description: The languages, the database, how runs are started and tracked, what is configured where, and what is deployed.
 sidebar:
   order: 13
 ---
 
-This is the only chapter about implementation. It exists because the choices it carries are
-**structural**: they decide what becomes expensive to change once the data model is frozen.
+## Choices
 
-Every decision here is dated August 2026. The state of the ecosystem is an input, not a stable truth.
-
-## 13.1 One language
-
-Everything Recon runs is **Go**. The scanners are separate services with their own repositories, reached
-over HTTP and JSON, and that contract is the only coupling surface.
-
-One language is worth stating rather than assuming, because it is what a scanner reached over HTTP buys:
-nothing here needs a second runtime, a second package manager, a second lockfile, a second lint
-configuration or a second CI job. A scanner shipping as a static binary with an HTTP interface is a
-dependency of the deployment, not of the build.
-
-## 13.2 Repository structure
-
-```
-/
-├── go.mod                  single module, Go 1.26
-├── cmd/
-│   ├── controlplane/       API, scheduler, notifier
-│   ├── recon/              bootstrap and operational commands
-│   └── migrate/
-├── internal/
-│   ├── config/             the only place in the repository that reads the environment
-│   ├── store/              sqlc and pgx
-│   ├── normalize/          the single function of 4.5
-│   ├── scope/              in_scope / out_of_scope / unknown evaluation
-│   ├── ct/                 the apex set, the label walk, the candidate writer
-│   ├── run/                run definitions, signed URLs, report ingestion
-│   ├── lifecycle/          transitions, qualification, backoff
-│   ├── diff/               structured comparison, shared by the notifier and the timeline
-│   ├── notify/             queue, aggregation, channels
-│   ├── search/             AST compiler, facets, export
-│   ├── fingerprint/        the Fingerprinter client
-│   └── obs/                logs and metrics
-├── db/
-│   ├── migrations/         goose, versioned SQL
-│   └── queries/            hand written SQL, the source for sqlc
-├── api/                    the report ingestion contract, versioned
-├── web/                    SvelteKit console, holds no database credential
-├── deploy/compose/         the local stack
-├── docs/
-└── .github/workflows/
-```
-
-One `go.mod`, **no workspace**: workspaces justify themselves from several independently published modules.
-No `pkg/` either. Nothing is meant to be imported from outside, and `internal/` gets the compiler to enforce
-that boundary rather than a convention.
-
-## 13.3 Self-hosted PostgreSQL
-
-**PostgreSQL 18**, in a container, the same official image locally and in production.
-
-### Partitioning without an extension
-
-The [monthly partitioning](/architecture/data-model/#partitioning-from-the-first-migration) of `observation`
-and `notification_event` is done by a repository SQL function, called daily by the maintenance loop.
-
-`pg_partman` is the right tool as soon as several partitioned tables with different retentions are in play.
-Here there are two, on a trivial monthly range, with a retention policy that reduces to a `DROP TABLE`. Thirty
-lines of SQL against an extension to install, a non official image to follow, and one more component at
-startup.
-
-### Backups, the consequence of self-hosting
-
-Choosing self-hosting transfers durability to the project. The database is the **only** non reproducible data
-in the system: runs can be replayed, observation history cannot ([P3](/architecture/principles/)).
-
-Continuous WAL archiving, with retention aligned on the observation retention policy. And **a restore that
-has been exercised is worth a backup; an untested backup is worth nothing.** The restore test belongs to the
-first milestone, not to an incident.
-
-**The archive destination is configuration**, a local path in development and a bucket in production. That
-is what makes the restore verifiable on a laptop instead of waiting for a production host to exist, and an
-assertion that cannot go green until the end of the project is an assertion everyone learns to skip.
-
-It has a second effect worth having: the restore path is exercised before it is needed, which is the only
-moment anyone can afford to get it wrong.
-
-In production this is the one thing that puts object storage back in the deployment, and it is a different
-bucket, a different credential and a different lifecycle from the one
-[13.7](#137-what-is-deliberately-not-a-dependency) declines.
-
-## 13.4 Migrations: goose
-
-The first milestone requires that a migration can be applied and then rolled back without loss. That
-assertion rules out the declarative approach and ranks the rest.
-
-| Tool | Verdict |
-|---|---|
-| **goose** | `Up` and `Down` in one file, a `NO TRANSACTION` directive (needed for `CREATE INDEX CONCURRENTLY` and attaching partitions), Go migrations for data transformations, `embed.FS`, a library API, MIT |
-| golang-migrate | a "stable and frozen" v4 API, hundreds of open issues, `up` and `down` in separate files. The choice made by inertia |
-| Atlas | an excellent declarative diff engine on a classic schema, but it fights range partitioning, and its interesting functions are commercial. A schema DSL is also the kind of layer [P5](/architecture/principles/) invites us to avoid |
-
-Fixed conventions: **sequential** numbering rather than timestamps, validation in CI, and a **PostgreSQL
-advisory lock** at startup so two control plane instances never migrate in parallel.
-
-## 13.5 Data access: sqlc and pgx
-
-SQL written by hand in `db/queries`, types generated by **sqlc** against `pgx/v5`, with `sqlc vet` in CI.
-
-The schema sqlc reads is the goose migration directory itself, never a parallel `schema.sql`. Two truths about
-the model at the exact moment it is frozen would be the worst debt available.
-
-## 13.6 Configuration and secrets
-
-`koanf`, with an explicit merge order: **defaults in code, then a YAML file, then environment variables
-prefixed `RECON_`**. One typed structure, a `Validate()` at startup, immediate failure when a required field
-is missing.
-
-A strictly environment oriented library would do if everything were flat values. It will not be: port lists,
-resolvers, [backoff thresholds](/architecture/lifecycle/#backoff-curves) and
-[render cadences](/architecture/verification/#cadence-of-the-periodic-render) are structured data, which is
-exactly what [P5](/architecture/principles/) requires them to stay.
-
-Configuration is **passed explicitly**, never read from a package level global.
-
-:::note[Enforced by the linter]
-**No call to the environment outside `internal/config`.** Without an automated constraint, the "no hard coded
-value" invariant holds for about three weeks.
-:::
-
-| Context | Mechanism |
-|---|---|
-| Local | `.env` ignored by git, `.env.example` committed |
-| Durable | **SOPS and age**: an encrypted file committed, decrypted into the environment so the plaintext never touches disk |
-| CI | repository secrets |
-| Production | a systemd `EnvironmentFile` in 0600 |
-
-**A secret scanner in CI and in a pre-commit hook.** The real failure mode is not a `.env` committed by
-distraction. It is a scanner's API key ending up in a configuration file that legitimately carries a settings
-section, which is why source keys travel through the run's environment and
-[never through the run definition](/architecture/discovery/#73-source-credentials).
-
-## 13.7 What is deliberately not a dependency
-
-Three things the previous shape of this platform needed and this one does not. Each is listed with the
-condition that brings it back, so nobody has to re-derive the reasoning.
-
-| Not deployed | Why not | What brings it back |
+| Role | Choice | Why |
 |---|---|---|
-| A shared token bucket store | FastRecon carries its own limiters, and the render budget is metered in one process | a second control plane process ([9.5](/architecture/deployment/#95-rate-limiting)) |
-| Object storage for scan output | screenshots are not collected, and nothing else is large enough | collecting screenshots. Backups use their own bucket ([13.3](#133-self-hosted-postgresql)) |
-| A message broker | the run queue is due dates in a table, read by one loop | genuine multi consumer fan out, or a throughput need |
+| Backend | **Go**, one binary | same language as FastRecon and the Fingerprinter, a static binary to deploy |
+| UI | **SvelteKit, static adapter**, embedded with `embed.FS` | no Node process in production, the binary serves it |
+| Database | **PostgreSQL 18** | `jsonb`, arrays, `inet`, partitions: the search language compiles to them |
+| Data access | **sqlc** + **pgx/v5** | hand written SQL, generated types |
+| Migrations | **goose** | SQL files, embedded, run at startup |
+| Config | **koanf**: defaults, then YAML, then `RECON_*` env | one typed struct, validated at startup |
+| IP enrichment | a local MMDB file (ASN and country), refreshed monthly | no API call per address |
+| CT feed | `certstream-server-go` image | the matcher is a loop inside Recon |
 
-Also out: Kubernetes, any ORM, and any declarative schema generation layer.
+Not used: an ORM, a message broker, Kubernetes.
 
-## 13.8 Tooling and CI
+## Config file or UI
 
-Go tooling is pinned by the `tool` directive in `go.mod`, so CI and a development machine run the same
-generators, which removes an entire class of silent divergence.
-
-| Job | Contents |
+| In the config file | In the UI (database) |
 |---|---|
-| `lint` | golangci-lint v2, the standard set plus `errcheck`, `gosec`, `bodyclose`, `rowserrcheck`, `sqlclosecheck`, `depguard`, `forbidigo`, with `gofumpt` and `goimports` |
-| `test` | `go test ./... -race` for unit tests. Integration tests behind a build tag, on **testcontainers** |
-| `build` | binaries and images |
-| `console` | the SvelteKit lint, typecheck and build |
+| `public_url`, API key, database URL | programs, manual programs, local rules |
+| ScopesExtractor URL and key, sync interval | auto-scan per program |
+| Fingerprinter URL, render concurrency | triage, tags, notes |
+| runner choice and credentials, FastRecon source keys | saved searches and their alerts |
+| port list, cadences, backoff curves, batch size | |
+| auto-scan global default | |
+| notification channels | |
+| screenshot backend, quality, cap, disk threshold | |
+| dead-origin signatures | |
 
-The [milestones become the integration suite](/architecture/roadmap/#project-rules), so the integration test
-infrastructure is set up in the first phase, not when it is first needed.
+The settings screen shows the config values read-only, so you can check what is in effect.
 
-:::caution[The trap in "CI passes on an empty pull request"]
-Never put a path filter on a workflow declared as a required check. A filtered required check stays pending
-forever on a pull request that does not touch those paths, and the pull request becomes unmergeable. It is the
-most common way to make that assertion false.
-:::
+## Deployment
 
-## 13.9 Minimal observability
+```mermaid
+flowchart TB
+  subgraph VPS[VPS, docker compose]
+    R[recon<br/>API, UI, loops]
+    PG[(postgres)]
+    CS[certstream]
+    subgraph ISO[isolated network]
+      FP[fingerprinter]
+      CH[chrome × 3]
+    end
+    DISK[(screenshots dir)]
+  end
+  R --- PG
+  R --- CS
+  R --> FP --> CH
+  R --- DISK
+  R -->|start| RUN[FastRecon<br/>runner]
+  RUN -.->|report| R
+  CH -->|renders| NET((internet))
+  RUN -->|scans| NET
+```
 
-Two things outside the usual first phase list, kept because retrofitting them is expensive:
+The Fingerprinter and Chrome sit on a network with internet access and no route to PostgreSQL. Recon
+calls them, they never call back.
 
-- **Structured logs with a correlation id** carried end to end from ingestion. Grafting correlation onto an
-  existing pipeline means touching every write path.
-- **A metrics endpoint** on the control plane. Several milestone assertions *are* metrics: the deduplication
-  rate above 90 %, the 10 % `unobservable` threshold, per program CT coverage. Without counters from the
-  start, those are one off SQL queries instead of alerts.
+## Runs
 
-Distributed tracing waits for a real need.
+A FastRecon run is started by a **runner**, behind one interface (`start`, `status`):
 
-## 13.10 Summary
+| Runner | Where FastRecon runs | Reaches Recon through |
+|---|---|---|
+| `docker` | a container on the VPS | the compose network |
+| `scaleway` | a Scaleway Serverless Job, to scan from other addresses than the VPS | `public_url`, which must then be reachable from the internet over HTTPS |
 
-| Role | Choice |
+### The run contract
+
+```
+--stages full | resolve
+--domain example.com --exclude '*.dev.example.com'      (recon)
+--targets-url {public_url}/runs/{id}/targets            (verification)
+--targets-header "Authorization: Bearer <targets token>"
+--ports 80,443,8080,...
+--scan-rate 10
+--webhook-url {public_url}/runs/{id}/report
+--webhook-header "Authorization: Bearer <report token>"
+--timeout 30m
+```
+
+- `run.stage` holds the value passed to `--stages`: `enum`, `resolve`, `ports` or `full`.
+- Both tokens are HMACs over `(run id, purpose, expiry)`: nothing to store, they expire on their own.
+- No token travels in a URL.
+- The report is re-derived on arrival: its hosts must be the run's targets (or under its wildcard), and
+  every outcome is recomputed.
+- FastRecon's source API keys live in the runner's environment, never in the definition.
+
+### Run states
+
+```mermaid
+stateDiagram-v2
+  [*] --> queued
+  queued --> starting: a slot frees up
+  starting --> running: runner confirms
+  starting --> failed: runner refused
+  running --> succeeded: report ingested
+  running --> failed: runner reports an error
+  running --> timed_out: deadline passed
+```
+
+| Rule | Value |
 |---|---|
-| Control plane | Go 1.26 |
-| Scanning | FastRecon, a container image, no privilege |
-| Rendering | Fingerprinter, a long-running service with a Chrome sidecar |
-| Certificate Transparency | `certstream-server-go` as the feed, an image. The matcher is a loop in the control plane |
-| Console | SvelteKit, pnpm, Node adapter, interface in English |
-| Database | PostgreSQL 18, self-hosted, partitioning without an extension |
-| Migrations | goose |
-| Data access | sqlc and pgx/v5 |
-| Configuration | koanf, one typed structure validated at startup |
-| Secrets | environment, SOPS and age, a secret scanner |
-| Lint | golangci-lint v2 |
-| Integration tests | testcontainers |
+| deadline | `--timeout` plus 10 minutes |
+| a sweeper | marks `starting` or `running` runs past their deadline `timed_out`, every minute |
+| a report after a terminal state | refused with `409` |
+| a timed out verification | its hosts are still due, the next tick takes them again |
+| a failed or timed out recon | `wildcard.last_recon_at` does not move |
+
+### Concurrency
+
+A slot is a run in `starting` or `running`.
+
+| Kind | Slots (config) | Order |
+|---|---|---|
+| recon | 2 | oldest `last_recon_at` first, never scanned on top |
+| verification | 1 | due date |
+| CT candidates | 1, separate | so a candidate never waits behind a batch |
+| renders | adaptive, see [absorbing a burst](/architecture/fingerprinting/#absorbing-a-burst) | priority, then due date |
+
+## Backups
+
+A nightly `pg_dump` to the disk, with a retention, and optionally pushed to the same S3 bucket as the
+screenshots. A restore is tested once in phase 0.
+
+## Repository
+
+```
+cmd/recon/            the binary: serve, migrate, import bbot <program> <file>
+internal/
+  config/             the only reader of the environment
+  store/              sqlc queries
+  scope/              rule matching, ScopesExtractor sync
+  normalize/          the single normalize(layer, data)
+  ingest/             reports, observations, changes
+  lifecycle/          qualification, transitions, backoff
+  runs/               definitions, tokens, runners, sweeper
+  ct/                 matcher
+  render/             dispatcher, Fingerprinter client, screenshots
+  search/             parser, AST, compiler, facets
+  notify/             evaluator, windows, channels
+  bbot/               import parser
+  api/                HTTP handlers
+db/migrations/        goose
+db/queries/           SQL for sqlc
+web/                  SvelteKit, built into internal/ui
+docs/                 this site
+deploy/compose/       the stack
+```

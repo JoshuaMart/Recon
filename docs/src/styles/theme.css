@@ -1,0 +1,11 @@
+/* Emerald accent, matching the logo. */
+:root {
+	--sl-color-accent-low: #052e22;
+	--sl-color-accent: #10b981;
+	--sl-color-accent-high: #a7f3d0;
+}
+:root[data-theme='light'] {
+	--sl-color-accent-low: #d1fae5;
+	--sl-color-accent: #047857;
+	--sl-color-accent-high: #064e3b;
+}

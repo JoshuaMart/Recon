@@ -1,32 +1,69 @@
 ---
 title: Recon
-description: Attack surface management for bug bounty, built around coverage and freshness.
+description: Personal attack surface management for bug bounty, built around a searchable inventory.
 template: splash
 hero:
-  tagline: Attack surface management for bug bounty. Find assets the others miss, and find them first.
+  title: Recon
+  tagline: Personal attack surface management for bug bounty. Find assets the others miss, find them first, and query them precisely.
+  image:
+    file: ../../assets/logo.svg
   actions:
-    - text: Read the architecture
-      link: /architecture/
+    - text: Read the design
+      link: /architecture/principles/
       icon: right-arrow
+    - text: Search language
+      link: /architecture/search/
+      variant: minimal
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
 
-<CardGrid stagger>
-	<Card title="Vision" icon="star">
-		Two goals usually in tension, coverage and freshness, split across mechanisms that do not
-		compete for the same budget. [Read](/architecture/vision/)
+:::caution[Status]
+Design stage. This site is the design, nothing is implemented yet.
+:::
+
+## Three goals
+
+<CardGrid>
+	<Card title="Coverage" icon="puzzle">
+		Find what others miss: recon on a wildcard when you ask for it, BBOT imports, manual entries.
 	</Card>
-	<Card title="Principles" icon="approve-check">
-		Six invariants every implementation decision answers to.
-		[Read](/architecture/principles/)
+	<Card title="Freshness" icon="rocket">
+		Find it first: Certificate Transparency, then an immediate probe of the new name.
 	</Card>
-	<Card title="Data model" icon="document">
-		Assets, immutable observations, a materialized current state. The diff is the product.
-		[Read](/architecture/data-model/)
+	<Card title="Exploitability" icon="magnifier">
+		Find what is worth a look: a filter language over technologies, version ranges, status codes,
+		ports and headers.
 	</Card>
-	<Card title="Roadmap" icon="rocket">
-		Nine phases in a deliberately constrained order, each closed by testable assertions.
-		[Read](/architecture/roadmap/)
-	</Card>
+</CardGrid>
+
+## The services around Recon
+
+Recon owns the inventory. Scope tracking and scanning live in their own repositories.
+
+| Service | Role |
+|---|---|
+| [ScopesExtractor](https://github.com/JoshuaMart/ScopesExtractor) | Syncs program scopes from YesWeHack, HackerOne, Intigriti and Bugcrowd |
+| [FastRecon](https://github.com/JoshuaMart/FastRecon) | Enumeration, DNS resolution, port scan, HTTP probe. One run, one JSON report |
+| Fingerprinter | Browser rendering: technologies, favicon, scripts, cookies, headers, screenshot |
+| `certstream-server-go` | The Certificate Transparency feed |
+
+## In and out
+
+| In | Out |
+|---|---|
+| One user, one instance | Multi-tenancy, roles, invitations |
+| Scope synced from ScopesExtractor, plus manual programs | Scraping bug bounty platforms ourselves |
+| Discovery on demand, or automatically when a wildcard appears | Periodic discovery runs |
+| Periodic verification of what is already known | Vulnerability scanning |
+| Technologies from the Fingerprinter only | Technology detection from any other source |
+| A few notifications that matter, everything else in the UI | An alert for every change, takeover detection |
+
+## Start here
+
+<CardGrid>
+	<LinkCard title="Principles" description="Absence of proof is not proof of absence. Nothing is deleted." href="/architecture/principles/" />
+	<LinkCard title="Overview" description="The components and how they talk." href="/architecture/overview/" />
+	<LinkCard title="Programs and scope" description="ScopesExtractor sync, manual programs, wildcards." href="/architecture/programs/" />
+	<LinkCard title="Roadmap" description="Nine phases, each ending in something usable." href="/architecture/roadmap/" />
 </CardGrid>
