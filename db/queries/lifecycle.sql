@@ -59,6 +59,23 @@ WHERE ac.program_id = p.id AND p.id = $1 AND p.state = 'active'
   AND ac.scope_status = 'in_scope' AND ac.kind = 'fqdn' AND ac.lifecycle <> 'archived'
   AND ac.next_resolve_at IS NULL AND ac.next_full_at IS NULL;
 
+-- Render dates follow the same rule: none for what may not be rendered.
+-- name: ClearRenderSchedule :execrows
+UPDATE asset_current ac SET next_render_at = NULL, render_priority = 0
+FROM program p
+WHERE ac.program_id = p.id AND p.id = $1 AND ac.next_render_at IS NOT NULL
+  AND (p.state <> 'active' OR ac.scope_status <> 'in_scope' OR ac.lifecycle = 'archived');
+
+-- A web service or declared URL that may be rendered and has no date gets one,
+-- low priority: back in the perimeter, or its program active again.
+-- name: FillRenderSchedule :execrows
+UPDATE asset_current ac
+SET next_render_at = sqlc.arg(now)::timestamptz + make_interval(secs => random() * sqlc.arg(jitter_seconds)::float8)
+FROM program p
+WHERE ac.program_id = p.id AND p.id = $1 AND p.state = 'active'
+  AND ac.scope_status = 'in_scope' AND ac.lifecycle <> 'archived' AND ac.next_render_at IS NULL
+  AND ((ac.kind = 'service' AND ac.http_state IS NOT NULL) OR ac.kind = 'url');
+
 -- name: ScheduleFullNow :exec
 UPDATE asset_current SET next_full_at = sqlc.arg(now)::timestamptz
 WHERE program_id = $1 AND kind = 'fqdn' AND key = $2 AND scope_status = 'in_scope';

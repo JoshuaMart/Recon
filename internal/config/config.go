@@ -35,6 +35,27 @@ type Config struct {
 	Discovery       Discovery       `koanf:"discovery"`
 	FastRecon       FastRecon       `koanf:"fastrecon"`
 	Verification    Verification    `koanf:"verification"`
+	Render          Render          `koanf:"render"`
+	Screenshots     Screenshots     `koanf:"screenshots"`
+}
+
+// Render is the Fingerprinter and the render cadences. An empty URL leaves
+// renders due.
+type Render struct {
+	URL string `koanf:"url"`
+	// Concurrency is the most renders in flight, below the Fingerprinter's own
+	// concurrent_scans: a 429 halves it, successes bring it back.
+	Concurrency int           `koanf:"concurrency"`
+	Timeout     time.Duration `koanf:"timeout"`  // one scan, the service's budget plus a margin
+	Periodic    time.Duration `koanf:"periodic"` // next render after a successful one
+	Retry       time.Duration `koanf:"retry"`    // next render after the target did not answer
+}
+
+// Screenshots is where and how screenshots are kept.
+type Screenshots struct {
+	Dir     string `koanf:"dir"`
+	Quality int    `koanf:"quality"` // JPEG quality, 1 to 100
+	Keep    int    `koanf:"keep"`    // distinct screenshots kept per asset
 }
 
 // Verification is the periodic probing of known hosts.
@@ -127,6 +148,10 @@ func Defaults() Config {
 		},
 		Discovery: Discovery{AutoScan: "off", Ports: DefaultPorts},
 		FastRecon: FastRecon{Timeout: 30 * time.Minute, Slots: 1},
+		Render: Render{
+			Concurrency: 20, Timeout: 2 * time.Minute, Periodic: 21 * 24 * time.Hour, Retry: 6 * time.Hour,
+		},
+		Screenshots: Screenshots{Dir: "/data/screenshots", Quality: 70, Keep: 3},
 		Verification: Verification{
 			Enabled: true, Batch: 500, Resolve: 24 * time.Hour, Full: 72 * time.Hour,
 			Dormant: 7 * 24 * time.Hour, ArchiveAfter: 30 * 24 * time.Hour,
@@ -237,6 +262,17 @@ func (c Config) Validate() error {
 	}
 	if v := c.Verification; v.Batch < 1 || v.Resolve < time.Minute || v.Full < time.Minute || v.Dormant < time.Minute || v.ArchiveAfter < time.Hour {
 		errs = append(errs, errors.New("verification: batch must be positive, cadences at least 1m, archive_after at least 1h"))
+	}
+	if r := c.Render; r.URL != "" {
+		if u, err := url.Parse(r.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			errs = append(errs, fmt.Errorf("render.url %q must be an absolute http or https URL", r.URL))
+		}
+	}
+	if r := c.Render; r.Concurrency < 1 || r.Timeout < time.Second || r.Periodic < time.Hour || r.Retry < time.Minute {
+		errs = append(errs, errors.New("render: concurrency at least 1, timeout at least 1s, periodic at least 1h, retry at least 1m"))
+	}
+	if s := c.Screenshots; s.Dir == "" || s.Quality < 1 || s.Quality > 100 || s.Keep < 1 {
+		errs = append(errs, errors.New("screenshots: dir required, quality 1 to 100, keep at least 1"))
 	}
 	if len(c.Discovery.Ports) == 0 {
 		errs = append(errs, errors.New("discovery.ports cannot be empty"))

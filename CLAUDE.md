@@ -9,8 +9,10 @@ Phases 0 to 3 are done: foundations, programs and the ScopesExtractor sync, reco
 verification with the lifecycle. A recon is queued on a wildcard and sent to `fastrecon serve`; its
 report becomes assets, deduplicated observations and changes. Verification probes due hosts per
 program and moves assets through the state machine (`internal/lifecycle`, pure functions). It is off
-in the local stack (`VERIFICATION_ENABLED`) because it scans every in-scope host. Phase 4
-(fingerprinting) is next. The design in `docs/` is the source of
+in the local stack (`VERIFICATION_ENABLED`) because it scans every in-scope host. Renders are
+dispatched to the Fingerprinter (`internal/render`), paced and polite, and give technologies with
+parsed versions, a fingerprint observation and a deduplicated screenshot. Phase 5 (search language)
+is next. The design in `docs/` is the source of
 truth, and code follows it.
 
 ## Read before working

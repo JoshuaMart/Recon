@@ -131,10 +131,19 @@ func (w *Writer) rand() func() float64 {
 // SyncSchedule makes a program's due dates follow its scope and state: none
 // outside the perimeter or on an inactive program, and a resolve soon for an
 // in-scope host that has none.
+//
+// Render dates follow the same rule, filled within the hour at low priority:
+// what comes back in the perimeter is rendered again, without a burst.
 func SyncSchedule(ctx context.Context, q *sqlcgen.Queries, programID uuid.UUID, now time.Time) error {
 	if _, err := q.ClearProgramSchedule(ctx, programID); err != nil {
 		return err
 	}
-	_, err := q.FillProgramSchedule(ctx, sqlcgen.FillProgramScheduleParams{ID: programID, Now: now, JitterSeconds: (15 * time.Minute).Seconds()})
+	if _, err := q.FillProgramSchedule(ctx, sqlcgen.FillProgramScheduleParams{ID: programID, Now: now, JitterSeconds: (15 * time.Minute).Seconds()}); err != nil {
+		return err
+	}
+	if _, err := q.ClearRenderSchedule(ctx, programID); err != nil {
+		return err
+	}
+	_, err := q.FillRenderSchedule(ctx, sqlcgen.FillRenderScheduleParams{ID: programID, Now: now, JitterSeconds: time.Hour.Seconds()})
 	return err
 }

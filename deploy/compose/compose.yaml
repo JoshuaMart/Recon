@@ -13,6 +13,7 @@ networks:
 
 volumes:
   pgdata:
+  screenshots:
 
 x-chrome: &chrome
   networks: [scan]
@@ -81,6 +82,9 @@ services:
       RECON_FASTRECON__TIMEOUT: ${FASTRECON_TIMEOUT:-30m}
       # Off unless asked: on, every in-scope host of every active program is probed.
       RECON_VERIFICATION__ENABLED: ${VERIFICATION_ENABLED:-false}
+      RECON_RENDER__URL: http://fingerprinter:3001
+    volumes:
+      - screenshots:/data/screenshots
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

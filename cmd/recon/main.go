@@ -22,9 +22,11 @@ import (
 
 	"github.com/JoshuaMart/recon/internal/api"
 	"github.com/JoshuaMart/recon/internal/config"
+	"github.com/JoshuaMart/recon/internal/fingerprint"
 	"github.com/JoshuaMart/recon/internal/ingest"
 	"github.com/JoshuaMart/recon/internal/inventory"
 	"github.com/JoshuaMart/recon/internal/lifecycle"
+	"github.com/JoshuaMart/recon/internal/render"
 	"github.com/JoshuaMart/recon/internal/runs"
 	"github.com/JoshuaMart/recon/internal/scope"
 	"github.com/JoshuaMart/recon/internal/store"
@@ -228,6 +230,23 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, st *store.S
 		}()
 	}
 	spawn(sched.Loop)
+	if rc := cfg.Render; rc.URL != "" {
+		storage := fingerprint.Dir{Root: cfg.Screenshots.Dir}
+		disp := &render.Dispatcher{
+			Writer: &render.Writer{
+				Store: st, Storage: storage, Now: time.Now,
+				Settings: render.Settings{
+					Periodic: rc.Periodic, Retry: rc.Retry, Quality: cfg.Screenshots.Quality,
+					Keep: cfg.Screenshots.Keep, Jitter: render.DefaultSettings.Jitter,
+				},
+			},
+			Scanner: fingerprint.NewClient(rc.URL, rc.Timeout), Log: log, Max: rc.Concurrency, Tick: 2 * time.Second,
+		}
+		deps.Storage, deps.Render = storage, disp.Status
+		spawn(disp.Loop)
+	} else {
+		log.InfoContext(ctx, "no render.url: renders stay due")
+	}
 	spawn(func(ctx context.Context) { maintain(ctx, log, st) })
 	// Off the startup path: the API answers while the inventory catches up.
 	spawn(func(ctx context.Context) {

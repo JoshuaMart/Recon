@@ -34,7 +34,8 @@ The API key is set in the config. A write with the cookie must also carry an `Or
 | `GET /api/search/export?q=&format=csv\|json\|urls\|hosts` | export a result |
 | `GET /api/assets/{id}` | one asset: current state, technologies, pivots, lineage |
 | `GET /api/assets/{id}/changes` | its timeline |
-| `GET /api/assets/{id}/screenshots` | its screenshots, served from storage |
+| `GET /api/assets/{id}/screenshots` | its screenshots, with their URLs |
+| `GET /api/screenshots/{key}` | one screenshot or thumbnail, only for a key a row names, as `image/jpeg` with `nosniff` |
 | `POST /api/assets/{id}/render`, `POST /api/assets/{id}/probe` | render now, probe now (high priority) |
 | `PATCH /api/assets/{id}/triage` | triage state, tags, note, mark as seen |
 | `GET /api/changes?q=&cursor=` | the changes feed |

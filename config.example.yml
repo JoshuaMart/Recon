@@ -43,6 +43,18 @@ verification:
       server: cloudflare
       title: ""
 
+render:
+  url: ""              # the Fingerprinter; empty leaves renders due
+  concurrency: 20      # renders in flight, below its concurrent_scans
+  timeout: 2m          # one scan
+  periodic: 504h       # next render after a successful one (21 d)
+  retry: 6h            # next render after the target did not answer
+
+screenshots:
+  dir: /data/screenshots
+  quality: 70          # JPEG quality of the stored image and thumbnail
+  keep: 3              # visually distinct screenshots kept per asset
+
 fastrecon:
   url: ""              # a `fastrecon serve` instance; empty leaves runs queued
   api_token: ""        # its FASTRECON_API_TOKEN, required when url is set

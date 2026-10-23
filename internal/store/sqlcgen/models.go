@@ -56,6 +56,20 @@ type AssetCurrent struct {
 	BackoffTier    int32
 	LifecycleSince time.Time
 	LastCheckedAt  *time.Time
+	NextRenderAt   *time.Time
+	RenderPriority int16
+	LastRenderAt   *time.Time
+	RedirectHosts  []string
+	HeaderNames    []string
+	CookieNames    []string
+	ScriptHashes   []string
+	FaviconHash    *string
+	ExternalHosts  []string
+	WebSockets     []string
+	HasRobots      *bool
+	HasSitemap     *bool
+	HasLlmsTxt     *bool
+	Waf            *string
 }
 
 type AssetLayer struct {
@@ -66,6 +80,16 @@ type AssetLayer struct {
 	FirstFailureAt         *time.Time
 	LastOkAt               *time.Time
 	LastCheckedAt          time.Time
+}
+
+type AssetTech struct {
+	AssetID    uuid.UUID
+	Name       string
+	Category   string
+	VersionRaw string
+	Version    []int32
+	Cpe        *string
+	Proof      []byte
 }
 
 type Change struct {
@@ -112,6 +136,11 @@ type Program struct {
 	UpdatedAt  time.Time
 }
 
+type RenderState struct {
+	ID              bool
+	ProducerVersion *string
+}
+
 type Run struct {
 	ID         uuid.UUID
 	ProgramID  uuid.UUID
@@ -149,6 +178,18 @@ type ScopeSync struct {
 	LastError     *string
 	LastErrorAt   *time.Time
 	LastSummary   []byte
+}
+
+type Screenshot struct {
+	ID       int64
+	AssetID  uuid.UUID
+	Key      string
+	ThumbKey string
+	Phash    int64
+	Bytes    int32
+	Width    int32
+	Height   int32
+	TakenAt  time.Time
 }
 
 type UntrackedScope struct {

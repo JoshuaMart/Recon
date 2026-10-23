@@ -26,7 +26,7 @@ flowchart LR
 | **1 Programs and sync** ✓ | programs, rules, wildcards, ScopesExtractor sync, manual programs, API authentication and the program routes | a real ScopesExtractor instance fills programs, a removed scope closes its rule |
 | **2 Recon and ingestion** ✓ | assets and scope classification, assets declared by rules and by hand, the run queue and the `serve` runner, report ingestion, normalization, dedup, changes, auto-scan | a recon on a real wildcard fills the inventory, a second run writes almost no new observations |
 | **3 Verification and lifecycle** ✓ | due dates, verification runs, qualification, state machine, backoff | a host taken down goes `flapping` then `inactive`, a timeout never does |
-| **4 Fingerprinting** | render triggers, `asset_tech`, versions, screenshots and storage | every new service gets a render, screenshot sizes measured |
+| **4 Fingerprinting** ✓ | render triggers, `asset_tech`, versions, screenshots and storage | every new service gets a render, screenshot sizes measured |
 | **5 Search language** | parser, compiler, fields, facets, pivots, export | every example of the search page returns what it says |
 | **6 Interface** | the screens, triage, wildcards view | a full hunt session without touching the API |
 | **7 Changes and notifications** | change rows, feed, saved search alerts, Discord | a week of use sends only what the defaults list |

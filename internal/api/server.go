@@ -12,6 +12,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/JoshuaMart/recon/internal/fingerprint"
+	"github.com/JoshuaMart/recon/internal/render"
 	"github.com/JoshuaMart/recon/internal/scope"
 	"github.com/JoshuaMart/recon/internal/store"
 	"github.com/JoshuaMart/recon/internal/version"
@@ -37,6 +39,10 @@ type Deps struct {
 	Sync            Syncer
 	DefaultAutoScan string
 	Now             func() time.Time
+	// Storage serves screenshots; Render reports the dispatcher, nil when no
+	// Fingerprinter is configured.
+	Storage fingerprint.Storage
+	Render  func() render.Status
 }
 
 type server struct{ Deps }
@@ -66,6 +72,9 @@ func Handler(d Deps) http.Handler {
 		authed("POST /api/wildcards/recon", s.reconOldest)
 		authed("GET /api/runs", s.listRuns)
 		authed("GET /api/runs/{id}", s.getRun)
+		authed("POST /api/assets/{id}/render", s.renderAsset)
+		authed("GET /api/assets/{id}/screenshots", s.listScreenshots)
+		authed("GET /api/screenshots/{key}", s.getScreenshot)
 		authed("POST /api/sync", s.runSync)
 		mux.Handle("/api/", d.Auth.Require(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			writeError(w, http.StatusNotFound, "not_found", "no such route")
@@ -79,6 +88,9 @@ type healthResponse struct {
 	Version  string `json:"version"`
 	Database string `json:"database"`
 	Sync     string `json:"sync,omitempty"`
+	Render   string `json:"render,omitempty"`
+	// RenderQueue is the number of renders due, per priority: high, normal, low.
+	RenderQueue map[string]int `json:"render_queue,omitempty"`
 }
 
 // health answers 200 when the database answers, 503 otherwise. It is public,
@@ -94,7 +106,8 @@ func (s *server) health() http.Handler {
 			res.Status, res.Database, code = "degraded", "unreachable", http.StatusServiceUnavailable
 		} else if s.Store != nil {
 			res.Sync = s.syncHealth(ctx)
-			if res.Sync == "failing" {
+			res.Render, res.RenderQueue = s.renderHealth(ctx)
+			if res.Sync == "failing" || res.Render == "unreachable" {
 				res.Status = "degraded"
 			}
 		}
@@ -116,6 +129,26 @@ func (s *server) syncHealth(ctx context.Context) string {
 		return "pending"
 	}
 	return "ok"
+}
+
+func (s *server) renderHealth(ctx context.Context) (string, map[string]int) {
+	if s.Render == nil {
+		return "disabled", nil
+	}
+	state := "unreachable"
+	if s.Render().Healthy {
+		state = "ok"
+	}
+	rows, err := s.Store.Q.RenderQueueDepth(ctx, s.now())
+	if err != nil {
+		return state, nil
+	}
+	names := map[int16]string{2: "high", 1: "normal", 0: "low"}
+	q := map[string]int{"high": 0, "normal": 0, "low": 0}
+	for _, r := range rows {
+		q[names[r.RenderPriority]] = int(r.Depth)
+	}
+	return state, q
 }
 
 type errorBody struct {

@@ -78,7 +78,18 @@ flowchart TD
 ```
 
 A trigger never adds a row. It sets `next_render_at = min(current, now)` and `render_priority = max(current,
-new)`, so a service hit by three triggers is rendered once.
+new)`, so a service hit by three triggers is rendered once. Priorities are `0` low, `1` normal, `2`
+high, and a render resets the priority to low with the next periodic date.
+
+What gets rendered: `in_scope` services that answered HTTP and declared URLs, of active programs, not
+archived. The URL is the service root (`scheme://host[:port]/`) or the declared URL as written.
+
+A Fingerprinter **major** version change, read from `/health`, makes every rendered service due at low
+priority: a new major can detect what the old one could not. Only a semantic version has a major: a
+commit hash or a branch name changes nothing.
+
+Render dates follow scope and program state like probe dates: none outside the perimeter or on a
+paused program, and back within the hour, low priority, when that changes.
 
 A first contact is rendered **whatever the status code**: a 403 or a challenge to FastRecon often renders
 fine in a browser. The target is the service root, except for a declared URL, rendered as written.
@@ -108,9 +119,10 @@ flowchart LR
 | **Priority first, then age** | high (you, CT) jumps the burst, the burst (normal) passes before periodic refreshes (low). Within a level, oldest first |
 | **Adaptive concurrency** | N starts at `render.concurrency` (below the Fingerprinter's `concurrent_scans`). A `429` halves it, every 20 successes add one back, up to the max |
 | **Honour `Retry-After`** | on a `429` the dispatcher pauses for `Retry-After × random(0.5, 1.5)`, so refused workers do not come back as a convoy |
-| **Per host politeness** | at most 2 renders in flight per host and 4 per apex. A thousand vhosts on one origin are spread over time instead of hitting it together |
+| **Per host politeness** | at most 2 renders in flight per host and 4 per registrable domain (public suffix list). A thousand vhosts on one origin are spread over time instead of hitting it together |
 | **In-flight set in memory** | one process, so a map of in-flight ids is enough. No lease, no lock table |
-| **Fingerprinter down** | connection refused or `/health` failing pauses the dispatcher and raises one health notification. Renders stay due |
+| **Fingerprinter down** | connection refused or `/health` failing pauses the dispatcher and raises one health notification. Renders stay due. `/health` is read once a minute while it answers, every pass while it does not |
+| **A blocked head does not idle the rest** | a pass pages down the queue (up to 2 000 rows) until its free slots are filled, so a thousand renders held back by politeness do not keep other targets waiting |
 
 ### What a burst costs
 
@@ -129,10 +141,10 @@ queue is not an incident, so it does not notify.
 
 | Fingerprinter answer | Observation | Due date |
 |---|---|---|
-| `200`, result | written, normalized and deduplicated | moved to the next cadence |
-| `200`, target unreachable in the browser | written, `outcome = error`. Counts as a failed observer toward `unobservable`, never toward `inactive` | moved to the next cadence |
+| `200`, result | written, normalized and deduplicated, `outcome = ok` | the periodic cadence (21 d) |
+| `500` "no responses received", `408` scan timed out | the target did not answer the browser: `outcome = error`, which counts toward `unobservable`, never `inactive` | retried in 6 h |
 | `429` | **nothing**: the service was busy, the asset did nothing | unchanged |
-| timeout, `5xx`, connection refused | nothing | unchanged, dispatcher backs off |
+| any other `5xx`, connection refused | nothing: a fault of the renderer, not of the target | unchanged, dispatcher pauses |
 
 A `429` must never touch the asset: counting it would walk healthy assets toward `unobservable` because
 the renderer was busy.
@@ -153,6 +165,23 @@ possible.
 
 A version going from `1.24` to `1.24.0` is a gain in precision, not an application change: recorded,
 never notified.
+
+Each render after the first compares the technology set with the previous one and writes one change per
+difference (the first render is a first sight, not a change):
+`tech_added`, `tech_removed`, `tech_version_changed` (with `precision: true` when one version is a
+prefix of the other). Any other difference in the render is one `render_changed`.
+
+### What normalization drops
+
+| Field | Treatment |
+|---|---|
+| cookie values | dropped, the names are kept |
+| hop `response_size`, `remote_ip_address`, `network`, `scanned_at`, `screenshot` | dropped |
+| headers `date`, `age`, `content-length`, `expires`, `etag`, `last-modified`, `connection`, `keep-alive`, `retry-after` | dropped |
+| headers whose name holds `-id`, `-trace`, `-request`, `-ray`, `-time`, `-timing`, `runtime`, `-duration`, `-latency` | value emptied, name kept |
+| cache and edge headers: `cf-cache-status`, `x-cache`, `x-cache-hits`, `x-served-by`, `x-amz-cf-pop`, `x-varnish`, `via`… | value emptied, name kept: HIT on one render, MISS on the next |
+| CSP `'nonce-…'` | replaced by `'nonce-'` |
+| header names, cookie names, scripts, external hosts, web sockets | lowercased where case means nothing, sorted |
 
 ## Screenshots
 
@@ -178,9 +207,24 @@ Assuming ~80 KB per stored screenshot plus a ~10 KB thumbnail, and N = 3 distinc
 | 200 000 services | ~18 GB | ~30 to 55 GB |
 
 Storing every render would cost hundreds of GB a year at that size, which is why the perceptual hash
-decides. The figures are estimates, to be measured on real renders in the phase that stores them.
+decides. First measure, on a real target: a simple 403 page re-encoded at quality 70 weighs 17 KB at
+1280×800. One sample is not a distribution; the 80 KB assumption stands until a real inventory says
+otherwise, and the settings screen will show the space used.
+
+A page that redirects to another site (an SSO, for instance) comes back without a screenshot: the
+render is kept, it just has no image.
 
 ### Storage
+
+Two renders are visually the same when the 64-bit average hash of their images differs by at most 6
+bits: the new one is dropped. A kept screenshot is re-encoded as JPEG (quality from the config, 70 by
+default) with a 320 px wide thumbnail, and the oldest row beyond the cap (3) is deleted. Screenshots are
+the one thing bounded by deletion: they are a view of a render, the render itself stays in the journal.
+
+A render never deletes a file. Keys are content-addressed, so two services showing the same default page
+share a file, and whether it is still named can only be decided outside every render's transaction: an
+hourly pass deletes the files no row names and older than an hour, which also collects those of a render
+that rolled back.
 
 One interface, two backends, chosen in config:
 

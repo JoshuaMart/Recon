@@ -159,7 +159,8 @@ internal/
   lifecycle/          the state machine and the backoff curves, pure functions
   runs/               queue, scheduler, runners, sweeper
   ct/                 matcher
-  render/             dispatcher, Fingerprinter client, screenshots
+  fingerprint/        Fingerprinter client, render normalization, versions, screenshots, storage
+  render/             dispatcher (pacing, politeness), render ingestion
   search/             parser, AST, compiler, facets
   notify/             evaluator, windows, channels
   bbot/               import parser

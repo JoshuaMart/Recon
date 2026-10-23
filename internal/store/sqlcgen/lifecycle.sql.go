@@ -74,6 +74,22 @@ func (q *Queries) ClearProgramSchedule(ctx context.Context, id uuid.UUID) (int64
 	return result.RowsAffected(), nil
 }
 
+const clearRenderSchedule = `-- name: ClearRenderSchedule :execrows
+UPDATE asset_current ac SET next_render_at = NULL, render_priority = 0
+FROM program p
+WHERE ac.program_id = p.id AND p.id = $1 AND ac.next_render_at IS NOT NULL
+  AND (p.state <> 'active' OR ac.scope_status <> 'in_scope' OR ac.lifecycle = 'archived')
+`
+
+// Render dates follow the same rule: none for what may not be rendered.
+func (q *Queries) ClearRenderSchedule(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, clearRenderSchedule, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const dueFull = `-- name: DueFull :many
 SELECT key FROM asset_current
 WHERE program_id = $1 AND kind = 'fqdn' AND next_full_at <= $2::timestamptz
@@ -201,6 +217,31 @@ type FillProgramScheduleParams struct {
 // the jitter window.
 func (q *Queries) FillProgramSchedule(ctx context.Context, arg FillProgramScheduleParams) (int64, error) {
 	result, err := q.db.Exec(ctx, fillProgramSchedule, arg.ID, arg.Now, arg.JitterSeconds)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const fillRenderSchedule = `-- name: FillRenderSchedule :execrows
+UPDATE asset_current ac
+SET next_render_at = $2::timestamptz + make_interval(secs => random() * $3::float8)
+FROM program p
+WHERE ac.program_id = p.id AND p.id = $1 AND p.state = 'active'
+  AND ac.scope_status = 'in_scope' AND ac.lifecycle <> 'archived' AND ac.next_render_at IS NULL
+  AND ((ac.kind = 'service' AND ac.http_state IS NOT NULL) OR ac.kind = 'url')
+`
+
+type FillRenderScheduleParams struct {
+	ID            uuid.UUID
+	Now           time.Time
+	JitterSeconds float64
+}
+
+// A web service or declared URL that may be rendered and has no date gets one,
+// low priority: back in the perimeter, or its program active again.
+func (q *Queries) FillRenderSchedule(ctx context.Context, arg FillRenderScheduleParams) (int64, error) {
+	result, err := q.db.Exec(ctx, fillRenderSchedule, arg.ID, arg.Now, arg.JitterSeconds)
 	if err != nil {
 		return 0, err
 	}

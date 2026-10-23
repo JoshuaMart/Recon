@@ -37,11 +37,13 @@ type Summary struct {
 	ObsWritten       int `json:"observations_written"`
 	// DedupRate is the share of submitted observations that only confirmed the
 	// previous one. Expected above 0.9 on a repeated run.
-	DedupRate      float64 `json:"dedup_rate"`
-	Changes        int     `json:"changes"`
-	TooManyPorts   int     `json:"too_many_ports"`
-	Degraded       bool    `json:"degraded"`
-	SourcesFailing int     `json:"sources_failing"`
+	DedupRate    float64 `json:"dedup_rate"`
+	Changes      int     `json:"changes"`
+	TooManyPorts int     `json:"too_many_ports"`
+	// RendersTriggered counts the services and URLs made due for a render.
+	RendersTriggered int  `json:"renders_triggered"`
+	Degraded         bool `json:"degraded"`
+	SourcesFailing   int  `json:"sources_failing"`
 }
 
 // Input is a report and the run it answers.
@@ -343,9 +345,17 @@ func (g *ingester) service(ctx context.Context, hostID uuid.UUID, name string, p
 	if DeadOrigin(g.in.Signatures, d) {
 		outcome = Fail
 	}
-	if err := g.observe(ctx, svc.ID, "http", outcome, d); err != nil {
+	prev, err := g.w.Q.GetAssetCurrent(ctx, svc.ID)
+	if err != nil {
 		return err
 	}
+	changed, err := g.observeChanged(ctx, svc.ID, "http", outcome, d)
+	if err != nil {
+		return err
+	}
+	// First contact, or the HTTP layer moved: the browser looks again, once
+	// the HTTP state is written below.
+	render := prev.HttpState == nil || changed
 	if _, _, err := g.settle(ctx, svc.ID, inventory.KindService, map[string]string{"http": outcome}, svc.New); err != nil {
 		return err
 	}
@@ -353,10 +363,17 @@ func (g *ingester) service(ctx context.Context, hostID uuid.UUID, name string, p
 	if outcome == Fail {
 		httpState = "dead_origin"
 	}
-	return g.w.Q.SetHTTPCurrent(ctx, sqlcgen.SetHTTPCurrentParams{
+	if err := g.w.Q.SetHTTPCurrent(ctx, sqlcgen.SetHTTPCurrentParams{
 		AssetID: svc.ID, HttpState: &httpState, StatusCode: optInt32(d.StatusCode), Title: optStr(d.Title),
 		Server: optStr(d.Server), FinalUrl: optStr(d.FinalURL), Scheme: optStr(d.Scheme), Ips: ips, Cdn: cdn,
-	})
+	}); err != nil {
+		return err
+	}
+	if !render {
+		return nil
+	}
+	// The trigger checks scope and program state itself.
+	return g.triggerRender(ctx, svc.ID)
 }
 
 func (g *ingester) settle(ctx context.Context, id uuid.UUID, kind string, outcomes map[string]string, isNew bool) (before, after string, err error) {
@@ -404,19 +421,39 @@ func (g *ingester) followHost(ctx context.Context, hostID uuid.UUID) error {
 }
 
 func (g *ingester) observe(ctx context.Context, id uuid.UUID, layer, outcome string, data any) error {
+	_, err := g.observeChanged(ctx, id, layer, outcome, data)
+	return err
+}
+
+// observeChanged writes an observation and reports whether it differs from a
+// previous one.
+func (g *ingester) observeChanged(ctx context.Context, id uuid.UUID, layer, outcome string, data any) (bool, error) {
 	g.sum.ObsSubmitted++
 	res, err := g.w.Observe(ctx, id, layer, outcome, data, g.ver)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !res.Inserted {
-		return nil
+		return false, nil
 	}
 	g.sum.ObsWritten++
 	if res.Before == nil {
-		return nil
+		return false, nil
 	}
-	return g.recordChange(ctx, id, layer, res.Before, data)
+	return true, g.recordChange(ctx, id, layer, res.Before, data)
+}
+
+// triggerRender makes a web service and the URLs declared on it due for a
+// render, at normal priority.
+func (g *ingester) triggerRender(ctx context.Context, id uuid.UUID) error {
+	n, err := g.w.Q.TriggerRender(ctx, sqlcgen.TriggerRenderParams{AssetID: id, Priority: 1, Now: g.in.Now})
+	if err != nil {
+		return err
+	}
+	g.sum.RendersTriggered += int(n)
+	m, err := g.w.Q.TriggerChildURLs(ctx, sqlcgen.TriggerChildURLsParams{ServiceID: &id, Priority: 1, Now: g.in.Now})
+	g.sum.RendersTriggered += int(m)
+	return err
 }
 
 // recordChange writes the change between two successive observations of a
