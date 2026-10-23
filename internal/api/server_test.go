@@ -52,3 +52,18 @@ func TestHealthRefusesOtherMethods(t *testing.T) {
 		t.Errorf("status = %d, want 405", rec.Code)
 	}
 }
+
+func TestUnknownAPIPathIsNotThePage(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	page := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("<!doctype html>")) })
+	rec := httptest.NewRecorder()
+	Handler(Deps{Log: log, DB: fakeDB{}, UI: page}).ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/typo", nil))
+	if rec.Code != http.StatusNotFound || rec.Header().Get("Content-Type") != "application/json" {
+		t.Errorf("GET /api/typo = %d %q, want a JSON 404", rec.Code, rec.Header().Get("Content-Type"))
+	}
+	rec = httptest.NewRecorder()
+	Handler(Deps{Log: log, DB: fakeDB{}, UI: page}).ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/wildcards", nil))
+	if rec.Body.String() != "<!doctype html>" {
+		t.Errorf("GET /wildcards = %q, want the page", rec.Body.String())
+	}
+}

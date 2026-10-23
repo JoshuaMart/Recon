@@ -36,9 +36,9 @@ The API key is set in the config. A write with the cookie must also carry an `Or
 | `GET /api/assets/{id}/changes` | its timeline |
 | `GET /api/assets/{id}/screenshots` | its screenshots, with their URLs |
 | `GET /api/screenshots/{key}` | one screenshot or thumbnail, only for a key a row names, as `image/jpeg` with `nosniff` |
-| `POST /api/assets/{id}/render`, `POST /api/assets/{id}/probe` | render now, probe now (high priority) |
+| `POST /api/assets/{id}/render`, `POST /api/assets/{id}/probe` | render now (high priority), probe now (its host goes first in line for `full`) |
 | `PATCH /api/assets/{id}/triage` | triage state, tags, note, mark as seen |
-| `GET /api/changes?q=&cursor=` | the changes feed |
+| `GET /api/changes?program=&cursor=` | the changes feed, newest first |
 | `GET /api/programs`, `POST /api/programs` | list, create a manual program |
 | `GET /api/programs/{id}`, `PATCH /api/programs/{id}` | one program, edit state or auto-scan |
 | `POST /api/programs/{id}/rules` | open a local rule |
@@ -51,7 +51,9 @@ The API key is set in the config. A write with the cookie must also carry an `Or
 | `POST /api/wildcards/recon` | queue a recon on the N oldest, optionally per program |
 | `GET /api/runs`, `GET /api/runs/{id}` | runs, with per source accounting |
 | `GET`, `POST`, `PATCH`, `DELETE /api/saved-searches` | saved searches |
-| `GET /api/health` | sync, CT, Fingerprinter, runners, render queue, storage |
+| `GET /api/health` | sync, CT, Fingerprinter, runners, render queue (public, states only) |
+| `GET /api/settings` | the config in effect without its secrets, and screenshot storage used |
+| `GET /*` (anything else) | the interface, `index.html` for any path it routes itself |
 | `GET /runs/{id}/targets` | one host per line, for that run only |
 | `POST /runs/{id}/report` | the FastRecon report |
 

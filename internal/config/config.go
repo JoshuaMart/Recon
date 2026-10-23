@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
@@ -27,7 +28,7 @@ const EnvPrefix = "RECON_"
 type Config struct {
 	// PublicURL is how runs and the browser reach Recon.
 	PublicURL       string          `koanf:"public_url"`
-	APIKey          string          `koanf:"api_key"`
+	APIKey          string          `koanf:"api_key" secret:"true"`
 	HTTP            HTTP            `koanf:"http"`
 	Database        Database        `koanf:"database"`
 	Log             Log             `koanf:"log"`
@@ -88,7 +89,7 @@ type DeadOrigin struct {
 // leaves runs queued.
 type FastRecon struct {
 	URL      string `koanf:"url"`
-	APIToken string `koanf:"api_token"`
+	APIToken string `koanf:"api_token" secret:"true"`
 	// Timeout is the run's own budget, sent with every request.
 	Timeout time.Duration `koanf:"timeout"`
 	// Slots is how many runs may be in flight: one per serve instance.
@@ -99,7 +100,7 @@ type FastRecon struct {
 // programs only.
 type ScopesExtractor struct {
 	URL      string        `koanf:"url"`
-	APIKey   string        `koanf:"api_key"`
+	APIKey   string        `koanf:"api_key" secret:"true"`
 	Interval time.Duration `koanf:"interval"`
 	Timeout  time.Duration `koanf:"timeout"`
 	// MaxRemovedRatio is the share of active synced programs one pass may
@@ -131,7 +132,7 @@ type HTTP struct {
 
 // Database is the PostgreSQL connection.
 type Database struct {
-	URL string `koanf:"url"`
+	URL string `koanf:"url" secret:"true"` // holds the password
 }
 
 // Log is the logger output.
@@ -290,4 +291,41 @@ func (c Config) Validate() error {
 		errs = append(errs, fmt.Errorf("discovery.auto_scan %q is not off or on_new", a))
 	}
 	return errors.Join(errs...)
+}
+
+// Public is the config in effect for the settings page, keyed like the config
+// file. A field tagged secret shows only whether it is set.
+func (c Config) Public() map[string]any {
+	return public(reflect.ValueOf(c)).(map[string]any)
+}
+
+var durationType = reflect.TypeFor[time.Duration]()
+
+func public(v reflect.Value) any {
+	switch {
+	case v.Type() == durationType:
+		return time.Duration(v.Int()).String()
+	case v.Kind() == reflect.Struct:
+		out := map[string]any{}
+		for i := range v.NumField() {
+			f := v.Type().Field(i)
+			name := f.Tag.Get("koanf")
+			if name == "" || !f.IsExported() {
+				continue
+			}
+			if f.Tag.Get("secret") == "true" {
+				out[name] = map[string]bool{"set": !v.Field(i).IsZero()}
+				continue
+			}
+			out[name] = public(v.Field(i))
+		}
+		return out
+	case v.Kind() == reflect.Slice:
+		out := make([]any, v.Len())
+		for i := range v.Len() {
+			out[i] = public(v.Index(i))
+		}
+		return out
+	}
+	return v.Interface()
 }

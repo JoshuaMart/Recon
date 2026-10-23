@@ -352,6 +352,30 @@ func (q *Queries) NextDueProgram(ctx context.Context, now time.Time) (uuid.UUID,
 	return program_id, err
 }
 
+const probeHostNow = `-- name: ProbeHostNow :execrows
+UPDATE asset_current ac SET next_full_at = 'epoch'::timestamptz
+FROM program p
+WHERE ac.program_id = $1 AND ac.kind = 'fqdn' AND ac.key = $2
+  AND ac.scope_status = 'in_scope' AND ac.lifecycle <> 'archived'
+  AND p.id = ac.program_id AND p.state = 'active'
+`
+
+type ProbeHostNowParams struct {
+	ProgramID uuid.UUID `json:"program_id"`
+	Host      string    `json:"host"`
+}
+
+// Probe now: the named host is due for full before every other date, so it
+// goes first even behind a backlog, if it gets due dates at all (in scope, in
+// an active program, not archived). The run moves the date as usual.
+func (q *Queries) ProbeHostNow(ctx context.Context, arg ProbeHostNowParams) (int64, error) {
+	result, err := q.db.Exec(ctx, probeHostNow, arg.ProgramID, arg.Host)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const putLayer = `-- name: PutLayer :exec
 INSERT INTO asset_layer (asset_id, layer, informative_failures, non_informative_failures, first_failure_at, last_ok_at, last_checked_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz)

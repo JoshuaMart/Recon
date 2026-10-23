@@ -101,3 +101,13 @@ SELECT a.id, a.first_seen, a.scope_status FROM asset a WHERE a.program_id = $1 A
 
 -- name: ListChildServices :many
 SELECT a.id, a.port FROM asset a WHERE a.parent_asset_id = $1 AND a.kind = 'service';
+
+-- Probe now: the named host is due for full before every other date, so it
+-- goes first even behind a backlog, if it gets due dates at all (in scope, in
+-- an active program, not archived). The run moves the date as usual.
+-- name: ProbeHostNow :execrows
+UPDATE asset_current ac SET next_full_at = 'epoch'::timestamptz
+FROM program p
+WHERE ac.program_id = sqlc.arg(program_id) AND ac.kind = 'fqdn' AND ac.key = sqlc.arg(host)
+  AND ac.scope_status = 'in_scope' AND ac.lifecycle <> 'archived'
+  AND p.id = ac.program_id AND p.state = 'active';

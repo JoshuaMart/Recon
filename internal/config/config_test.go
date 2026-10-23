@@ -1,11 +1,14 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/knadh/koanf/parsers/yaml"
 )
 
 const key = "0123456789abcdef0123456789abcdef"
@@ -102,4 +105,49 @@ func TestExampleFileMatchesDefaults(t *testing.T) {
 	if !reflect.DeepEqual(c, want) {
 		t.Errorf("config.example.yml decodes to %+v, defaults are %+v", c, want)
 	}
+}
+
+func TestPublicLeavesSecretsOut(t *testing.T) {
+	c := Defaults()
+	c.APIKey, c.Database.URL = "secret-key-1", "postgres://u:secret-db-2@db/recon"
+	c.ScopesExtractor.APIKey, c.FastRecon.APIToken = "secret-se-3", "secret-fr-4"
+	b, err := json.Marshal(c.Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "secret") {
+		t.Fatalf("a secret reached the settings page: %s", b)
+	}
+	if !strings.Contains(string(b), `"api_key":{"set":true}`) {
+		t.Fatalf("whether the key is set is missing: %s", b)
+	}
+}
+
+// The settings page shows every setting the example file documents: a new one
+// cannot be left out.
+func TestPublicListsEverySetting(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "config.example.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	example, err := yaml.Parser().Unmarshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var walk func(prefix string, want, got map[string]any)
+	walk = func(prefix string, want, got map[string]any) {
+		for k, v := range want {
+			g, ok := got[k]
+			if !ok {
+				t.Errorf("%s%s is in config.example.yml but not on the settings page", prefix, k)
+				continue
+			}
+			if wm, ok := v.(map[string]any); ok {
+				if gm, ok := g.(map[string]any); ok && gm["set"] == nil {
+					walk(prefix+k+".", wm, gm)
+				}
+			}
+		}
+	}
+	walk("", example, Defaults().Public())
 }

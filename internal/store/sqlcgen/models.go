@@ -163,6 +163,16 @@ type Run struct {
 	Targets    []string   `json:"targets"`
 }
 
+type SavedSearch struct {
+	ID        uuid.UUID `json:"id"`
+	Name      string    `json:"name"`
+	Query     string    `json:"query"`
+	View      string    `json:"view"`
+	Alert     bool      `json:"alert"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 type ScopeRule struct {
 	ID        uuid.UUID  `json:"id"`
 	ProgramID uuid.UUID  `json:"program_id"`

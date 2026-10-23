@@ -13,3 +13,10 @@
 
 # Local config files.
 /config.yml
+
+# The built interface, embedded by internal/ui: make ui.
+/internal/ui/dist/*
+!/internal/ui/dist/.gitkeep
+/web/node_modules/
+/web/.svelte-kit/
+/web/build/

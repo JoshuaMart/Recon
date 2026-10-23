@@ -32,6 +32,7 @@ import (
 	"github.com/JoshuaMart/recon/internal/scope"
 	"github.com/JoshuaMart/recon/internal/store"
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
+	"github.com/JoshuaMart/recon/internal/ui"
 	"github.com/JoshuaMart/recon/internal/version"
 )
 
@@ -189,7 +190,10 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, st *store.S
 	if err != nil {
 		return err
 	}
-	deps := api.Deps{Log: log, DB: st, Store: st, Auth: auth, DefaultAutoScan: cfg.Discovery.AutoScan}
+	deps := api.Deps{
+		Log: log, DB: st, Store: st, Auth: auth, DefaultAutoScan: cfg.Discovery.AutoScan,
+		Verification: cfg.Verification.Enabled, Settings: cfg.Public(), UI: ui.Embedded(),
+	}
 
 	vc := cfg.Verification
 	cad := lifecycle.DefaultCadences

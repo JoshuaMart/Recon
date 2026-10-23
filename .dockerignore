@@ -1,0 +1,10 @@
+# Built inside the image or not needed by it.
+**/node_modules
+web/.svelte-kit
+web/build
+docs
+.git
+.env
+var/backups
+# The image builds the interface itself: a local make ui must not leak in.
+internal/ui/dist

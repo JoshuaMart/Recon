@@ -11,27 +11,35 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/JoshuaMart/recon/internal/store"
 	"github.com/JoshuaMart/recon/internal/store/storetest"
 )
 
 type client struct {
 	t   *testing.T
 	srv *httptest.Server
+	st  *store.Store
 }
 
-func newClient(t *testing.T) *client {
+func newClient(t *testing.T) *client { return newClientWith(t, nil) }
+
+func newClientWith(t *testing.T, opt func(*Deps)) *client {
 	t.Helper()
 	st := storetest.New(t)
 	auth, err := NewAuth(testKey, "http://recon.test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := Handler(Deps{
+	d := Deps{
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), DB: st, Store: st, Auth: auth, DefaultAutoScan: "off",
-	})
+	}
+	if opt != nil {
+		opt(&d)
+	}
+	h := Handler(d)
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	return &client{t, srv}
+	return &client{t, srv, st}
 }
 
 func (c *client) do(method, path, body string) (int, map[string]any) {

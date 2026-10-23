@@ -5,7 +5,7 @@ every program hunted on, keeps it fresh, and makes it queryable through a filter
 
 ## Status
 
-Phases 0 to 3 are done: foundations, programs and the ScopesExtractor sync, recon with ingestion, and
+Phases 0 to 6 are done: foundations, programs and the ScopesExtractor sync, recon with ingestion, and
 verification with the lifecycle. A recon is queued on a wildcard and sent to `fastrecon serve`; its
 report becomes assets, deduplicated observations and changes. Verification probes due hosts per
 program and moves assets through the state machine (`internal/lifecycle`, pure functions). It is off
@@ -13,7 +13,10 @@ in the local stack (`VERIFICATION_ENABLED`) because it scans every in-scope host
 dispatched to the Fingerprinter (`internal/render`), paced and polite, and give technologies with
 parsed versions, a fingerprint observation and a deduplicated screenshot. The search language
 (`internal/search`) parses text to an AST that prints back, and compiles it to parameterized SQL; a
-test runs every query of `search.md`, so a new example there must work. Phase 6 (interface) is next. The design in `docs/` is the source of
+test runs every query of `search.md`, so a new example there must work. The interface (`web/`, SvelteKit 3,
+static, `#lib/x.ts` imports) is embedded by `internal/ui`, which serves `index.html` for every path the
+API does not own, with a CSP that allows only its own inline boot script by hash. Phase 7 (changes and
+notifications) is next. The design in `docs/` is the source of
 truth, and code follows it.
 
 ## Read before working
@@ -71,6 +74,8 @@ make up                     # build and start the stack, wait until healthy
 make check                  # vet, lint, unit tests, sqlc diff
 make test-integration       # needs Docker, finds the socket from the Docker context
 make verify-isolation       # network isolation of the running stack
+make ui                     # build the interface into internal/ui/dist, then rebuild
+make ui-dev                 # the interface with reload on :5173, against the API on :8080
 make help                   # everything else
 ```
 

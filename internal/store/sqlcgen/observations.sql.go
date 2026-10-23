@@ -169,3 +169,74 @@ func (q *Queries) ListAssetChanges(ctx context.Context, assetID uuid.UUID) ([]Ch
 	}
 	return items, nil
 }
+
+const listChanges = `-- name: ListChanges :many
+SELECT c.id, c.asset_id, c.program_id, p.name AS program, a.kind AS asset_kind, a.key AS asset_key,
+       c.kind, c.layer, c.before, c.after, c.run_id, c.at
+FROM change c JOIN asset a ON a.id = c.asset_id JOIN program p ON p.id = c.program_id
+WHERE ($1::uuid IS NULL OR c.program_id = $1)
+  AND ($2::timestamptz IS NULL OR (c.at, c.id) < ($2, $3::bigint))
+ORDER BY c.at DESC, c.id DESC
+LIMIT $4
+`
+
+type ListChangesParams struct {
+	ProgramID *uuid.UUID `json:"program_id"`
+	BeforeAt  *time.Time `json:"before_at"`
+	BeforeID  *int64     `json:"before_id"`
+	Lim       int32      `json:"lim"`
+}
+
+type ListChangesRow struct {
+	ID        int64      `json:"id"`
+	AssetID   uuid.UUID  `json:"asset_id"`
+	ProgramID uuid.UUID  `json:"program_id"`
+	Program   string     `json:"program"`
+	AssetKind string     `json:"asset_kind"`
+	AssetKey  string     `json:"asset_key"`
+	Kind      string     `json:"kind"`
+	Layer     *string    `json:"layer"`
+	Before    []byte     `json:"before"`
+	After     []byte     `json:"after"`
+	RunID     *uuid.UUID `json:"run_id"`
+	At        time.Time  `json:"at"`
+}
+
+// The feed, newest first, walked with a keyset cursor on (at, id).
+func (q *Queries) ListChanges(ctx context.Context, arg ListChangesParams) ([]ListChangesRow, error) {
+	rows, err := q.db.Query(ctx, listChanges,
+		arg.ProgramID,
+		arg.BeforeAt,
+		arg.BeforeID,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListChangesRow
+	for rows.Next() {
+		var i ListChangesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.AssetID,
+			&i.ProgramID,
+			&i.Program,
+			&i.AssetKind,
+			&i.AssetKey,
+			&i.Kind,
+			&i.Layer,
+			&i.Before,
+			&i.After,
+			&i.RunID,
+			&i.At,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

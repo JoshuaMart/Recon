@@ -52,7 +52,7 @@ erDiagram
 | `screenshot` | asset, storage key, thumbnail key, perceptual hash, taken at |
 | `run` | kind, stage, wildcard or target list, state, deadline, timings, counters |
 | `triage` | your state on an asset: `new`, `seen`, `interesting`, `ignored`, tags, note, `seen_at` |
-| `saved_search` | name, query, whether it alerts |
+| `saved_search` | name, query, view (services or hosts), whether it alerts |
 | `saved_search_match` | which assets a search currently matches, and since when |
 
 ## Asset kinds and canonical keys

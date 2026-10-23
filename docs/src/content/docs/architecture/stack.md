@@ -166,10 +166,11 @@ internal/
   notify/             evaluator, windows, channels
   bbot/               import parser
   api/                HTTP handlers
+  ui/                 serves the embedded build: index.html for the paths it routes, a hashed CSP
 db/embed.go           embeds the migrations
 db/migrations/        goose
 db/queries/           SQL for sqlc
-web/                  SvelteKit, built into internal/ui
+web/                  SvelteKit, built into internal/ui/dist by make ui and by the image
 docs/                 this site
 deploy/compose/       the stack, Dockerfile, backup and isolation scripts
 config.example.yml    every setting with its default, checked against the code by a test

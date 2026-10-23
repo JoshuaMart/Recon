@@ -84,5 +84,19 @@ docs: ## Serve the design docs
 docs-build: ## Build the design docs
 	cd docs && pnpm install --frozen-lockfile && pnpm build
 
+.PHONY: ui
+ui: ## Build the interface into internal/ui/dist, embedded by the next go build
+	cd web && pnpm install --frozen-lockfile && pnpm build
+	find internal/ui/dist -mindepth 1 ! -name .gitkeep -delete
+	cp -R web/build/. internal/ui/dist/
+
+.PHONY: ui-dev
+ui-dev: ## Serve the interface with reload, against the API on localhost:8080
+	cd web && pnpm install && pnpm dev
+
+.PHONY: ui-check
+ui-check: ## Type check the interface
+	cd web && pnpm install --frozen-lockfile && pnpm check
+
 .PHONY: check
-check: lint test sqlc-check ## What CI runs, minus integration and docs
+check: lint test sqlc-check ui-check ## What CI runs, minus integration and docs

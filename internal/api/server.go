@@ -43,6 +43,12 @@ type Deps struct {
 	// Fingerprinter is configured.
 	Storage fingerprint.Storage
 	Render  func() render.Status
+	// Verification says whether probe now can do anything.
+	Verification bool
+	// Settings is the config in effect without its secrets, for the settings page.
+	Settings any
+	// UI serves the interface on every path the API does not own; nil serves none.
+	UI http.Handler
 }
 
 type server struct{ Deps }
@@ -83,9 +89,26 @@ func Handler(d Deps) http.Handler {
 		authed("GET /api/assets/{id}/screenshots", s.listScreenshots)
 		authed("GET /api/screenshots/{key}", s.getScreenshot)
 		authed("POST /api/sync", s.runSync)
-		mux.Handle("/api/", d.Auth.Require(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		authed("POST /api/assets/{id}/probe", s.probeAsset)
+		authed("GET /api/changes", s.listChanges)
+		authed("GET /api/saved-searches", s.listSavedSearches)
+		authed("POST /api/saved-searches", s.createSavedSearch)
+		authed("PATCH /api/saved-searches/{id}", s.patchSavedSearch)
+		authed("DELETE /api/saved-searches/{id}", s.deleteSavedSearch)
+		authed("GET /api/settings", s.settings)
+	}
+	// An unknown API path is a JSON 404, never the interface's page.
+	if d.Auth != nil || d.UI != nil {
+		var notFound http.Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			writeError(w, http.StatusNotFound, "not_found", "no such route")
-		})))
+		})
+		if d.Auth != nil {
+			notFound = d.Auth.Require(notFound)
+		}
+		mux.Handle("/api/", notFound)
+	}
+	if d.UI != nil {
+		mux.Handle("/", d.UI)
 	}
 	return logRequests(d.Log, mux)
 }
