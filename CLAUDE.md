@@ -5,10 +5,12 @@ every program hunted on, keeps it fresh, and makes it queryable through a filter
 
 ## Status
 
-Phases 0 to 2 are done: foundations, programs and the ScopesExtractor sync, and recon with ingestion.
-A recon is queued on a wildcard, sent to `fastrecon serve`, and its report becomes assets, normalized
-and deduplicated observations, and changes (a repeated recon on a real wildcard writes no new
-observation). Phase 3 (verification and lifecycle) is next. The design in `docs/` is the source of
+Phases 0 to 3 are done: foundations, programs and the ScopesExtractor sync, recon with ingestion, and
+verification with the lifecycle. A recon is queued on a wildcard and sent to `fastrecon serve`; its
+report becomes assets, deduplicated observations and changes. Verification probes due hosts per
+program and moves assets through the state machine (`internal/lifecycle`, pure functions). It is off
+in the local stack (`VERIFICATION_ENABLED`) because it scans every in-scope host. Phase 4
+(fingerprinting) is next. The design in `docs/` is the source of
 truth, and code follows it.
 
 ## Read before working

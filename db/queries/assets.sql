@@ -16,8 +16,8 @@ SET last_seen = CASE WHEN sqlc.arg(sighting)::bool THEN GREATEST(asset.last_seen
 RETURNING asset.id, asset.first_seen, asset.scope_status, COALESCE((SELECT scope_status FROM old), '')::text AS old_scope_status;
 
 -- name: InsertAssetCurrent :exec
-INSERT INTO asset_current (asset_id, program_id, kind, key, host, port, scheme, scope_status, lifecycle, first_seen, last_seen)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, sqlc.arg(now)::timestamptz, sqlc.arg(now)::timestamptz)
+INSERT INTO asset_current (asset_id, program_id, kind, key, host, port, scheme, scope_status, lifecycle, first_seen, last_seen, lifecycle_since)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, sqlc.arg(now)::timestamptz, sqlc.arg(now)::timestamptz, sqlc.arg(now)::timestamptz)
 ON CONFLICT (asset_id) DO NOTHING;
 
 -- name: GetAssetCurrent :one
@@ -29,7 +29,9 @@ SET scope_status = $2, last_seen = GREATEST(last_seen, sqlc.arg(now)::timestampt
 WHERE asset_id = $1;
 
 -- name: SetLifecycle :exec
-UPDATE asset_current SET lifecycle = $2, last_changed = sqlc.arg(now)::timestamptz WHERE asset_id = $1;
+UPDATE asset_current
+SET lifecycle = $2, lifecycle_since = sqlc.arg(now)::timestamptz, last_changed = sqlc.arg(now)::timestamptz
+WHERE asset_id = $1;
 
 -- name: SetDNSCurrent :exec
 UPDATE asset_current SET dns_state = $2, ips = $3, cname = $4, cdn = sqlc.narg(cdn) WHERE asset_id = $1;

@@ -23,6 +23,8 @@ type Declared struct {
 	Created bool   `json:"created"`
 	Scope   string `json:"scope,omitempty"`
 	Error   string `json:"error,omitempty"`
+	// HostKey is the host the entry sits on, when it is a name.
+	HostKey string `json:"-"`
 }
 
 // Declare puts a host or a URL in the inventory without observing it: a host
@@ -48,6 +50,9 @@ func (w *Writer) Declare(ctx context.Context, entry, source string) (Declared, e
 		return out, err
 	}
 	out.Kind, out.Key, out.Created, out.Scope = kind, key, wr.New, wr.Scope
+	if kind == KindFQDN {
+		out.HostKey = key
+	}
 	return out, nil
 }
 
@@ -94,6 +99,9 @@ func (w *Writer) declareURL(ctx context.Context, out Declared, e, source string)
 		return out, err
 	}
 	out.Kind, out.Key, out.Created, out.Scope = KindURL, u, wr.New, wr.Scope
+	if kind == KindFQDN {
+		out.HostKey = key
+	}
 	return out, nil
 }
 
@@ -171,6 +179,10 @@ func Refresh(ctx context.Context, q *sqlcgen.Queries, p sqlcgen.Program, default
 		res.Reclassified++
 	}
 
+	if err := SyncSchedule(ctx, q, p.ID, now); err != nil {
+		return res, err
+	}
+
 	autoScan := defaultAutoScan
 	if p.AutoScan != nil {
 		autoScan = *p.AutoScan
@@ -221,7 +233,7 @@ func RefreshAll(ctx context.Context, pool *pgxpool.Pool, q *sqlcgen.Queries, now
 			return total, err
 		}
 		tq := q.WithTx(tx)
-		p, err := tq.GetProgram(ctx, row.ID)
+		p, err := tq.GetProgram(ctx, row.Program.ID)
 		if err == nil {
 			var r Refreshed
 			// Not a new wildcard: auto-scan reacts to creation, not to a restart.
@@ -234,7 +246,7 @@ func RefreshAll(ctx context.Context, pool *pgxpool.Pool, q *sqlcgen.Queries, now
 		}
 		if err != nil {
 			_ = tx.Rollback(ctx)
-			return total, fmt.Errorf("program %s: %w", row.ID, err)
+			return total, fmt.Errorf("program %s: %w", row.Program.ID, err)
 		}
 	}
 	return total, nil

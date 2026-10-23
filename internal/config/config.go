@@ -34,6 +34,30 @@ type Config struct {
 	ScopesExtractor ScopesExtractor `koanf:"scopes_extractor"`
 	Discovery       Discovery       `koanf:"discovery"`
 	FastRecon       FastRecon       `koanf:"fastrecon"`
+	Verification    Verification    `koanf:"verification"`
+}
+
+// Verification is the periodic probing of known hosts.
+type Verification struct {
+	Enabled bool `koanf:"enabled"`
+	// Batch is the most hosts one run carries.
+	Batch   int           `koanf:"batch"`
+	Resolve time.Duration `koanf:"resolve"` // nominal resolve cadence
+	Full    time.Duration `koanf:"full"`    // nominal full cadence
+	Dormant time.Duration `koanf:"dormant"` // cadence of inactive and unobservable hosts
+	// ArchiveAfter is how long an inactive or unobservable asset waits before
+	// it leaves the scheduler.
+	ArchiveAfter time.Duration `koanf:"archive_after"`
+	// DeadOrigins are the pages a CDN serves when the origin is gone.
+	DeadOrigins []DeadOrigin `koanf:"dead_origins"`
+}
+
+// DeadOrigin is one dead-origin signature. Empty fields match anything.
+type DeadOrigin struct {
+	Name     string `koanf:"name"`
+	Statuses []int  `koanf:"statuses"`
+	Server   string `koanf:"server"`
+	Title    string `koanf:"title"`
 }
 
 // FastRecon is the `fastrecon serve` instance runs are sent to. An empty URL
@@ -103,6 +127,11 @@ func Defaults() Config {
 		},
 		Discovery: Discovery{AutoScan: "off", Ports: DefaultPorts},
 		FastRecon: FastRecon{Timeout: 30 * time.Minute, Slots: 1},
+		Verification: Verification{
+			Enabled: true, Batch: 500, Resolve: 24 * time.Hour, Full: 72 * time.Hour,
+			Dormant: 7 * 24 * time.Hour, ArchiveAfter: 30 * 24 * time.Hour,
+			DeadOrigins: []DeadOrigin{{Name: "cloudflare origin down", Statuses: []int{521, 522, 523, 530}, Server: "cloudflare"}},
+		},
 	}
 }
 
@@ -205,6 +234,9 @@ func (c Config) Validate() error {
 	}
 	if c.FastRecon.Slots < 1 {
 		errs = append(errs, errors.New("fastrecon.slots must be at least 1"))
+	}
+	if v := c.Verification; v.Batch < 1 || v.Resolve < time.Minute || v.Full < time.Minute || v.Dormant < time.Minute || v.ArchiveAfter < time.Hour {
+		errs = append(errs, errors.New("verification: batch must be positive, cadences at least 1m, archive_after at least 1h"))
 	}
 	if len(c.Discovery.Ports) == 0 {
 		errs = append(errs, errors.New("discovery.ports cannot be empty"))

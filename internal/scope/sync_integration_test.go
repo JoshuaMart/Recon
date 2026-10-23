@@ -45,8 +45,8 @@ func programBySlug(t *testing.T, st *store.Store, slug string) sqlcgen.Program {
 		t.Fatal(err)
 	}
 	for _, r := range rows {
-		if r.Slug != nil && *r.Slug == slug {
-			p, err := st.Q.GetProgram(context.Background(), r.ID)
+		if r.Program.Slug != nil && *r.Program.Slug == slug {
+			p, err := st.Q.GetProgram(context.Background(), r.Program.ID)
 			if err != nil {
 				t.Fatal(err)
 			}

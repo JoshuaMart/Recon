@@ -23,6 +23,14 @@ Verification has no queue of its own: the due dates on `asset_current` **are** t
 dies moves nothing, so once it [times out](/architecture/stack/#run-states) the next tick picks the
 same hosts again.
 
+A run covers **one program and one stage**: the tick takes the program holding the oldest due date,
+and up to a batch of its hosts due for that stage (`full` first). One verification run is queued or
+running at a time; recon and verification share the FastRecon slots, in queue order. Hosts listed but
+absent from the report (a truncated run) keep their due date and are taken again.
+
+Verification can be switched off in the config (`verification.enabled`). The local stack ships with it
+off, so starting Recon never scans every declared host before you decide to.
+
 ### The stage ladder
 
 | Due date | FastRecon stage | Default cadence | Cost |
@@ -40,7 +48,7 @@ does not come back as a convoy.
 
 | Source | Lifecycle | First probe |
 |---|---|---|
-| recon, name resolves | `active` | `full` within 15 min (jittered), the recon already measured it |
+| recon, name resolves | `active` | the nominal cadence: the recon just measured it |
 | recon, name found but not resolving, or not reached | `candidate` | `resolve`, candidate curve |
 | Certificate Transparency | `candidate` | `resolve`, immediately |
 | BBOT import, scope rule | `candidate` | `resolve`, jittered |
@@ -49,6 +57,10 @@ does not come back as a convoy.
 
 A candidate is probed on `resolve` along its curve. Its first successful resolution makes it `active` and
 schedules a `full` within 5 minutes (jittered), which is what finds its ports and services.
+
+A reclassification or a program state change moves due dates in the same transaction: an asset
+becoming `in_scope` in an active program is due for `resolve` within 15 minutes, one leaving loses its
+dates, and a paused or archived program has none.
 
 ## Qualifying a failure
 
@@ -60,16 +72,19 @@ the scanner set.
 | answered, present | `ok` | |
 | `nxdomain` from FastRecon's validated resolver pool | `fail` | **yes** |
 | every port refused on the host | `fail` | **yes**, on `tcp` |
-| a known service's port refused in its host's sweep | `fail` | **yes**, on the service's `http` |
+| a known service's port not open, in a sweep where every other port was refused | `fail` | **yes**, on the service's `http`. The report counts refusals per host, so a sweep with any filtered port cannot say this and gives `error`. A port the sweep did not try (not in the port list, or a CDN address swept on 80 and 443 only) is not measured at all |
 | a [dead-origin signature](#dead-origin-signatures) behind a CDN | `fail` | **yes**, on `http` |
 | timeout, filtered | `error` | no |
-| `servfail` | `error` | no |
+| `servfail` (FastRecon: `discovered`, `resolver_error`) | `error` | no |
+| a wildcard answer (the zone answers every name) | `error` | no, and it promotes nothing |
 | 403, WAF challenge | `ok` | the target is alive |
 | any result from a run that reported itself degraded | `error` | no |
 | `nodata` (name exists, no address) | `ok` | a mail-only host is not dead |
 
 An **informative failure** is a `fail`: the target answered with an absence. It is the only kind that
-moves an asset toward `inactive`. A host the run never reached produces **no** observation at all.
+moves an asset toward `inactive`. A host the run never reached produces **no** observation at all. Its due date still moves (a
+`resolve` retried in about 15 minutes, a `full` no sooner than its floor), so an unreached host is never
+due again at once.
 
 ### Observers
 
@@ -80,9 +95,9 @@ tried got only `error`, three times in a row.
 ### Dead-origin signatures
 
 A CDN edge always answers, so the only death signal behind it is the page the edge serves when the
-origin is gone. The signatures are a list in the config (status plus body or header pattern), for
-example Cloudflare `521`, `522`, `523` and CloudFront's "could not be satisfied". An unknown error page
-is `error`, never `fail`.
+origin is gone. The signatures are a list in the config, matched on what the HTTP probe reports
+(status, `server`, title). The defaults are Cloudflare's `521`, `522`, `523` and `530`. An unknown error
+page is `ok` on the edge and says nothing about the origin, never `fail`.
 
 ## State machine
 
@@ -114,10 +129,14 @@ stateDiagram-v2
 | `unobservable` | nothing gets through: neither alive nor dead | `resolve` weekly |
 | `archived` | out of the scheduler, never deleted | no |
 
-The fail that moves an asset to `flapping` is the first of the three. A candidate has exactly two exits:
+The fail that moves an asset to `flapping` is the first of the three. A port that speaks no HTTP (a database, a broker) gives its service an `error` on every pass, so it
+stays a candidate: nothing has confirmed a web service there. A candidate has exactly two exits:
 failing to find a name that was never found is not news, so a failing candidate stays a candidate and is
 archived without being called dead. A BBOT import never revives an archived asset. Every transition
 writes a `lifecycle_changed` change. Durations are configuration.
+
+A service has no schedule of its own: it is measured through its host's `full`. When its host dies, it
+dies with it, so a service never stays `active` on a name that is gone.
 
 ### Death is per layer
 
@@ -127,6 +146,18 @@ though DNS and TCP answer, which is the only death signal a fronted target gives
 
 The `fingerprint` layer never moves an asset toward `flapping` or `inactive`. It only counts as one of
 the observers for `unobservable`.
+
+### Counters
+
+Each layer keeps two consecutive counters in `asset_layer`, both reset by an `ok`:
+
+| Counter | Grows on | Reading |
+|---|---|---|
+| informative failures | `fail` | failing from 1, dead at 3 when the first failure is at least 24 h old |
+| non informative failures | `error` | at 3 on every layer measured, and no `ok` since: `unobservable` |
+
+A recon only resets counters on an `ok`: an enumeration never counts toward a death. A recon finding an
+archived name resolving brings it back to `active`.
 
 ## Backoff curves
 
@@ -151,6 +182,8 @@ timeline
 | a CT candidate's first probe has no jitter | the certificate is the event, minutes matter |
 | promotion to `full` takes jitter | a certificate with fifty names would otherwise form a 72 h convoy |
 | backoff on `full` has a floor (1 h) | a failing host always holds the earliest due date and would starve the rest |
+| the stage that ran always moves its own date past now | a date left in the past makes the host due again at once, in a loop |
+| a failing `dns` layer backs off on `resolve`, a failing `tcp` or `http` layer on `full` | each failure is re-measured by the cheapest stage that can see it |
 | all values are configuration | [P6](/architecture/principles/#p6-configuration-is-data) |
 
 ## Where transitions happen

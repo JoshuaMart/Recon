@@ -30,6 +30,19 @@ discovery:
           3306, 5432, 27017, 6379, 9200, 11211, 9042, 2379,
           3389, 5900, 1080, 3128]
 
+verification:
+  enabled: true        # periodic probing of known hosts
+  batch: 500           # most hosts per run
+  resolve: 24h         # nominal resolve cadence
+  full: 72h            # nominal full cadence: ports and HTTP
+  dormant: 168h        # inactive and unobservable hosts
+  archive_after: 720h  # inactive or unobservable this long leaves the scheduler
+  dead_origins:        # pages a CDN serves when the origin is gone
+    - name: cloudflare origin down
+      statuses: [521, 522, 523, 530]
+      server: cloudflare
+      title: ""
+
 fastrecon:
   url: ""              # a `fastrecon serve` instance; empty leaves runs queued
   api_token: ""        # its FASTRECON_API_TOKEN, required when url is set

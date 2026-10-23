@@ -16,12 +16,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/JoshuaMart/recon/internal/api"
 	"github.com/JoshuaMart/recon/internal/config"
+	"github.com/JoshuaMart/recon/internal/ingest"
 	"github.com/JoshuaMart/recon/internal/inventory"
+	"github.com/JoshuaMart/recon/internal/lifecycle"
 	"github.com/JoshuaMart/recon/internal/runs"
 	"github.com/JoshuaMart/recon/internal/scope"
 	"github.com/JoshuaMart/recon/internal/store"
@@ -185,9 +188,20 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, st *store.S
 	}
 	deps := api.Deps{Log: log, DB: st, Store: st, Auth: auth, DefaultAutoScan: cfg.Discovery.AutoScan}
 
+	vc := cfg.Verification
+	cad := lifecycle.DefaultCadences
+	cad.Resolve, cad.Full, cad.Dormant = vc.Resolve, vc.Full, vc.Dormant
+	sigs := make([]ingest.Signature, 0, len(vc.DeadOrigins))
+	for _, d := range vc.DeadOrigins {
+		sigs = append(sigs, ingest.Signature{Name: d.Name, Statuses: d.Statuses, Server: d.Server, Title: d.Title})
+	}
 	sched := &runs.Scheduler{
 		Store: st, Log: log, Slots: cfg.FastRecon.Slots, Timeout: cfg.FastRecon.Timeout,
 		Ports: cfg.Discovery.Ports, Tick: 5 * time.Second, Now: time.Now,
+		Verification: vc.Enabled, Batch: vc.Batch, ArchiveAfter: vc.ArchiveAfter, Cadences: &cad, Signatures: sigs,
+	}
+	if !vc.Enabled {
+		log.InfoContext(ctx, "verification disabled: known hosts are not probed")
 	}
 	if f := cfg.FastRecon; f.URL != "" {
 		sched.Runner = runs.NewServe(f.URL, f.APIToken, f.Timeout)
@@ -197,13 +211,34 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, st *store.S
 	if err := sched.Recover(ctx); err != nil {
 		return err
 	}
-	if r, err := inventory.RefreshAll(ctx, st.Pool, st.Q, time.Now().UTC().Truncate(time.Microsecond)); err != nil {
-		return fmt.Errorf("inventory refresh: %w", err)
-	} else if r.Declared+r.Reclassified > 0 {
-		log.InfoContext(ctx, "inventory caught up with the rules", "declared", r.Declared, "reclassified", r.Reclassified)
+
+	// The loops share one context and are waited for before the pool closes:
+	// a loop still writing when it closes would lose what it was doing.
+	loopsCtx, stopLoops := context.WithCancel(ctx)
+	var loops sync.WaitGroup
+	defer func() {
+		stopLoops()
+		loops.Wait()
+	}()
+	spawn := func(f func(context.Context)) {
+		loops.Add(1)
+		go func() {
+			defer loops.Done()
+			f(loopsCtx)
+		}()
 	}
-	go sched.Loop(ctx)
-	go maintain(ctx, log, st)
+	spawn(sched.Loop)
+	spawn(func(ctx context.Context) { maintain(ctx, log, st) })
+	// Off the startup path: the API answers while the inventory catches up.
+	spawn(func(ctx context.Context) {
+		r, err := inventory.RefreshAll(ctx, st.Pool, st.Q, time.Now().UTC().Truncate(time.Microsecond))
+		switch {
+		case err != nil && ctx.Err() == nil:
+			log.ErrorContext(ctx, "inventory refresh", "err", err)
+		case r.Declared+r.Reclassified > 0:
+			log.InfoContext(ctx, "inventory caught up with the rules", "declared", r.Declared, "reclassified", r.Reclassified)
+		}
+	})
 
 	if se := cfg.ScopesExtractor; se.URL != "" {
 		syncer := &scope.Syncer{
@@ -213,9 +248,10 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, st *store.S
 				_, err := inventory.Refresh(ctx, q, p, cfg.Discovery.AutoScan, now)
 				return err
 			},
+			Reschedule: inventory.SyncSchedule,
 		}
 		deps.Sync = syncer
-		go syncer.Loop(ctx, se.Interval)
+		spawn(func(ctx context.Context) { syncer.Loop(ctx, se.Interval) })
 	} else {
 		log.InfoContext(ctx, "scope sync disabled: no scopes_extractor.url, manual programs only")
 	}

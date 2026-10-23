@@ -101,11 +101,7 @@ func (s *server) listPrograms(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]programView, 0, len(rows))
 	for _, row := range rows {
-		v := s.viewProgram(sqlcgen.Program{
-			ID: row.ID, Origin: row.Origin, Platform: row.Platform, Slug: row.Slug, Name: row.Name,
-			Bounty: row.Bounty, State: row.State, ArchivedBy: row.ArchivedBy, AutoScan: row.AutoScan,
-			CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
-		})
+		v := s.viewProgram(row.Program)
 		v.OpenRules, v.Wildcards = &row.OpenRules, &row.Wildcards
 		out = append(out, v)
 	}
@@ -250,12 +246,17 @@ func (s *server) patchProgram(w http.ResponseWriter, r *http.Request) {
 		}
 		params.AutoScan = v
 	}
-	updated, err := s.Store.Q.UpdateProgram(r.Context(), params)
-	if err != nil {
-		s.internal(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, s.viewProgram(updated))
+	s.inTx(w, r, func(q *sqlcgen.Queries) (int, any, error) {
+		updated, err := q.UpdateProgram(r.Context(), params)
+		if err != nil {
+			return 0, nil, err
+		}
+		// Due dates follow the state: none on a paused or archived program.
+		if err := inventory.SyncSchedule(r.Context(), q, updated.ID, params.Now); err != nil {
+			return 0, nil, err
+		}
+		return http.StatusOK, s.viewProgram(updated), nil
+	})
 }
 
 type ruleInput struct {
@@ -409,7 +410,8 @@ func (s *server) declareAssets(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return 0, nil, err
 		}
-		wr := &inventory.Writer{Q: q, ProgramID: p.ID, Classifier: c, Now: s.now()}
+		now := s.now()
+		wr := &inventory.Writer{Q: q, ProgramID: p.ID, Classifier: c, Now: now}
 		// Per entry, so three names that went nowhere are visible as such.
 		out := make([]inventory.Declared, 0, len(body.Entries))
 		for _, e := range body.Entries {
@@ -418,6 +420,18 @@ func (s *server) declareAssets(w http.ResponseWriter, r *http.Request) {
 				return 0, nil, err
 			}
 			out = append(out, d)
+		}
+		if err := inventory.SyncSchedule(r.Context(), q, p.ID, now); err != nil {
+			return 0, nil, err
+		}
+		// Somebody typed these in to see what they expose: a full now.
+		for _, d := range out {
+			if d.HostKey == "" {
+				continue
+			}
+			if err := q.ScheduleFullNow(r.Context(), sqlcgen.ScheduleFullNowParams{ProgramID: p.ID, Key: d.HostKey, Now: now}); err != nil {
+				return 0, nil, err
+			}
 		}
 		return http.StatusOK, map[string]any{"entries": out}, nil
 	})

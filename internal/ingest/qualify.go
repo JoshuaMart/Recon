@@ -17,7 +17,9 @@ func qualifyDNS(h Host, degraded bool) (outcome, state string, observe bool) {
 	case "live":
 		return OK, "resolving", true
 	case "wildcard":
-		return OK, "wildcard", true
+		// The name answers only with the zone's wildcard: nothing proves it
+		// exists, so it promotes nothing.
+		return Error, "wildcard", true
 	case "dead":
 		switch h.Reason {
 		case "nxdomain":
@@ -32,6 +34,12 @@ func qualifyDNS(h Host, degraded bool) (outcome, state string, observe bool) {
 			return OK, "nodata", true
 		}
 		return Error, "unknown", true
+	case "discovered":
+		// FastRecon keeps a host whose resolver failed (SERVFAIL, REFUSED)
+		// discovered: a resolution fault, not an existence fault.
+		if h.Reason == "resolver_error" {
+			return Error, "unknown", true
+		}
 	}
 	return "", "", false
 }

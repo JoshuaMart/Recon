@@ -79,6 +79,8 @@ services:
       RECON_FASTRECON__URL: http://fastrecon:8080
       RECON_FASTRECON__API_TOKEN: ${FASTRECON_API_TOKEN:?set FASTRECON_API_TOKEN in .env}
       RECON_FASTRECON__TIMEOUT: ${FASTRECON_TIMEOUT:-30m}
+      # Off unless asked: on, every in-scope host of every active program is probed.
+      RECON_VERIFICATION__ENABLED: ${VERIFICATION_ENABLED:-false}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

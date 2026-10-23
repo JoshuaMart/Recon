@@ -39,7 +39,7 @@ WHERE state = 'running';
 SELECT * FROM run WHERE id = $1;
 
 -- name: ListRuns :many
-SELECT r.*, w.apex FROM run r LEFT JOIN wildcard w ON w.id = r.wildcard_id
+SELECT sqlc.embed(r), w.apex FROM run r LEFT JOIN wildcard w ON w.id = r.wildcard_id
 WHERE (sqlc.narg(program_id)::uuid IS NULL OR r.program_id = sqlc.narg(program_id))
 ORDER BY r.queued_at DESC, r.id DESC
 LIMIT sqlc.arg(lim);

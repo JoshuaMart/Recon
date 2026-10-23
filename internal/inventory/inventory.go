@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/JoshuaMart/recon/internal/lifecycle"
 	"github.com/JoshuaMart/recon/internal/scope"
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
@@ -61,6 +62,10 @@ type Writer struct {
 	Classifier *scope.Classifier
 	RunID      *uuid.UUID
 	Now        time.Time
+	// ProgramActive gates due dates: a paused or archived program has none.
+	ProgramActive bool
+	Cadences      *lifecycle.Cadences // nil: the defaults
+	Rand          func() float64      // nil: math/rand
 }
 
 // Upsert creates or sights an asset, classifies it against the rules in force,

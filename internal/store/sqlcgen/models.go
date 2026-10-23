@@ -29,28 +29,43 @@ type Asset struct {
 }
 
 type AssetCurrent struct {
-	AssetID     uuid.UUID
-	ProgramID   uuid.UUID
-	Kind        string
-	Key         string
-	Host        string
-	Port        *int32
-	Scheme      *string
-	ScopeStatus string
-	Lifecycle   string
-	DnsState    *string
-	TcpState    *string
-	HttpState   *string
-	Ips         []netip.Addr
-	Cname       []string
-	Cdn         *string
-	StatusCode  *int32
-	Title       *string
-	Server      *string
-	FinalUrl    *string
-	FirstSeen   time.Time
-	LastSeen    time.Time
-	LastChanged *time.Time
+	AssetID        uuid.UUID
+	ProgramID      uuid.UUID
+	Kind           string
+	Key            string
+	Host           string
+	Port           *int32
+	Scheme         *string
+	ScopeStatus    string
+	Lifecycle      string
+	DnsState       *string
+	TcpState       *string
+	HttpState      *string
+	Ips            []netip.Addr
+	Cname          []string
+	Cdn            *string
+	StatusCode     *int32
+	Title          *string
+	Server         *string
+	FinalUrl       *string
+	FirstSeen      time.Time
+	LastSeen       time.Time
+	LastChanged    *time.Time
+	NextResolveAt  *time.Time
+	NextFullAt     *time.Time
+	BackoffTier    int32
+	LifecycleSince time.Time
+	LastCheckedAt  *time.Time
+}
+
+type AssetLayer struct {
+	AssetID                uuid.UUID
+	Layer                  string
+	InformativeFailures    int32
+	NonInformativeFailures int32
+	FirstFailureAt         *time.Time
+	LastOkAt               *time.Time
+	LastCheckedAt          time.Time
 }
 
 type Change struct {
@@ -112,6 +127,7 @@ type Run struct {
 	Error      *string
 	ReportMeta []byte
 	Ingest     []byte
+	Targets    []string
 }
 
 type ScopeRule struct {

@@ -52,6 +52,9 @@ type Syncer struct {
 	Now             func() time.Time
 	// Refresh, when set, runs for every program whose rules moved.
 	Refresh RefreshFunc
+	// Reschedule, when set, makes due dates follow a program archived or
+	// reactivated by the pass.
+	Reschedule func(ctx context.Context, q *sqlcgen.Queries, programID uuid.UUID, now time.Time) error
 }
 
 type programKey struct{ platform, slug string }
@@ -168,6 +171,9 @@ func (s *Syncer) run(ctx context.Context, now time.Time) (Summary, error) {
 		if err := q.SetProgramState(ctx, sqlcgen.SetProgramStateParams{ID: p.ID, State: "archived", ArchivedBy: &sync, Now: now}); err != nil {
 			return Summary{}, err
 		}
+		if err := s.reschedule(ctx, q, p.ID, now); err != nil {
+			return Summary{}, err
+		}
 		sum.Archived++
 	}
 
@@ -199,6 +205,9 @@ func (s *Syncer) apply(ctx context.Context, q *sqlcgen.Queries, now time.Time, k
 			return err
 		}
 		p.State, p.ArchivedBy = "active", nil
+		if err := s.reschedule(ctx, q, p.ID, now); err != nil {
+			return err
+		}
 		sum.Reactivated++
 	}
 	moved := sum.RulesOpened + sum.RulesClosed
@@ -284,6 +293,13 @@ func (s *Syncer) Loop(ctx context.Context, interval time.Duration) {
 		case <-t.C:
 		}
 	}
+}
+
+func (s *Syncer) reschedule(ctx context.Context, q *sqlcgen.Queries, programID uuid.UUID, now time.Time) error {
+	if s.Reschedule == nil {
+		return nil
+	}
+	return s.Reschedule(ctx, q, programID, now)
 }
 
 func deref[T any](p *T) T {

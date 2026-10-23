@@ -373,7 +373,7 @@ func TestAutoScanQueuesANewWildcard(t *testing.T) {
 		t.Fatalf("refresh = %+v, %v", res, err)
 	}
 	runsList, _ := f.st.Q.ListRuns(ctx, sqlcgen.ListRunsParams{ProgramID: &p.ID, Lim: 10})
-	if len(runsList) != 1 || runsList[0].Trigger != "auto_scan" || *runsList[0].Apex != "new.io" {
+	if len(runsList) != 1 || runsList[0].Run.Trigger != "auto_scan" || *runsList[0].Apex != "new.io" {
 		t.Errorf("runs = %+v", runsList)
 	}
 }

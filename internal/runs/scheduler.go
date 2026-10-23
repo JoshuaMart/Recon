@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/JoshuaMart/recon/internal/ingest"
+	"github.com/JoshuaMart/recon/internal/lifecycle"
 	"github.com/JoshuaMart/recon/internal/scope"
 	"github.com/JoshuaMart/recon/internal/store"
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
@@ -35,6 +36,14 @@ type Scheduler struct {
 	Ports   []int
 	Tick    time.Duration
 	Now     func() time.Time
+
+	// Verification, when on, queues runs over due hosts, Batch at a time.
+	Verification bool
+	Batch        int
+	ArchiveAfter time.Duration
+	Cadences     *lifecycle.Cadences
+	Signatures   []ingest.Signature
+	Rand         func() float64
 
 	wg sync.WaitGroup
 }
@@ -78,6 +87,14 @@ func (s *Scheduler) Pass(ctx context.Context) error {
 	for _, id := range ids {
 		s.Log.WarnContext(ctx, "run timed out", "run", id)
 	}
+	if err := s.archiveStale(ctx); err != nil {
+		return err
+	}
+	if s.Verification {
+		if err := s.enqueueVerification(ctx); err != nil {
+			return err
+		}
+	}
 	if s.Runner == nil {
 		return nil
 	}
@@ -100,13 +117,15 @@ func (s *Scheduler) Pass(ctx context.Context) error {
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			s.execute(context.WithoutCancel(ctx), r)
+			s.execute(ctx, r)
 		}()
 	}
 }
 
-// Execute runs one claimed run to its end: used by Pass, and by tests.
-func (s *Scheduler) execute(ctx context.Context, r sqlcgen.Run) {
+// execute runs one claimed run to its end. Shutting down cancels the call to
+// the runner, not the writes that record the outcome.
+func (s *Scheduler) execute(callCtx context.Context, r sqlcgen.Run) {
+	ctx := context.WithoutCancel(callCtx)
 	log := s.Log.With("run", r.ID, "kind", r.Kind)
 	req, apex, err := s.request(ctx, r)
 	if err != nil {
@@ -115,7 +134,7 @@ func (s *Scheduler) execute(ctx context.Context, r sqlcgen.Run) {
 		return
 	}
 	log.InfoContext(ctx, "run started", "domain", req.Domain, "stage", req.Stages)
-	raw, err := s.Runner.Run(ctx, req)
+	raw, err := s.Runner.Run(callCtx, req)
 	switch {
 	case errors.Is(err, ErrBusy):
 		if err := s.Store.Q.RequeueRun(ctx, r.ID); err != nil {
@@ -136,7 +155,83 @@ func (s *Scheduler) execute(ctx context.Context, r sqlcgen.Run) {
 	log.InfoContext(ctx, "run ingested", "summary", sum)
 }
 
+// enqueueVerification queues one run over the due hosts of the program holding
+// the oldest due date, full before resolve. One verification is queued or
+// running at a time.
+func (s *Scheduler) enqueueVerification(ctx context.Context) error {
+	now := s.now()
+	programID, err := s.Store.Q.NextDueProgram(ctx, now)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	lim := int32(s.Batch) //nolint:gosec // validated by the config
+	stage := "full"
+	targets, err := s.Store.Q.DueFull(ctx, sqlcgen.DueFullParams{ProgramID: programID, Now: now, Lim: lim})
+	if err != nil {
+		return err
+	}
+	if len(targets) == 0 {
+		stage = "resolve"
+		if targets, err = s.Store.Q.DueResolve(ctx, sqlcgen.DueResolveParams{ProgramID: programID, Now: now, Lim: lim}); err != nil {
+			return err
+		}
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+	_, err = s.Store.Q.EnqueueVerification(ctx, sqlcgen.EnqueueVerificationParams{
+		ProgramID: programID, Stage: stage, Targets: targets, Now: now,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil // one is already queued or running
+	}
+	return err
+}
+
+// archiveStale takes assets inactive or unobservable for too long out of the
+// scheduler. They are kept: archived is never deleted.
+func (s *Scheduler) archiveStale(ctx context.Context) error {
+	if s.ArchiveAfter <= 0 {
+		return nil
+	}
+	now := s.now()
+	rows, err := s.Store.Q.ArchiveStale(ctx, sqlcgen.ArchiveStaleParams{Before: now.Add(-s.ArchiveAfter), Now: now})
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		before, _ := json.Marshal(map[string]string{"lifecycle": r.Lifecycle})
+		after, _ := json.Marshal(map[string]string{"lifecycle": "archived"})
+		if err := s.Store.Q.InsertChange(ctx, sqlcgen.InsertChangeParams{
+			AssetID: r.AssetID, ProgramID: r.ProgramID, Kind: "lifecycle_changed", Before: before, After: after, Now: now,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Scheduler) ports() string {
+	ports := make([]string, len(s.Ports))
+	for i, p := range s.Ports {
+		ports[i] = strconv.Itoa(p)
+	}
+	return strings.Join(ports, ",")
+}
+
 func (s *Scheduler) request(ctx context.Context, r sqlcgen.Run) (Request, string, error) {
+	if r.Kind == "verification" {
+		rules, err := s.Store.Q.ListOpenRules(ctx, r.ProgramID)
+		if err != nil {
+			return Request{}, "", err
+		}
+		return Request{
+			Targets: r.Targets, Exclude: Exclusions(rules), Stages: r.Stage, Ports: s.ports(), Timeout: s.Timeout.String(),
+		}, "", nil
+	}
 	if r.Kind != "recon" || r.WildcardID == nil {
 		return Request{}, "", fmt.Errorf("run kind %q is not handled yet", r.Kind)
 	}
@@ -151,13 +246,8 @@ func (s *Scheduler) request(ctx context.Context, r sqlcgen.Run) (Request, string
 	if err != nil {
 		return Request{}, "", err
 	}
-	ports := make([]string, len(s.Ports))
-	for i, p := range s.Ports {
-		ports[i] = strconv.Itoa(p)
-	}
 	return Request{
-		Domain: w.Apex, Exclude: Exclusions(rules), Stages: r.Stage,
-		Ports: strings.Join(ports, ","), Timeout: s.Timeout.String(),
+		Domain: w.Apex, Exclude: Exclusions(rules), Stages: r.Stage, Ports: s.ports(), Timeout: s.Timeout.String(),
 	}, w.Apex, nil
 }
 
@@ -189,8 +279,12 @@ func (s *Scheduler) ingest(ctx context.Context, r sqlcgen.Run, apex string, raw 
 	if err != nil {
 		return ingest.Summary{}, err
 	}
-	if rep.Run.Input != "domain" {
-		return ingest.Summary{}, fmt.Errorf("a recon report must have input domain, got %q", rep.Run.Input)
+	want := "domain"
+	if r.Kind == "verification" {
+		want = "targets"
+	}
+	if rep.Run.Input != want {
+		return ingest.Summary{}, fmt.Errorf("a %s report must have input %s, got %q", r.Kind, want, rep.Run.Input)
 	}
 	tx, err := s.Store.Pool.Begin(ctx)
 	if err != nil {
@@ -200,7 +294,10 @@ func (s *Scheduler) ingest(ctx context.Context, r sqlcgen.Run, apex string, raw 
 	q := s.Store.Q.WithTx(tx)
 
 	now := s.now()
-	sum, err := ingest.Ingest(ctx, q, ingest.Input{Run: r, Apex: apex, Report: rep, Now: now, Log: s.Log})
+	sum, err := ingest.Ingest(ctx, q, ingest.Input{
+		Run: r, Apex: apex, Report: rep, Now: now, Log: s.Log,
+		Signatures: s.Signatures, Cadences: s.Cadences, Rand: s.Rand, Ports: s.Ports,
+	})
 	if err != nil {
 		return ingest.Summary{}, err
 	}
@@ -219,8 +316,10 @@ func (s *Scheduler) ingest(ctx context.Context, r sqlcgen.Run, apex string, raw 
 	if n == 0 {
 		return ingest.Summary{}, errors.New("the run is no longer running (timed out?), report dropped")
 	}
-	if err := q.MarkWildcardRecon(ctx, sqlcgen.MarkWildcardReconParams{ID: *r.WildcardID, RunID: &r.ID, Now: now}); err != nil {
-		return ingest.Summary{}, err
+	if r.WildcardID != nil {
+		if err := q.MarkWildcardRecon(ctx, sqlcgen.MarkWildcardReconParams{ID: *r.WildcardID, RunID: &r.ID, Now: now}); err != nil {
+			return ingest.Summary{}, err
+		}
 	}
 	return sum, tx.Commit(ctx)
 }

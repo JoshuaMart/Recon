@@ -20,7 +20,7 @@ WHERE id = (
   ORDER BY r.queued_at, r.id
   LIMIT 1 FOR UPDATE OF r SKIP LOCKED
 )
-RETURNING id, program_id, kind, stage, wildcard_id, state, trigger, queued_at, started_at, finished_at, deadline, error, report_meta, ingest
+RETURNING id, program_id, kind, stage, wildcard_id, state, trigger, queued_at, started_at, finished_at, deadline, error, report_meta, ingest, targets
 `
 
 type ClaimQueuedRunParams struct {
@@ -46,6 +46,7 @@ func (q *Queries) ClaimQueuedRun(ctx context.Context, arg ClaimQueuedRunParams) 
 		&i.Error,
 		&i.ReportMeta,
 		&i.Ingest,
+		&i.Targets,
 	)
 	return i, err
 }
@@ -65,7 +66,7 @@ const enqueueRun = `-- name: EnqueueRun :one
 INSERT INTO run (program_id, kind, stage, wildcard_id, trigger, queued_at)
 VALUES ($1, $2, $3, $5, $4, $6::timestamptz)
 ON CONFLICT (wildcard_id) WHERE state IN ('queued', 'running') DO NOTHING
-RETURNING id, program_id, kind, stage, wildcard_id, state, trigger, queued_at, started_at, finished_at, deadline, error, report_meta, ingest
+RETURNING id, program_id, kind, stage, wildcard_id, state, trigger, queued_at, started_at, finished_at, deadline, error, report_meta, ingest, targets
 `
 
 type EnqueueRunParams struct {
@@ -102,6 +103,7 @@ func (q *Queries) EnqueueRun(ctx context.Context, arg EnqueueRunParams) (Run, er
 		&i.Error,
 		&i.ReportMeta,
 		&i.Ingest,
+		&i.Targets,
 	)
 	return i, err
 }
@@ -151,7 +153,7 @@ func (q *Queries) FinishRun(ctx context.Context, arg FinishRunParams) (int64, er
 }
 
 const getRun = `-- name: GetRun :one
-SELECT id, program_id, kind, stage, wildcard_id, state, trigger, queued_at, started_at, finished_at, deadline, error, report_meta, ingest FROM run WHERE id = $1
+SELECT id, program_id, kind, stage, wildcard_id, state, trigger, queued_at, started_at, finished_at, deadline, error, report_meta, ingest, targets FROM run WHERE id = $1
 `
 
 func (q *Queries) GetRun(ctx context.Context, id uuid.UUID) (Run, error) {
@@ -172,6 +174,7 @@ func (q *Queries) GetRun(ctx context.Context, id uuid.UUID) (Run, error) {
 		&i.Error,
 		&i.ReportMeta,
 		&i.Ingest,
+		&i.Targets,
 	)
 	return i, err
 }
@@ -244,7 +247,7 @@ func (q *Queries) ListOpenRules(ctx context.Context, programID uuid.UUID) ([]Sco
 }
 
 const listRuns = `-- name: ListRuns :many
-SELECT r.id, r.program_id, r.kind, r.stage, r.wildcard_id, r.state, r.trigger, r.queued_at, r.started_at, r.finished_at, r.deadline, r.error, r.report_meta, r.ingest, w.apex FROM run r LEFT JOIN wildcard w ON w.id = r.wildcard_id
+SELECT r.id, r.program_id, r.kind, r.stage, r.wildcard_id, r.state, r.trigger, r.queued_at, r.started_at, r.finished_at, r.deadline, r.error, r.report_meta, r.ingest, r.targets, w.apex FROM run r LEFT JOIN wildcard w ON w.id = r.wildcard_id
 WHERE ($1::uuid IS NULL OR r.program_id = $1)
 ORDER BY r.queued_at DESC, r.id DESC
 LIMIT $2
@@ -256,21 +259,8 @@ type ListRunsParams struct {
 }
 
 type ListRunsRow struct {
-	ID         uuid.UUID
-	ProgramID  uuid.UUID
-	Kind       string
-	Stage      string
-	WildcardID *uuid.UUID
-	State      string
-	Trigger    string
-	QueuedAt   time.Time
-	StartedAt  *time.Time
-	FinishedAt *time.Time
-	Deadline   *time.Time
-	Error      *string
-	ReportMeta []byte
-	Ingest     []byte
-	Apex       *string
+	Run  Run
+	Apex *string
 }
 
 func (q *Queries) ListRuns(ctx context.Context, arg ListRunsParams) ([]ListRunsRow, error) {
@@ -283,20 +273,21 @@ func (q *Queries) ListRuns(ctx context.Context, arg ListRunsParams) ([]ListRunsR
 	for rows.Next() {
 		var i ListRunsRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.ProgramID,
-			&i.Kind,
-			&i.Stage,
-			&i.WildcardID,
-			&i.State,
-			&i.Trigger,
-			&i.QueuedAt,
-			&i.StartedAt,
-			&i.FinishedAt,
-			&i.Deadline,
-			&i.Error,
-			&i.ReportMeta,
-			&i.Ingest,
+			&i.Run.ID,
+			&i.Run.ProgramID,
+			&i.Run.Kind,
+			&i.Run.Stage,
+			&i.Run.WildcardID,
+			&i.Run.State,
+			&i.Run.Trigger,
+			&i.Run.QueuedAt,
+			&i.Run.StartedAt,
+			&i.Run.FinishedAt,
+			&i.Run.Deadline,
+			&i.Run.Error,
+			&i.Run.ReportMeta,
+			&i.Run.Ingest,
+			&i.Run.Targets,
 			&i.Apex,
 		); err != nil {
 			return nil, err

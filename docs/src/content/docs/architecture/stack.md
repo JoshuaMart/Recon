@@ -156,7 +156,7 @@ internal/
   normalize/          the single normalize(layer, data)
   inventory/          assets, deduplicated observations, changes, declared assets, refresh
   ingest/             FastRecon reports: parse, normalize, qualify, write
-  lifecycle/          qualification, transitions, backoff
+  lifecycle/          the state machine and the backoff curves, pure functions
   runs/               queue, scheduler, runners, sweeper
   ct/                 matcher
   render/             dispatcher, Fingerprinter client, screenshots

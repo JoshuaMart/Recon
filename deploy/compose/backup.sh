@@ -8,6 +8,10 @@
 #
 # Connection settings come from the standard PG* variables.
 set -eu
+# A restore is a pipeline: without pipefail a pg_restore failing halfway hands
+# psql a script with no COMMIT, psql rolls back and exits 0, and the restore
+# would read as done.
+set -o pipefail
 
 dir=${BACKUP_DIR:-/backups}
 retention=${BACKUP_RETENTION_DAYS:-14}

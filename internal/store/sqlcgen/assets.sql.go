@@ -25,7 +25,7 @@ func (q *Queries) CountWildcardAssets(ctx context.Context, wildcardID *uuid.UUID
 }
 
 const getAssetCurrent = `-- name: GetAssetCurrent :one
-SELECT asset_id, program_id, kind, key, host, port, scheme, scope_status, lifecycle, dns_state, tcp_state, http_state, ips, cname, cdn, status_code, title, server, final_url, first_seen, last_seen, last_changed FROM asset_current WHERE asset_id = $1
+SELECT asset_id, program_id, kind, key, host, port, scheme, scope_status, lifecycle, dns_state, tcp_state, http_state, ips, cname, cdn, status_code, title, server, final_url, first_seen, last_seen, last_changed, next_resolve_at, next_full_at, backoff_tier, lifecycle_since, last_checked_at FROM asset_current WHERE asset_id = $1
 `
 
 func (q *Queries) GetAssetCurrent(ctx context.Context, assetID uuid.UUID) (AssetCurrent, error) {
@@ -54,13 +54,18 @@ func (q *Queries) GetAssetCurrent(ctx context.Context, assetID uuid.UUID) (Asset
 		&i.FirstSeen,
 		&i.LastSeen,
 		&i.LastChanged,
+		&i.NextResolveAt,
+		&i.NextFullAt,
+		&i.BackoffTier,
+		&i.LifecycleSince,
+		&i.LastCheckedAt,
 	)
 	return i, err
 }
 
 const insertAssetCurrent = `-- name: InsertAssetCurrent :exec
-INSERT INTO asset_current (asset_id, program_id, kind, key, host, port, scheme, scope_status, lifecycle, first_seen, last_seen)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::timestamptz, $10::timestamptz)
+INSERT INTO asset_current (asset_id, program_id, kind, key, host, port, scheme, scope_status, lifecycle, first_seen, last_seen, lifecycle_since)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::timestamptz, $10::timestamptz, $10::timestamptz)
 ON CONFLICT (asset_id) DO NOTHING
 `
 
@@ -222,7 +227,9 @@ func (q *Queries) SetHTTPCurrent(ctx context.Context, arg SetHTTPCurrentParams) 
 }
 
 const setLifecycle = `-- name: SetLifecycle :exec
-UPDATE asset_current SET lifecycle = $2, last_changed = $3::timestamptz WHERE asset_id = $1
+UPDATE asset_current
+SET lifecycle = $2, lifecycle_since = $3::timestamptz, last_changed = $3::timestamptz
+WHERE asset_id = $1
 `
 
 type SetLifecycleParams struct {

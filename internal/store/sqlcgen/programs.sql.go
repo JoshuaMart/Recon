@@ -82,19 +82,9 @@ ORDER BY lower(p.name), p.id
 `
 
 type ListProgramsRow struct {
-	ID         uuid.UUID
-	Origin     string
-	Platform   *string
-	Slug       *string
-	Name       string
-	Bounty     *bool
-	State      string
-	ArchivedBy *string
-	AutoScan   *string
-	CreatedAt  time.Time
-	UpdatedAt  time.Time
-	OpenRules  int32
-	Wildcards  int32
+	Program   Program
+	OpenRules int32
+	Wildcards int32
 }
 
 func (q *Queries) ListPrograms(ctx context.Context) ([]ListProgramsRow, error) {
@@ -107,17 +97,17 @@ func (q *Queries) ListPrograms(ctx context.Context) ([]ListProgramsRow, error) {
 	for rows.Next() {
 		var i ListProgramsRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.Origin,
-			&i.Platform,
-			&i.Slug,
-			&i.Name,
-			&i.Bounty,
-			&i.State,
-			&i.ArchivedBy,
-			&i.AutoScan,
-			&i.CreatedAt,
-			&i.UpdatedAt,
+			&i.Program.ID,
+			&i.Program.Origin,
+			&i.Program.Platform,
+			&i.Program.Slug,
+			&i.Program.Name,
+			&i.Program.Bounty,
+			&i.Program.State,
+			&i.Program.ArchivedBy,
+			&i.Program.AutoScan,
+			&i.Program.CreatedAt,
+			&i.Program.UpdatedAt,
 			&i.OpenRules,
 			&i.Wildcards,
 		); err != nil {

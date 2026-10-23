@@ -156,3 +156,44 @@ func exitCode(t *testing.T, c testcontainers.Container, env []string, cmd ...str
 	_, _ = io.Copy(&buf, r)
 	return code, buf.String()
 }
+
+// A restore from a dump cut short must fail loudly and leave the database as
+// it was: a pipeline without pipefail would report it as done.
+func TestRestoreOfATruncatedDumpFailsAndChangesNothing(t *testing.T) {
+	ctx := context.Background()
+	c, url := startPostgres(t)
+	st, err := store.Open(ctx, url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.MigrateUp(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, here, _, _ := runtime.Caller(0)
+	script, err := os.ReadFile(filepath.Join(filepath.Dir(here), "..", "..", "deploy", "compose", "backup.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.CopyToContainer(ctx, script, "/backup.sh", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"PGHOST=localhost", "PGUSER=recon", "PGPASSWORD=" + storetest.Password, "PGDATABASE=recon", "BACKUP_DIR=/backups"}
+	file := strings.TrimSpace(run(t, c, env, "/backup.sh", "once"))
+	run(t, c, env, "sh", "-c", `size=$(wc -c < `+file+`); head -c $((size * 3 / 4)) `+file+` > /backups/cut.dump`)
+
+	marker := "after the dump"
+	if _, err := st.Pool.Exec(ctx, "CREATE TABLE marker (v text)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Pool.Exec(ctx, "INSERT INTO marker VALUES ($1)", marker); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := exitCode(t, c, env, "/backup.sh", "restore", "/backups/cut.dump"); code == 0 {
+		t.Fatalf("restoring a truncated dump exited 0: %s", out)
+	}
+	var got string
+	if err := st.Pool.QueryRow(ctx, "SELECT v FROM marker").Scan(&got); err != nil || got != marker {
+		t.Fatalf("a failed restore changed the database: %q, %v", got, err)
+	}
+}

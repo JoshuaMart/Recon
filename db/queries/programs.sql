@@ -1,5 +1,5 @@
 -- name: ListPrograms :many
-SELECT p.*,
+SELECT sqlc.embed(p),
   (SELECT count(*) FROM scope_rule r WHERE r.program_id = p.id AND r.valid_to IS NULL)::int AS open_rules,
   (SELECT count(*) FROM wildcard w JOIN scope_rule r ON r.id = w.rule_id
      WHERE w.program_id = p.id AND r.valid_to IS NULL)::int AS wildcards

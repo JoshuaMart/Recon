@@ -128,11 +128,8 @@ func (s *server) listRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]runView, 0, len(rows))
 	for _, row := range rows {
-		v := viewRun(sqlcgen.Run{
-			ID: row.ID, ProgramID: row.ProgramID, Kind: row.Kind, Stage: row.Stage, WildcardID: row.WildcardID,
-			State: row.State, Trigger: row.Trigger, QueuedAt: row.QueuedAt, StartedAt: row.StartedAt,
-			FinishedAt: row.FinishedAt, Error: row.Error, Ingest: row.Ingest,
-		})
+		v := viewRun(row.Run)
+		v.Report = nil // the list carries ingestion counters, the run page the full report
 		v.Apex = row.Apex
 		out = append(out, v)
 	}
