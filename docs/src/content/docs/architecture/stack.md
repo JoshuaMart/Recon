@@ -147,7 +147,8 @@ cmd/recon/            the binary: serve, migrate, healthcheck, version, later im
 internal/
   version/            the build version, set at link time
   config/             the only reader of the environment
-  store/              sqlc queries
+  canon/              canonical names, URLs and networks
+  store/              pool, migrations, sqlc queries, storetest for integration tests
   scope/              rule matching, ScopesExtractor sync
   normalize/          the single normalize(layer, data)
   ingest/             reports, observations, changes

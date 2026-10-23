@@ -4,10 +4,16 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/JoshuaMart/recon/internal/scope"
+	"github.com/JoshuaMart/recon/internal/store"
 	"github.com/JoshuaMart/recon/internal/version"
 )
 
@@ -16,39 +22,138 @@ type Pinger interface {
 	Ping(ctx context.Context) error
 }
 
+// Syncer runs a scope sync pass on demand.
+type Syncer interface {
+	Run(ctx context.Context) (scope.Summary, error)
+}
+
+// Deps is what the routes need.
+type Deps struct {
+	Log   *slog.Logger
+	DB    Pinger
+	Store *store.Store
+	Auth  *Auth
+	// Sync is nil when no ScopesExtractor is configured.
+	Sync            Syncer
+	DefaultAutoScan string
+	Now             func() time.Time
+}
+
+type server struct{ Deps }
+
 // Handler builds the route table.
-func Handler(log *slog.Logger, db Pinger) http.Handler {
+func Handler(d Deps) http.Handler {
+	if d.Now == nil {
+		d.Now = time.Now
+	}
+	s := &server{d}
 	mux := http.NewServeMux()
-	mux.Handle("GET /api/health", health(db))
-	return logRequests(log, mux)
+	mux.Handle("GET /api/health", s.health())
+
+	if d.Auth != nil {
+		mux.HandleFunc("POST /api/session", d.Auth.Login)
+		mux.HandleFunc("DELETE /api/session", d.Auth.Logout)
+		authed := func(pattern string, h http.HandlerFunc) { mux.Handle(pattern, d.Auth.Require(h)) }
+		authed("GET /api/programs", s.listPrograms)
+		authed("POST /api/programs", s.createProgram)
+		authed("GET /api/programs/{id}", s.getProgram)
+		authed("PATCH /api/programs/{id}", s.patchProgram)
+		authed("POST /api/programs/{id}/rules", s.openRule)
+		authed("PATCH /api/programs/{id}/rules/{rule}", s.patchRule)
+		authed("GET /api/wildcards", s.listWildcards)
+		authed("POST /api/sync", s.runSync)
+		mux.Handle("/api/", d.Auth.Require(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			writeError(w, http.StatusNotFound, "not_found", "no such route")
+		})))
+	}
+	return logRequests(d.Log, mux)
 }
 
 type healthResponse struct {
 	Status   string `json:"status"`
 	Version  string `json:"version"`
 	Database string `json:"database"`
+	Sync     string `json:"sync,omitempty"`
 }
 
-// health answers 200 when every component it knows of answers, 503 otherwise.
-// Components join it as their phase adds them.
-func health(db Pinger) http.Handler {
+// health answers 200 when the database answers, 503 otherwise. It is public,
+// so it says how each component is, never why.
+func (s *server) health() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 
 		res := healthResponse{Status: "ok", Version: version.Version, Database: "ok"}
 		code := http.StatusOK
-		if err := db.Ping(ctx); err != nil {
+		if err := s.DB.Ping(ctx); err != nil {
 			res.Status, res.Database, code = "degraded", "unreachable", http.StatusServiceUnavailable
+		} else if s.Store != nil {
+			res.Sync = s.syncHealth(ctx)
+			if res.Sync == "failing" {
+				res.Status = "degraded"
+			}
 		}
 		writeJSON(w, code, res)
 	})
+}
+
+func (s *server) syncHealth(ctx context.Context) string {
+	if s.Sync == nil {
+		return "disabled"
+	}
+	st, err := s.Store.Q.GetSyncState(ctx)
+	switch {
+	case err != nil:
+		return "unknown"
+	case st.LastErrorAt != nil && (st.LastSuccessAt == nil || st.LastErrorAt.After(*st.LastSuccessAt)):
+		return "failing"
+	case st.LastSuccessAt == nil:
+		return "pending"
+	}
+	return "ok"
+}
+
+type errorBody struct {
+	Error  string `json:"error"`
+	Detail string `json:"detail"`
+}
+
+func writeError(w http.ResponseWriter, code int, kind, detail string) {
+	writeJSON(w, code, errorBody{Error: kind, Detail: detail})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// readJSON decodes a bounded body and refuses unknown fields, so a typo is an
+// error rather than a silent no-op.
+func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "bad_body", err.Error())
+		return false
+	}
+	return true
+}
+
+// pathID reads an identifier from the path. A malformed one answers 404 like
+// an unknown one.
+func pathID(w http.ResponseWriter, r *http.Request, name string) (uuid.UUID, bool) {
+	id, err := uuid.Parse(r.PathValue(name))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", name+" not found")
+		return uuid.UUID{}, false
+	}
+	return id, true
+}
+
+func (s *server) internal(w http.ResponseWriter, r *http.Request, err error) {
+	s.Log.ErrorContext(r.Context(), "request failed", "method", r.Method, "path", r.URL.Path, "err", err)
+	writeError(w, http.StatusInternalServerError, "internal", "see the server log")
 }
 
 type statusRecorder struct {

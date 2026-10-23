@@ -23,8 +23,8 @@ flowchart LR
 | Phase | Delivers | Done when |
 |---|---|---|
 | **0 Foundations** ✓ | repo, compose stack, config, migrations, CI, backup and restore | `make up` starts everything, a restore works, isolation is checked |
-| **1 Programs and sync** | programs, rules, wildcards, ScopesExtractor sync, manual programs | a real ScopesExtractor instance fills programs, a removed scope closes its rule |
-| **2 Recon and ingestion** | runners, run contract, report ingestion, normalization, dedup | a recon on a real wildcard fills the inventory, a second run writes almost no new observations |
+| **1 Programs and sync** ✓ | programs, rules, wildcards, ScopesExtractor sync, manual programs, API authentication and the program routes | a real ScopesExtractor instance fills programs, a removed scope closes its rule |
+| **2 Recon and ingestion** | assets and scope classification, assets declared by rules, runners, run contract, report ingestion, normalization, dedup, auto-scan | a recon on a real wildcard fills the inventory, a second run writes almost no new observations |
 | **3 Verification and lifecycle** | due dates, verification runs, qualification, state machine, backoff | a host taken down goes `flapping` then `inactive`, a timeout never does |
 | **4 Fingerprinting** | render triggers, `asset_tech`, versions, screenshots and storage | every new service gets a render, screenshot sizes measured |
 | **5 Search language** | parser, compiler, fields, facets, pivots, export | every example of the search page returns what it says |

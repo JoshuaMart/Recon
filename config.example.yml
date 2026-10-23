@@ -14,3 +14,13 @@ database:
 log:
   level: info          # debug, info, warn, error
   format: json         # json, text
+
+scopes_extractor:
+  url: ""              # empty disables the sync: manual programs only
+  api_key: ""          # its X-API-KEY, required when url is set
+  interval: 1h
+  timeout: 1m
+  max_removed_ratio: 0.5   # a pass archiving more of the active programs is refused
+
+discovery:
+  auto_scan: "off"     # default for programs that set none: off or on_new

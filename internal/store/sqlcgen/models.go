@@ -6,9 +6,67 @@ package sqlcgen
 
 import (
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type Instance struct {
 	ID        bool
 	CreatedAt time.Time
+}
+
+type Program struct {
+	ID         uuid.UUID
+	Origin     string
+	Platform   *string
+	Slug       *string
+	Name       string
+	Bounty     *bool
+	State      string
+	ArchivedBy *string
+	AutoScan   *string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
+type ScopeRule struct {
+	ID        uuid.UUID
+	ProgramID uuid.UUID
+	Kind      string
+	Matcher   string
+	Pattern   string
+	Origin    string
+	Note      *string
+	ValidFrom time.Time
+	ValidTo   *time.Time
+}
+
+type ScopeSync struct {
+	ID            bool
+	LastStartedAt *time.Time
+	LastSuccessAt *time.Time
+	LastError     *string
+	LastErrorAt   *time.Time
+	LastSummary   []byte
+}
+
+type UntrackedScope struct {
+	ProgramID   uuid.UUID
+	Value       string
+	Type        string
+	Reason      string
+	FirstSeenAt time.Time
+	LastSeenAt  time.Time
+	GoneAt      *time.Time
+}
+
+type Wildcard struct {
+	ID           uuid.UUID
+	ProgramID    uuid.UUID
+	RuleID       uuid.UUID
+	Apex         string
+	LastReconAt  *time.Time
+	LastReconRun *uuid.UUID
+	AssetsFound  int32
+	CreatedAt    time.Time
 }

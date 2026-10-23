@@ -22,7 +22,12 @@ platforms every three hours) and reconciles against the full state. A pass that 
 and the next one repairs it.
 
 Each entry carries `platform`, `slug`, `program_name`, `bounty`, `value`, `type` and `is_in_scope`.
-Recon groups entries by `(platform, slug)` into programs.
+Recon groups entries by `(platform, slug)` into programs. A sync can also be started by hand
+(`POST /api/sync`).
+
+**A pass that would archive too much is refused.** An empty answer, or one that drops more than half of
+the synced programs at once (configurable), is far more likely a ScopesExtractor problem than half the
+programs closing on the same hour. The pass changes nothing and raises a health error.
 
 ```mermaid
 flowchart TD
@@ -37,7 +42,10 @@ flowchart TD
   NR -->|wildcard| W[new wildcard<br/>auto-scan?]
 ```
 
-A changed scope is a closed rule plus an opened one. ScopesExtractor already notifies scope changes on
+A changed scope is a closed rule plus an opened one. A program is archived **by the sync** when it
+leaves ScopesExtractor, and only such a program is reactivated when it comes back: one you archived or
+paused yourself stays as you left it. Its rules are left open while it is archived, so it comes back
+with its scope and the next pass reconciles any difference. ScopesExtractor already notifies scope changes on
 Discord, so Recon does not repeat them.
 
 ### How a scope value becomes a rule
@@ -45,10 +53,12 @@ Discord, so Recon does not repeat them.
 | ScopesExtractor value | Rule | Side effect |
 |---|---|---|
 | `*.example.com` | `apex example.com` | a [wildcard](#wildcards) |
-| `api.example.com` | `fqdn api.example.com` | the host is declared as an asset |
-| `https://example.com/app/` | `url_prefix` | the URL, its service and its host are declared |
+| `api.example.com` | `fqdn api.example.com` | the host is declared as an asset (from phase 2, when assets exist) |
+| `https://example.com/app/`, `https://example.com:8443/` | `url_prefix` | the URL, its service and its host are declared |
+| `https://www.example.com/` | `fqdn www.example.com`: a bare root on the default port names the host | as for a host |
+| `api.example.com/graphql`, `example.com:8443` | `url_prefix`, taken as `https://` | as for a URL |
 | `10.0.0.0/24`, `10.0.0.1` | `cidr` (a single address is a `/32`) | none, it classifies resolved addresses |
-| mobile app, executable, other | not stored as a rule | listed on the program as untracked |
+| any value of type `mobile`, `executable`, `source_code`, `other` | not stored as a rule | listed on the program as untracked. The type decides, not the shape: most `mobile` values are store links (`play.google.com/...`) that would otherwise put the store in scope |
 | any entry with `is_in_scope: false` | the same matcher, as an `exclude` rule | |
 
 Platforms rarely expose their out of scope list through ScopesExtractor, so most exclusions are
@@ -57,7 +67,10 @@ Platforms rarely expose their out of scope list through ScopesExtractor, so most
 ### Local rules
 
 A synced program can carry **local** rules, typically an exclusion or an extra host. The sync owns
-only the rules it created, so it never closes a local one.
+only the rules it created, so it never closes a local one, and its own rules cannot be edited: the next
+pass would put them back. To narrow a synced scope, add a local exclusion.
+
+Editing a local rule closes it and opens a new one, so the history keeps both.
 
 ## Scope evaluation
 

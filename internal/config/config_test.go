@@ -51,6 +51,29 @@ func TestValidateReportsEveryProblem(t *testing.T) {
 	}
 }
 
+func TestScopesExtractorNeedsAKey(t *testing.T) {
+	_, err := load("", []string{
+		"RECON_API_KEY=" + key, "RECON_DATABASE__URL=postgres://x",
+		"RECON_SCOPES_EXTRACTOR__URL=http://scopes:4567",
+	})
+	if err == nil || !strings.Contains(err.Error(), "scopes_extractor.api_key") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestDurationsFromTheEnvironment(t *testing.T) {
+	c, err := load("", []string{
+		"RECON_API_KEY=" + key, "RECON_DATABASE__URL=postgres://x",
+		"RECON_SCOPES_EXTRACTOR__INTERVAL=15m",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ScopesExtractor.Interval.String() != "15m0s" {
+		t.Errorf("interval = %v", c.ScopesExtractor.Interval)
+	}
+}
+
 func TestShortAPIKeyIsRefused(t *testing.T) {
 	_, err := load("", []string{"RECON_API_KEY=short", "RECON_DATABASE__URL=postgres://x"})
 	if err == nil || !strings.Contains(err.Error(), "32 characters") {

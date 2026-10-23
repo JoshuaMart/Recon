@@ -73,6 +73,11 @@ services:
       RECON_PUBLIC_URL: ${RECON_PUBLIC_URL:-http://localhost:8080}
       RECON_DATABASE__URL: postgres://recon:${POSTGRES_PASSWORD}@postgres:5432/recon?sslmode=disable
       RECON_LOG__LEVEL: ${RECON_LOG_LEVEL:-info}
+      RECON_SCOPES_EXTRACTOR__URL: ${SCOPES_EXTRACTOR_URL:-}
+      RECON_SCOPES_EXTRACTOR__API_KEY: ${SCOPES_EXTRACTOR_API_KEY:-}
+      RECON_DISCOVERY__AUTO_SCAN: ${AUTO_SCAN:-off}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "127.0.0.1:${RECON_PORT:-8080}:8080"
     depends_on:

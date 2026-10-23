@@ -1,6 +1,6 @@
 //go:build integration
 
-package store
+package store_test
 
 import (
 	"bytes"
@@ -16,35 +16,20 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/exec"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
-)
 
-// postgresImage is the image the compose stack runs.
-const postgresImage = "postgres:18-alpine"
+	"github.com/JoshuaMart/recon/internal/store"
+	"github.com/JoshuaMart/recon/internal/store/storetest"
+)
 
 func startPostgres(t *testing.T) (*postgres.PostgresContainer, string) {
 	t.Helper()
-	ctx := context.Background()
-	c, err := postgres.Run(ctx, postgresImage,
-		postgres.WithDatabase("recon"),
-		postgres.WithUsername("recon"),
-		postgres.WithPassword("recon-test-password"),
-		postgres.BasicWaitStrategies(),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = testcontainers.TerminateContainer(c) })
-	url, err := c.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return c, url
+	return storetest.Start(t)
 }
 
 func TestMigrationsGoUpAndDown(t *testing.T) {
 	ctx := context.Background()
 	_, url := startPostgres(t)
-	st, err := Open(ctx, url)
+	st, err := store.Open(ctx, url)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +63,7 @@ func TestMigrationsGoUpAndDown(t *testing.T) {
 func TestBackupRestores(t *testing.T) {
 	ctx := context.Background()
 	c, url := startPostgres(t)
-	st, err := Open(ctx, url)
+	st, err := store.Open(ctx, url)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +84,7 @@ func TestBackupRestores(t *testing.T) {
 	if err := c.CopyToContainer(ctx, script, "/backup.sh", 0o755); err != nil {
 		t.Fatal(err)
 	}
-	env := []string{"PGHOST=localhost", "PGUSER=recon", "PGPASSWORD=recon-test-password", "PGDATABASE=recon", "BACKUP_DIR=/backups"}
+	env := []string{"PGHOST=localhost", "PGUSER=recon", "PGPASSWORD=" + storetest.Password, "PGDATABASE=recon", "BACKUP_DIR=/backups"}
 
 	file := strings.TrimSpace(run(t, c, env, "/backup.sh", "once"))
 	if !strings.HasPrefix(file, "/backups/recon-") || !strings.HasSuffix(file, ".dump") {
@@ -127,7 +112,7 @@ func TestBackupRestores(t *testing.T) {
 func TestVerifyRejectsATruncatedDump(t *testing.T) {
 	ctx := context.Background()
 	c, url := startPostgres(t)
-	st, err := Open(ctx, url)
+	st, err := store.Open(ctx, url)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +128,7 @@ func TestVerifyRejectsATruncatedDump(t *testing.T) {
 	if err := c.CopyToContainer(ctx, script, "/backup.sh", 0o755); err != nil {
 		t.Fatal(err)
 	}
-	env := []string{"PGHOST=localhost", "PGUSER=recon", "PGPASSWORD=recon-test-password", "PGDATABASE=recon"}
+	env := []string{"PGHOST=localhost", "PGUSER=recon", "PGPASSWORD=" + storetest.Password, "PGDATABASE=recon"}
 	code, _ := exitCode(t, c, env, "/backup.sh", "verify", "/backups/broken.dump")
 	if code == 0 {
 		t.Fatal("verify accepted a file that is not a dump")

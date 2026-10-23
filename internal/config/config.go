@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/providers/env/v2"
@@ -25,11 +26,31 @@ const EnvPrefix = "RECON_"
 // needs them.
 type Config struct {
 	// PublicURL is how runs and the browser reach Recon.
-	PublicURL string   `koanf:"public_url"`
-	APIKey    string   `koanf:"api_key"`
-	HTTP      HTTP     `koanf:"http"`
-	Database  Database `koanf:"database"`
-	Log       Log      `koanf:"log"`
+	PublicURL       string          `koanf:"public_url"`
+	APIKey          string          `koanf:"api_key"`
+	HTTP            HTTP            `koanf:"http"`
+	Database        Database        `koanf:"database"`
+	Log             Log             `koanf:"log"`
+	ScopesExtractor ScopesExtractor `koanf:"scopes_extractor"`
+	Discovery       Discovery       `koanf:"discovery"`
+}
+
+// ScopesExtractor is the scope sync. An empty URL disables it, leaving manual
+// programs only.
+type ScopesExtractor struct {
+	URL      string        `koanf:"url"`
+	APIKey   string        `koanf:"api_key"`
+	Interval time.Duration `koanf:"interval"`
+	Timeout  time.Duration `koanf:"timeout"`
+	// MaxRemovedRatio is the share of active synced programs one pass may
+	// archive before the pass is refused as suspicious.
+	MaxRemovedRatio float64 `koanf:"max_removed_ratio"`
+}
+
+// Discovery holds the recon settings.
+type Discovery struct {
+	// AutoScan is the default for programs that do not set their own: off or on_new.
+	AutoScan string `koanf:"auto_scan"`
 }
 
 // HTTP is the listener.
@@ -54,6 +75,10 @@ func Defaults() Config {
 		PublicURL: "http://localhost:8080",
 		HTTP:      HTTP{Addr: ":8080"},
 		Log:       Log{Level: "info", Format: "json"},
+		ScopesExtractor: ScopesExtractor{
+			Interval: time.Hour, Timeout: time.Minute, MaxRemovedRatio: 0.5,
+		},
+		Discovery: Discovery{AutoScan: "off"},
 	}
 }
 
@@ -125,6 +150,26 @@ func (c Config) Validate() error {
 	case "json", "text":
 	default:
 		errs = append(errs, fmt.Errorf("log.format %q is not one of json, text", c.Log.Format))
+	}
+	if se := c.ScopesExtractor; se.URL != "" {
+		if u, err := url.Parse(se.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			errs = append(errs, fmt.Errorf("scopes_extractor.url %q must be an absolute http or https URL", se.URL))
+		}
+		if se.APIKey == "" {
+			errs = append(errs, errors.New("scopes_extractor.api_key is required when scopes_extractor.url is set"))
+		}
+	}
+	if c.ScopesExtractor.Interval < time.Minute {
+		errs = append(errs, errors.New("scopes_extractor.interval must be at least 1m"))
+	}
+	if c.ScopesExtractor.Timeout <= 0 {
+		errs = append(errs, errors.New("scopes_extractor.timeout must be positive"))
+	}
+	if r := c.ScopesExtractor.MaxRemovedRatio; r <= 0 || r > 1 {
+		errs = append(errs, fmt.Errorf("scopes_extractor.max_removed_ratio %v must be in (0, 1]", r))
+	}
+	if a := c.Discovery.AutoScan; a != "off" && a != "on_new" {
+		errs = append(errs, fmt.Errorf("discovery.auto_scan %q is not off or on_new", a))
 	}
 	return errors.Join(errs...)
 }

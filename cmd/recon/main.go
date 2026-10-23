@@ -21,6 +21,7 @@ import (
 
 	"github.com/JoshuaMart/recon/internal/api"
 	"github.com/JoshuaMart/recon/internal/config"
+	"github.com/JoshuaMart/recon/internal/scope"
 	"github.com/JoshuaMart/recon/internal/store"
 	"github.com/JoshuaMart/recon/internal/version"
 )
@@ -159,9 +160,26 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, st *store.S
 	}
 	log.InfoContext(ctx, "database ready", "schema_version", v)
 
+	auth, err := api.NewAuth(cfg.APIKey, cfg.PublicURL)
+	if err != nil {
+		return err
+	}
+	deps := api.Deps{Log: log, DB: st, Store: st, Auth: auth, DefaultAutoScan: cfg.Discovery.AutoScan}
+
+	if se := cfg.ScopesExtractor; se.URL != "" {
+		syncer := &scope.Syncer{
+			Store: st, Source: scope.NewClient(se.URL, se.APIKey, se.Timeout), Log: log,
+			MaxRemovedRatio: se.MaxRemovedRatio, Now: time.Now,
+		}
+		deps.Sync = syncer
+		go syncer.Loop(ctx, se.Interval)
+	} else {
+		log.InfoContext(ctx, "scope sync disabled: no scopes_extractor.url, manual programs only")
+	}
+
 	srv := &http.Server{
 		Addr:              cfg.HTTP.Addr,
-		Handler:           api.Handler(log, st),
+		Handler:           api.Handler(deps),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	errc := make(chan error, 1)

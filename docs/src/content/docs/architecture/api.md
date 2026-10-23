@@ -44,6 +44,7 @@ The API key is set in the config. A write with the cookie must also carry an `Or
 | `PATCH /api/programs/{id}/rules/{rule}` | close or edit a rule |
 | `POST /api/programs/{id}/assets` | enter hosts and URLs |
 | `POST /api/programs/{id}/imports/bbot` | import a BBOT `output.json` |
+| `POST /api/sync` | run a ScopesExtractor sync now |
 | `GET /api/wildcards?sort=oldest` | recon coverage |
 | `POST /api/wildcards/{id}/recon` | queue a recon on one wildcard |
 | `POST /api/wildcards/recon` | queue a recon on the N oldest, optionally per program |

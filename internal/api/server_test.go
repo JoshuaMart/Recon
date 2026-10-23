@@ -28,7 +28,7 @@ func TestHealth(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			Handler(log, tc.db).ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/health", nil))
+			Handler(Deps{Log: log, DB: tc.db}).ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/health", nil))
 
 			if rec.Code != tc.code {
 				t.Errorf("status = %d, want %d", rec.Code, tc.code)
@@ -47,7 +47,7 @@ func TestHealth(t *testing.T) {
 func TestHealthRefusesOtherMethods(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	rec := httptest.NewRecorder()
-	Handler(log, fakeDB{}).ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/health", nil))
+	Handler(Deps{Log: log, DB: fakeDB{}}).ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/health", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", rec.Code)
 	}
