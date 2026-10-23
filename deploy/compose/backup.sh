@@ -38,8 +38,18 @@ verify() {
 	echo "restore ok: schema version $version, instance created $created"
 }
 
+# The schema is dropped and the dump replayed in one transaction, so a restore
+# that fails halfway leaves the database as it was. pg_restore --clean cannot do
+# this: it trips over the constraints partitions inherit.
 restore() {
-	pg_restore --clean --if-exists --no-owner --exit-on-error --dbname="$PGDATABASE" "$1"
+	pg_restore --list "$1" >/dev/null
+	{
+		echo 'BEGIN;'
+		echo 'DROP SCHEMA public CASCADE;'
+		echo 'CREATE SCHEMA public;'
+		pg_restore --no-owner --file=- "$1"
+		echo 'COMMIT;'
+	} | psql -X --quiet --set ON_ERROR_STOP=1 --dbname="$PGDATABASE" >/dev/null
 	echo "restored $1 into $PGDATABASE"
 }
 

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -98,7 +99,7 @@ func TestExampleFileMatchesDefaults(t *testing.T) {
 	}
 	want := Defaults()
 	want.APIKey, want.Database.URL = key, "postgres://x"
-	if c != want {
+	if !reflect.DeepEqual(c, want) {
 		t.Errorf("config.example.yml decodes to %+v, defaults are %+v", c, want)
 	}
 }

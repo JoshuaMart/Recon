@@ -72,6 +72,11 @@ pass would put them back. To narrow a synced scope, add a local exclusion.
 
 Editing a local rule closes it and opens a new one, so the history keeps both.
 
+Every rule write, by the sync or by hand, refreshes the program in the same transaction: what an
+include `fqdn` or `url_prefix` names is declared, every asset is classified again, and a wildcard
+created now is queued if auto-scan says so. At startup every program is refreshed once, which catches
+up on rules written while the inventory could not follow.
+
 ## Scope evaluation
 
 Every asset is classified each time it is written, and every time a rule changes.

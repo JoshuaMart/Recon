@@ -66,62 +66,65 @@ checks both properties on the running stack, each next to a probe that must succ
 
 ## Runs
 
-A FastRecon run is started by a **runner**, behind one interface (`start`, `status`):
+A FastRecon run is started by a **runner**, behind one interface:
 
-| Runner | Where FastRecon runs | Reaches Recon through |
+| Runner | Where FastRecon runs | How the report comes back |
 |---|---|---|
-| `docker` | a container on the VPS | the compose network |
-| `scaleway` | a Scaleway Serverless Job, to scan from other addresses than the VPS | `public_url`, which must then be reachable from the internet over HTTPS |
+| `serve` | `fastrecon serve`, a service of the compose stack | as the response to `POST /run`, synchronously |
+| `scaleway` (later) | a Scaleway Serverless Job, to scan from other addresses than the VPS | webhook to `public_url`, which must then be reachable over HTTPS |
+
+`serve` is the default and needs no credential on Recon's side beyond the FastRecon token: no Docker
+socket, no webhook, no target URL. One `fastrecon serve` instance runs one run at a time and answers
+`429` otherwise, so the number of instances is the number of slots.
 
 ### The run contract
 
-```
---stages full | resolve
---domain example.com --exclude '*.dev.example.com'      (recon)
---targets-url {public_url}/runs/{id}/targets            (verification)
---targets-header "Authorization: Bearer <targets token>"
---ports 80,443,8080,...
---scan-rate 10
---webhook-url {public_url}/runs/{id}/report
---webhook-header "Authorization: Bearer <report token>"
---timeout 30m
+```json
+{"domain": "example.com", "exclude": ["*.dev.example.com", "admin.example.com"],
+ "stages": "full", "ports": "80,443,8080,...", "timeout": "30m"}
+
+{"targets": ["api.example.com", "www.example.com"], "stages": "resolve",
+ "ports": "80,443,8080,...", "timeout": "30m"}
 ```
 
-- `run.stage` holds the value passed to `--stages`: `enum`, `resolve`, `ports` or `full`.
-- Both tokens are HMACs over `(run id, purpose, expiry)`: nothing to store, they expire on their own.
-- No token travels in a URL.
-- The report is re-derived on arrival: its hosts must be the run's targets (or under its wildcard), and
-  every outcome is recomputed.
-- FastRecon's source API keys live in the runner's environment, never in the definition.
+- The first shape is a recon on a wildcard, the second a verification (phase 3).
+- `run.stage` holds the value sent as `stages`: `enum`, `resolve`, `ports` or `full`.
+- The exclusions are the program's `exclude` rules that name hosts: an `fqdn` as is, an `apex` as both
+  the apex and `*.apex`. `url_prefix` and `cidr` exclusions are applied at ingestion.
+- The report is re-derived on arrival: a recon's hosts must sit under its wildcard, a verification's
+  must be its targets, and every outcome is recomputed.
+- FastRecon's source API keys live in its own environment, never in a request.
+- The `scaleway` runner adds two HMAC tokens over `(run id, purpose, expiry)` for its target URL and
+  webhook, so nothing is stored and they expire on their own.
 
 ### Run states
 
 ```mermaid
 stateDiagram-v2
   [*] --> queued
-  queued --> starting: a slot frees up
-  starting --> running: runner confirms
-  starting --> failed: runner refused
+  queued --> running: a slot frees up
+  running --> queued: FastRecon busy (429)
   running --> succeeded: report ingested
-  running --> failed: runner reports an error
+  running --> failed: refused (400), error, or interrupted
   running --> timed_out: deadline passed
 ```
 
 | Rule | Value |
 |---|---|
-| deadline | `--timeout` plus 10 minutes |
-| a sweeper | marks `starting` or `running` runs past their deadline `timed_out`, every minute |
-| a report after a terminal state | refused with `409` |
+| deadline | the run's `timeout` plus 10 minutes |
+| a sweeper | marks `running` runs past their deadline `timed_out`, every minute |
+| at startup | runs left `running` by a stopped process are `failed`: a synchronous call does not survive it |
+| a report after a terminal state | not ingested |
 | a timed out verification | its hosts are still due, the next tick takes them again |
 | a failed or timed out recon | `wildcard.last_recon_at` does not move |
 
 ### Concurrency
 
-A slot is a run in `starting` or `running`.
+A slot is a run in `running`.
 
 | Kind | Slots (config) | Order |
 |---|---|---|
-| recon | 2 | oldest `last_recon_at` first, never scanned on top |
+| recon | 1 per `fastrecon serve` instance | queue order, and `scan the N oldest` queues oldest first |
 | verification | 1 | due date |
 | CT candidates | 1, separate | so a candidate never waits behind a batch |
 | renders | adaptive, see [absorbing a burst](/architecture/fingerprinting/#absorbing-a-burst) | priority, then due date |
@@ -151,9 +154,10 @@ internal/
   store/              pool, migrations, sqlc queries, storetest for integration tests
   scope/              rule matching, ScopesExtractor sync
   normalize/          the single normalize(layer, data)
-  ingest/             reports, observations, changes
+  inventory/          assets, deduplicated observations, changes, declared assets, refresh
+  ingest/             FastRecon reports: parse, normalize, qualify, write
   lifecycle/          qualification, transitions, backoff
-  runs/               definitions, tokens, runners, sweeper
+  runs/               queue, scheduler, runners, sweeper
   ct/                 matcher
   render/             dispatcher, Fingerprinter client, screenshots
   search/             parser, AST, compiler, facets

@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/JoshuaMart/recon/internal/inventory"
 	"github.com/JoshuaMart/recon/internal/scope"
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
@@ -279,7 +280,8 @@ func (s *server) openRule(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return 0, nil, errHandled
 		}
-		row, err := scope.OpenRule(r.Context(), q, p.ID, rule, "local", body.Note, s.now())
+		now := s.now()
+		row, err := scope.OpenRule(r.Context(), q, p.ID, rule, "local", body.Note, now)
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusConflict, "rule_already_open", rule.String()+" is already in force")
 			return 0, nil, errHandled
@@ -287,7 +289,11 @@ func (s *server) openRule(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return 0, nil, err
 		}
-		return http.StatusCreated, viewRule(row), nil
+		ref, err := inventory.Refresh(r.Context(), q, p, s.DefaultAutoScan, now)
+		if err != nil {
+			return 0, nil, err
+		}
+		return http.StatusCreated, ruleWritten{viewRule(row), ref}, nil
 	})
 }
 
@@ -334,7 +340,11 @@ func (s *server) patchRule(w http.ResponseWriter, r *http.Request) {
 				return 0, nil, err
 			}
 			old.ValidTo = &now
-			return http.StatusOK, viewRule(old), nil
+			ref, err := inventory.Refresh(r.Context(), q, p, s.DefaultAutoScan, now)
+			if err != nil {
+				return 0, nil, err
+			}
+			return http.StatusOK, ruleWritten{viewRule(old), ref}, nil
 		}
 		next, err := scope.ParseRule(or(body.Kind, old.Kind), or(body.Matcher, old.Matcher), or(body.Pattern, old.Pattern))
 		if err != nil {
@@ -361,7 +371,55 @@ func (s *server) patchRule(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return 0, nil, err
 		}
-		return http.StatusOK, viewRule(row), nil
+		ref, err := inventory.Refresh(r.Context(), q, p, s.DefaultAutoScan, now)
+		if err != nil {
+			return 0, nil, err
+		}
+		return http.StatusOK, ruleWritten{viewRule(row), ref}, nil
+	})
+}
+
+// ruleWritten is a rule write and what it moved in the inventory, so the
+// answer says what happened rather than only "ok".
+type ruleWritten struct {
+	ruleView
+	Inventory inventory.Refreshed `json:"inventory"`
+}
+
+// maxEntries bounds one manual entry request.
+const maxEntries = 1000
+
+func (s *server) declareAssets(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Entries []string `json:"entries"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	if len(body.Entries) == 0 || len(body.Entries) > maxEntries {
+		writeError(w, http.StatusBadRequest, "bad_field", "entries holds 1 to 1000 hosts or URLs")
+		return
+	}
+	s.inTx(w, r, func(q *sqlcgen.Queries) (int, any, error) {
+		p, ok := s.loadProgram(w, r, q)
+		if !ok {
+			return 0, nil, errHandled
+		}
+		c, _, err := inventory.Rules(r.Context(), q, p.ID)
+		if err != nil {
+			return 0, nil, err
+		}
+		wr := &inventory.Writer{Q: q, ProgramID: p.ID, Classifier: c, Now: s.now()}
+		// Per entry, so three names that went nowhere are visible as such.
+		out := make([]inventory.Declared, 0, len(body.Entries))
+		for _, e := range body.Entries {
+			d, err := wr.Declare(r.Context(), e, "manual")
+			if err != nil {
+				return 0, nil, err
+			}
+			out = append(out, d)
+		}
+		return http.StatusOK, map[string]any{"entries": out}, nil
 	})
 }
 

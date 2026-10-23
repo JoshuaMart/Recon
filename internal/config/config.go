@@ -33,6 +33,18 @@ type Config struct {
 	Log             Log             `koanf:"log"`
 	ScopesExtractor ScopesExtractor `koanf:"scopes_extractor"`
 	Discovery       Discovery       `koanf:"discovery"`
+	FastRecon       FastRecon       `koanf:"fastrecon"`
+}
+
+// FastRecon is the `fastrecon serve` instance runs are sent to. An empty URL
+// leaves runs queued.
+type FastRecon struct {
+	URL      string `koanf:"url"`
+	APIToken string `koanf:"api_token"`
+	// Timeout is the run's own budget, sent with every request.
+	Timeout time.Duration `koanf:"timeout"`
+	// Slots is how many runs may be in flight: one per serve instance.
+	Slots int `koanf:"slots"`
 }
 
 // ScopesExtractor is the scope sync. An empty URL disables it, leaving manual
@@ -51,6 +63,17 @@ type ScopesExtractor struct {
 type Discovery struct {
 	// AutoScan is the default for programs that do not set their own: off or on_new.
 	AutoScan string `koanf:"auto_scan"`
+	// Ports is the port list every run scans, recon and verification alike.
+	Ports []int `koanf:"ports"`
+}
+
+// DefaultPorts are the ports that can carry a finding: web entry points, admin
+// consoles, stores, remote access.
+var DefaultPorts = []int{
+	80, 443, 8080, 8443, 8000, 8090, 9000, 9443, 3000, 5000,
+	2375, 2376, 6443, 10250, 15672, 5601, 8983, 9990, 2083, 2087,
+	3306, 5432, 27017, 6379, 9200, 11211, 9042, 2379,
+	3389, 5900, 1080, 3128,
 }
 
 // HTTP is the listener.
@@ -78,7 +101,8 @@ func Defaults() Config {
 		ScopesExtractor: ScopesExtractor{
 			Interval: time.Hour, Timeout: time.Minute, MaxRemovedRatio: 0.5,
 		},
-		Discovery: Discovery{AutoScan: "off"},
+		Discovery: Discovery{AutoScan: "off", Ports: DefaultPorts},
+		FastRecon: FastRecon{Timeout: 30 * time.Minute, Slots: 1},
 	}
 }
 
@@ -167,6 +191,28 @@ func (c Config) Validate() error {
 	}
 	if r := c.ScopesExtractor.MaxRemovedRatio; r <= 0 || r > 1 {
 		errs = append(errs, fmt.Errorf("scopes_extractor.max_removed_ratio %v must be in (0, 1]", r))
+	}
+	if f := c.FastRecon; f.URL != "" {
+		if u, err := url.Parse(f.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			errs = append(errs, fmt.Errorf("fastrecon.url %q must be an absolute http or https URL", f.URL))
+		}
+		if f.APIToken == "" {
+			errs = append(errs, errors.New("fastrecon.api_token is required when fastrecon.url is set"))
+		}
+	}
+	if c.FastRecon.Timeout < time.Minute {
+		errs = append(errs, errors.New("fastrecon.timeout must be at least 1m"))
+	}
+	if c.FastRecon.Slots < 1 {
+		errs = append(errs, errors.New("fastrecon.slots must be at least 1"))
+	}
+	if len(c.Discovery.Ports) == 0 {
+		errs = append(errs, errors.New("discovery.ports cannot be empty"))
+	}
+	for _, p := range c.Discovery.Ports {
+		if p < 1 || p > 65535 {
+			errs = append(errs, fmt.Errorf("discovery.ports holds %d, not a port", p))
+		}
 	}
 	if a := c.Discovery.AutoScan; a != "off" && a != "on_new" {
 		errs = append(errs, fmt.Errorf("discovery.auto_scan %q is not off or on_new", a))

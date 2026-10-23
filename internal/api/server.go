@@ -59,8 +59,13 @@ func Handler(d Deps) http.Handler {
 		authed("GET /api/programs/{id}", s.getProgram)
 		authed("PATCH /api/programs/{id}", s.patchProgram)
 		authed("POST /api/programs/{id}/rules", s.openRule)
+		authed("POST /api/programs/{id}/assets", s.declareAssets)
 		authed("PATCH /api/programs/{id}/rules/{rule}", s.patchRule)
 		authed("GET /api/wildcards", s.listWildcards)
+		authed("POST /api/wildcards/{id}/recon", s.reconWildcard)
+		authed("POST /api/wildcards/recon", s.reconOldest)
+		authed("GET /api/runs", s.listRuns)
+		authed("GET /api/runs/{id}", s.getRun)
 		authed("POST /api/sync", s.runSync)
 		mux.Handle("/api/", d.Auth.Require(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			writeError(w, http.StatusNotFound, "not_found", "no such route")

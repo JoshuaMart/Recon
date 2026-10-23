@@ -29,6 +29,7 @@ A `change` row is written in the same transaction as what caused it
 | `new_asset` | an asset is created | a host appears under a wildcard |
 | `lifecycle_changed` | any lifecycle transition | `candidate` → `active`, `flapping` → `inactive` |
 | `scope_changed` | a rule moves the asset in or out | a scope removed on the platform |
+| `dns_changed` | the `dns` observation differs: addresses, CNAME chain, status | a CNAME now points elsewhere |
 | `port_opened`, `port_closed` | the host's `tcp` observation differs | 9200 opens on a known host |
 | `http_changed` | the `http` observation differs: status, title, server, final URL | 403 becomes 200 |
 | `tech_added`, `tech_removed`, `tech_version_changed` | the `fingerprint` observation differs on technologies | WordPress 6.1 becomes 6.4 |

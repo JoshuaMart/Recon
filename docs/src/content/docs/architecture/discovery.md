@@ -55,6 +55,14 @@ What the report gives Recon:
   and a name that comes alive later is exactly what the candidate curve catches;
 - **hosts it did not reach**, marked `discovered`, kept as candidates with no observation, so a
   truncated run states its gap.
+- **wildcard hosts**, kept as candidates with their `dns` observation: they resolve, but only to the
+  zone's wildcard, so nothing proves they exist.
+
+Its `tech` field is ignored: technologies come from the Fingerprinter only. Its `tls` block (subject,
+issuer, SANs, SPKI hash) is kept in the service's `http` observation.
+
+A recon never moves an asset toward death and never downgrades a lifecycle: it only creates assets and
+promotes candidates that now resolve ([P1](/architecture/principles/#p1-absence-of-proof-is-not-proof-of-absence)).
 
 The run updates `wildcard.last_recon_at`. A failed run does not.
 

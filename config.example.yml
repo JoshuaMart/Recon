@@ -24,3 +24,14 @@ scopes_extractor:
 
 discovery:
   auto_scan: "off"     # default for programs that set none: off or on_new
+  # Every run scans these, recon and verification alike.
+  ports: [80, 443, 8080, 8443, 8000, 8090, 9000, 9443, 3000, 5000,
+          2375, 2376, 6443, 10250, 15672, 5601, 8983, 9990, 2083, 2087,
+          3306, 5432, 27017, 6379, 9200, 11211, 9042, 2379,
+          3389, 5900, 1080, 3128]
+
+fastrecon:
+  url: ""              # a `fastrecon serve` instance; empty leaves runs queued
+  api_token: ""        # its FASTRECON_API_TOKEN, required when url is set
+  timeout: 30m         # each run's budget
+  slots: 1             # runs in flight: one per serve instance

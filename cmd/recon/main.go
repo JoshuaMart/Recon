@@ -21,8 +21,11 @@ import (
 
 	"github.com/JoshuaMart/recon/internal/api"
 	"github.com/JoshuaMart/recon/internal/config"
+	"github.com/JoshuaMart/recon/internal/inventory"
+	"github.com/JoshuaMart/recon/internal/runs"
 	"github.com/JoshuaMart/recon/internal/scope"
 	"github.com/JoshuaMart/recon/internal/store"
+	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 	"github.com/JoshuaMart/recon/internal/version"
 )
 
@@ -105,6 +108,22 @@ func healthcheck(ctx context.Context, args []string) error {
 	return nil
 }
 
+// maintain keeps the monthly partitions two months ahead, daily.
+func maintain(ctx context.Context, log *slog.Logger, st *store.Store) {
+	t := time.NewTicker(24 * time.Hour)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := st.EnsurePartitions(ctx, time.Now()); err != nil {
+				log.ErrorContext(ctx, "partition maintenance", "err", err)
+			}
+		}
+	}
+}
+
 func newLogger(c config.Log, out io.Writer) *slog.Logger {
 	var level slog.Level
 	_ = level.UnmarshalText([]byte(c.Level))
@@ -166,10 +185,34 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, st *store.S
 	}
 	deps := api.Deps{Log: log, DB: st, Store: st, Auth: auth, DefaultAutoScan: cfg.Discovery.AutoScan}
 
+	sched := &runs.Scheduler{
+		Store: st, Log: log, Slots: cfg.FastRecon.Slots, Timeout: cfg.FastRecon.Timeout,
+		Ports: cfg.Discovery.Ports, Tick: 5 * time.Second, Now: time.Now,
+	}
+	if f := cfg.FastRecon; f.URL != "" {
+		sched.Runner = runs.NewServe(f.URL, f.APIToken, f.Timeout)
+	} else {
+		log.InfoContext(ctx, "no fastrecon.url: runs stay queued")
+	}
+	if err := sched.Recover(ctx); err != nil {
+		return err
+	}
+	if r, err := inventory.RefreshAll(ctx, st.Pool, st.Q, time.Now().UTC().Truncate(time.Microsecond)); err != nil {
+		return fmt.Errorf("inventory refresh: %w", err)
+	} else if r.Declared+r.Reclassified > 0 {
+		log.InfoContext(ctx, "inventory caught up with the rules", "declared", r.Declared, "reclassified", r.Reclassified)
+	}
+	go sched.Loop(ctx)
+	go maintain(ctx, log, st)
+
 	if se := cfg.ScopesExtractor; se.URL != "" {
 		syncer := &scope.Syncer{
 			Store: st, Source: scope.NewClient(se.URL, se.APIKey, se.Timeout), Log: log,
 			MaxRemovedRatio: se.MaxRemovedRatio, Now: time.Now,
+			Refresh: func(ctx context.Context, q *sqlcgen.Queries, p sqlcgen.Program, now time.Time) error {
+				_, err := inventory.Refresh(ctx, q, p, cfg.Discovery.AutoScan, now)
+				return err
+			},
 		}
 		deps.Sync = syncer
 		go syncer.Loop(ctx, se.Interval)

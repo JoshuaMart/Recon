@@ -31,7 +31,15 @@ type Summary struct {
 	RulesOpened int `json:"rules_opened"`
 	RulesClosed int `json:"rules_closed"`
 	Untracked   int `json:"untracked"`
+	// Refreshed counts the programs whose inventory was brought in line with
+	// their new rules.
+	Refreshed int `json:"refreshed"`
 }
+
+// RefreshFunc brings a program's inventory in line with its rules, in the
+// sync's transaction. It lives in the inventory package, which depends on this
+// one.
+type RefreshFunc func(ctx context.Context, q *sqlcgen.Queries, p sqlcgen.Program, now time.Time) error
 
 // Syncer reconciles synced programs with ScopesExtractor.
 type Syncer struct {
@@ -42,6 +50,8 @@ type Syncer struct {
 	// archive. Above it the pass is refused.
 	MaxRemovedRatio float64
 	Now             func() time.Time
+	// Refresh, when set, runs for every program whose rules moved.
+	Refresh RefreshFunc
 }
 
 type programKey struct{ platform, slug string }
@@ -188,8 +198,10 @@ func (s *Syncer) apply(ctx context.Context, q *sqlcgen.Queries, now time.Time, k
 		if err := q.SetProgramState(ctx, sqlcgen.SetProgramStateParams{ID: p.ID, State: "active", Now: now}); err != nil {
 			return err
 		}
+		p.State, p.ArchivedBy = "active", nil
 		sum.Reactivated++
 	}
+	moved := sum.RulesOpened + sum.RulesClosed
 
 	open, err := q.ListOpenRulesByOrigin(ctx, sqlcgen.ListOpenRulesByOriginParams{ProgramID: p.ID, Origin: "sync"})
 	if err != nil {
@@ -224,7 +236,16 @@ func (s *Syncer) apply(ctx context.Context, q *sqlcgen.Queries, now time.Time, k
 		}
 	}
 	sum.Untracked += len(rp.untracked)
-	return q.MarkUntrackedGone(ctx, sqlcgen.MarkUntrackedGoneParams{ProgramID: p.ID, Now: now})
+	if err := q.MarkUntrackedGone(ctx, sqlcgen.MarkUntrackedGoneParams{ProgramID: p.ID, Now: now}); err != nil {
+		return err
+	}
+	if s.Refresh != nil && sum.RulesOpened+sum.RulesClosed > moved {
+		if err := s.Refresh(ctx, q, p, now); err != nil {
+			return fmt.Errorf("refresh: %w", err)
+		}
+		sum.Refreshed++
+	}
+	return nil
 }
 
 // OpenRule opens a rule and, for an include apex, its wildcard. It returns

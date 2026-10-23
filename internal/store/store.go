@@ -78,5 +78,31 @@ func (s *Store) MigrateUp(ctx context.Context) (int64, error) {
 	if _, err := p.Up(ctx); err != nil {
 		return 0, fmt.Errorf("migrate up: %w", err)
 	}
+	if err := s.EnsurePartitions(ctx, time.Now()); err != nil {
+		return 0, err
+	}
 	return p.GetDBVersion(ctx)
+}
+
+// partitioned are the tables split by month.
+var partitioned = []string{"observation", "change"}
+
+// partitionsAhead is how many months past the current one exist at all times:
+// two, so an incident at the end of a month does not stop ingestion.
+const partitionsAhead = 2
+
+// EnsurePartitions creates the monthly partitions from now's month to
+// partitionsAhead months later. It is idempotent.
+func (s *Store) EnsurePartitions(ctx context.Context, now time.Time) error {
+	first := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	for _, table := range partitioned {
+		for i := 0; i <= partitionsAhead; i++ {
+			if err := s.Q.EnsureMonthPartition(ctx, sqlcgen.EnsureMonthPartitionParams{
+				Parent: table, Month: first.AddDate(0, i, 0),
+			}); err != nil {
+				return fmt.Errorf("partition %s +%d: %w", table, i, err)
+			}
+		}
+	}
+	return nil
 }

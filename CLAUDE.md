@@ -5,9 +5,10 @@ every program hunted on, keeps it fresh, and makes it queryable through a filter
 
 ## Status
 
-Phases 0 (foundations) and 1 (programs and sync) are done: programs, scope rules, wildcards,
-untracked scopes, the ScopesExtractor sync (checked against a real instance: 74 programs, 817 rules),
-API authentication and the program routes. Phase 2 (recon and ingestion) is next. The design in `docs/` is the source of
+Phases 0 to 2 are done: foundations, programs and the ScopesExtractor sync, and recon with ingestion.
+A recon is queued on a wildcard, sent to `fastrecon serve`, and its report becomes assets, normalized
+and deduplicated observations, and changes (a repeated recon on a real wildcard writes no new
+observation). Phase 3 (verification and lifecycle) is next. The design in `docs/` is the source of
 truth, and code follows it.
 
 ## Read before working

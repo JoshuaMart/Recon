@@ -76,6 +76,9 @@ services:
       RECON_SCOPES_EXTRACTOR__URL: ${SCOPES_EXTRACTOR_URL:-}
       RECON_SCOPES_EXTRACTOR__API_KEY: ${SCOPES_EXTRACTOR_API_KEY:-}
       RECON_DISCOVERY__AUTO_SCAN: ${AUTO_SCAN:-off}
+      RECON_FASTRECON__URL: http://fastrecon:8080
+      RECON_FASTRECON__API_TOKEN: ${FASTRECON_API_TOKEN:?set FASTRECON_API_TOKEN in .env}
+      RECON_FASTRECON__TIMEOUT: ${FASTRECON_TIMEOUT:-30m}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -122,6 +125,25 @@ services:
       chrome-1: {condition: service_healthy}
       chrome-2: {condition: service_healthy}
       chrome-3: {condition: service_healthy}
+    restart: unless-stopped
+
+  # One run at a time per instance: Recon's slots follow the instance count.
+  fastrecon:
+    networks: [scan]
+    image: ${FASTRECON_IMAGE:-ghcr.io/joshuamart/fastrecon:main}
+    command: ["serve"]
+    environment:
+      FASTRECON_API_TOKEN: ${FASTRECON_API_TOKEN:?set FASTRECON_API_TOKEN in .env}
+      FASTRECON_ENVIRONMENT: compose
+      # Source keys, all optional: a keyed source without one reports skipped_no_key.
+      CHAOS_API_KEY: ${CHAOS_API_KEY:-}
+      SECURITYTRAILS_API_KEY: ${SECURITYTRAILS_API_KEY:-}
+      C99_API_KEY: ${C99_API_KEY:-}
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/fastrecon", "version"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
 
   certstream:

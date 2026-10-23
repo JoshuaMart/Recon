@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.1",
+  "run": {"id": "01J0TEST", "domain": "example.com", "input": "domain", "scope": "full",
+          "stages": ["enumerate", "exclude", "resolve", "portscan", "httpprobe"],
+          "started_at": "2026-10-01T00:00:00Z", "finished_at": "2026-10-01T00:07:12Z", "duration_ms": 432000,
+          "completed": true, "truncated_by_timeout": false, "version": "1.2.3", "environment": "test", "degraded": []},
+  "sources": [
+    {"name": "crt", "status": "ok", "found": 5, "duration_ms": 1400},
+    {"name": "chaos", "status": "skipped_no_key", "found": 0}
+  ],
+  "stats": {"enumerated": 6, "excluded": 0, "in_scope": 6, "live": 2, "dead": 2, "wildcard": 0, "open_ports": 3, "http_services": 2},
+  "hosts": [
+    {"host": "API.example.com", "status": "live", "addresses": ["93.184.216.35", "93.184.216.34"],
+     "cname": ["edge.example.net"], "sources": ["crt", "chaos"],
+     "cdn": [{"name": "Cloudflare", "type": "waf", "addresses": ["93.184.216.34"], "scan_limited": true}],
+     "scan": {"scanned": 2, "open": 2, "refused": 0, "filtered": 0, "unknown": 0},
+     "ports": [
+       {"port": 443, "protocol": "tcp", "state": "open", "addresses": ["93.184.216.34"],
+        "http": {"url": "https://api.example.com", "final_url": "https://api.example.com/v2", "scheme": "https",
+                 "status_code": 200, "title": "API", "content_length": 1533, "response_time_ms": 251, "server": "nginx",
+                 "redirects": ["https://api.example.com"], "tech": ["HSTS", "Nginx"],
+                 "tls": {"subject_cn": "*.example.com", "issuer": "R3", "not_after": "2026-06-01T00:00:00Z",
+                         "sans": ["www.example.com", "api.example.com"], "cert_spki_hash": "9F86D0"}}},
+       {"port": 80, "protocol": "tcp", "state": "open", "addresses": ["93.184.216.34"],
+        "http": {"url": "http://api.example.com", "final_url": "https://api.example.com/", "scheme": "http",
+                 "status_code": 301, "content_length": 0, "response_time_ms": 12}}
+     ]},
+    {"host": "db.example.com", "status": "live", "addresses": ["10.1.2.3"], "sources": ["crt"],
+     "scan": {"scanned": 32, "open": 1, "refused": 31, "filtered": 0, "unknown": 0},
+     "ports": [{"port": 5432, "protocol": "tcp", "state": "open", "addresses": ["10.1.2.3"]}]},
+    {"host": "old.example.com", "status": "dead", "reason": "nxdomain", "sources": ["crt"]},
+    {"host": "mx.example.com", "status": "dead", "reason": "no_answer", "sources": ["crt"]},
+    {"host": "slow.example.com", "status": "discovered", "sources": ["crt"]},
+    {"host": "evil.attacker.test", "status": "live", "addresses": ["6.6.6.6"], "sources": ["crt"]}
+  ],
+  "excluded": [],
+  "warnings": []
+}

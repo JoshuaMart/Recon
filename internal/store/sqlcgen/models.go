@@ -5,14 +5,82 @@
 package sqlcgen
 
 import (
+	"net/netip"
 	"time"
 
 	"github.com/google/uuid"
 )
 
+type Asset struct {
+	ID              uuid.UUID
+	ProgramID       uuid.UUID
+	Kind            string
+	Key             string
+	Host            string
+	Port            *int32
+	Scheme          *string
+	ParentAssetID   *uuid.UUID
+	WildcardID      *uuid.UUID
+	DiscoverySource string
+	DiscoveryPath   []byte
+	ScopeStatus     string
+	FirstSeen       time.Time
+	LastSeen        time.Time
+}
+
+type AssetCurrent struct {
+	AssetID     uuid.UUID
+	ProgramID   uuid.UUID
+	Kind        string
+	Key         string
+	Host        string
+	Port        *int32
+	Scheme      *string
+	ScopeStatus string
+	Lifecycle   string
+	DnsState    *string
+	TcpState    *string
+	HttpState   *string
+	Ips         []netip.Addr
+	Cname       []string
+	Cdn         *string
+	StatusCode  *int32
+	Title       *string
+	Server      *string
+	FinalUrl    *string
+	FirstSeen   time.Time
+	LastSeen    time.Time
+	LastChanged *time.Time
+}
+
+type Change struct {
+	ID        int64
+	AssetID   uuid.UUID
+	ProgramID uuid.UUID
+	Kind      string
+	Layer     *string
+	Before    []byte
+	After     []byte
+	RunID     *uuid.UUID
+	At        time.Time
+}
+
 type Instance struct {
 	ID        bool
 	CreatedAt time.Time
+}
+
+type Observation struct {
+	ID                  int64
+	AssetID             uuid.UUID
+	Layer               string
+	Outcome             string
+	Data                []byte
+	ObservedAt          time.Time
+	LastConfirmedAt     time.Time
+	RunID               *uuid.UUID
+	ProducerVersion     *string
+	LastProducerVersion *string
 }
 
 type Program struct {
@@ -27,6 +95,23 @@ type Program struct {
 	AutoScan   *string
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
+}
+
+type Run struct {
+	ID         uuid.UUID
+	ProgramID  uuid.UUID
+	Kind       string
+	Stage      string
+	WildcardID *uuid.UUID
+	State      string
+	Trigger    string
+	QueuedAt   time.Time
+	StartedAt  *time.Time
+	FinishedAt *time.Time
+	Deadline   *time.Time
+	Error      *string
+	ReportMeta []byte
+	Ingest     []byte
 }
 
 type ScopeRule struct {
