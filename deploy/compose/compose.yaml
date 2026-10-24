@@ -83,6 +83,11 @@ services:
       # Off unless asked: on, every in-scope host of every active program is probed.
       RECON_VERIFICATION__ENABLED: ${VERIFICATION_ENABLED:-false}
       RECON_RENDER__URL: http://fingerprinter:3001
+      # Notification channels, all optional: without one, notifications are
+      # only listed on the settings page.
+      RECON_NOTIFY__DISCORD_URL: ${DISCORD_WEBHOOK_URL:-}
+      RECON_NOTIFY__WEBHOOK_URL: ${WEBHOOK_URL:-}
+      RECON_NOTIFY__WEBHOOK_HEADER: ${WEBHOOK_HEADER:-}
     volumes:
       - screenshots:/data/screenshots
       - ../../var/geoip:/data/geoip:ro
