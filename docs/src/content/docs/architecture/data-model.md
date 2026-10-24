@@ -38,6 +38,10 @@ erDiagram
   asset ||--o{ saved_search_match : "matched by"
 ```
 
+Notifications keep their own state, outside the inventory: `notification` (one message per window,
+its items, when it is due and when it was sent) and `health_state` (per component, since when it fails
+and whether that was announced).
+
 | Table | Holds |
 |---|---|
 | `program` | origin (`scopesextractor` or `manual`), platform and slug, state, auto-scan override |
@@ -52,7 +56,7 @@ erDiagram
 | `screenshot` | asset, storage key, thumbnail key, perceptual hash, taken at |
 | `run` | kind, stage, wildcard or target list, state, deadline, timings, counters |
 | `triage` | your state on an asset: `new`, `seen`, `interesting`, `ignored`, tags, note, `seen_at` |
-| `saved_search` | name, query, view (services or hosts), whether it alerts |
+| `saved_search` | name, query, view (services or hosts), whether it alerts, when its matches were last evaluated |
 | `saved_search_match` | which assets a search currently matches, and since when |
 
 ## Asset kinds and canonical keys

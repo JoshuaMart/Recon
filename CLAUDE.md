@@ -15,8 +15,11 @@ parsed versions, a fingerprint observation and a deduplicated screenshot. The se
 (`internal/search`) parses text to an AST that prints back, and compiles it to parameterized SQL; a
 test runs every query of `search.md`, so a new example there must work. The interface (`web/`, SvelteKit 3,
 static, `#lib/x.ts` imports) is embedded by `internal/ui`, which serves `index.html` for every path the
-API does not own, with a CSP that allows only its own inline boot script by hash. Phase 7 (changes and
-notifications) is next. The design in `docs/` is the source of
+API does not own, with a CSP that allows only its own inline boot script by hash. Phase 7 is built and
+waits on its done-when (a week of use): `internal/notify` holds the outbox with its trailing windows,
+the channels (Discord, webhook), the saved search evaluator (its first pass records matches silently)
+and the health watcher; the feed is `search.Feed`, the language plus `change:`. Phase 8 (CT and BBOT)
+is next. The design in `docs/` is the source of
 truth, and code follows it.
 
 ## Read before working

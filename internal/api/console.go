@@ -1,12 +1,10 @@
 package api
 
 import (
-	"encoding/base64"
 	"errors"
 	"net"
 	"net/http"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -21,83 +19,89 @@ import (
 // The routes the console needs beyond the inventory: the changes feed, probe
 // now, saved searches and the settings page.
 
+// changesPage is a page of the feed.
 const changesPage = 100
 
-type changeView struct {
-	ID        int64      `json:"id"`
-	AssetID   uuid.UUID  `json:"asset_id"`
-	ProgramID uuid.UUID  `json:"program_id"`
-	Program   string     `json:"program"`
-	AssetKind string     `json:"asset_kind"`
-	AssetKey  string     `json:"asset_key"`
-	Kind      string     `json:"kind"`
-	Layer     *string    `json:"layer"`
-	Before    any        `json:"before"`
-	After     any        `json:"after"`
-	RunID     *uuid.UUID `json:"run_id"`
-	At        time.Time  `json:"at"`
-}
-
-// changeCursor is the last row of a page, (at, id), opaque to the caller.
-func changeCursor(at time.Time, id int64) string {
-	return base64.RawURLEncoding.EncodeToString([]byte(at.Format(time.RFC3339Nano) + "|" + strconv.FormatInt(id, 10)))
-}
-
-func parseChangeCursor(c string) (time.Time, int64, bool) {
-	b, err := base64.RawURLEncoding.DecodeString(c)
-	if err != nil {
-		return time.Time{}, 0, false
+func (s *server) feedRequest(w http.ResponseWriter, q, view, run, cursor string) (search.FeedRequest, bool) {
+	req := search.FeedRequest{Query: q, Cursor: cursor, Limit: changesPage, Now: s.now()}
+	switch view {
+	case "", "unseen":
+		req.Unseen = true
+	case "all":
+	default:
+		writeError(w, http.StatusBadRequest, "bad_field", "view is unseen or all")
+		return req, false
 	}
-	ts, idStr, ok := strings.Cut(string(b), "|")
-	if !ok {
-		return time.Time{}, 0, false
+	if run != "" {
+		id, err := uuid.Parse(run)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_field", "run is not an id")
+			return req, false
+		}
+		req.Run = &id
 	}
-	at, err := time.Parse(time.RFC3339Nano, ts)
-	if err != nil {
-		return time.Time{}, 0, false
-	}
-	id, err := strconv.ParseInt(idStr, 10, 64)
-	return at, id, err == nil
+	return req, true
 }
 
 func (s *server) listChanges(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	params := sqlcgen.ListChangesParams{Lim: changesPage}
-	if v := q.Get("program"); v != "" {
-		id, err := uuid.Parse(v)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "bad_field", "program is not an id")
-			return
-		}
-		params.ProgramID = &id
+	v := r.URL.Query()
+	req, ok := s.feedRequest(w, v.Get("q"), v.Get("view"), v.Get("run"), v.Get("cursor"))
+	if !ok {
+		return
 	}
-	if c := q.Get("cursor"); c != "" {
-		at, id, ok := parseChangeCursor(c)
-		if !ok {
-			writeError(w, http.StatusBadRequest, "bad_cursor", "cursor does not decode")
-			return
-		}
-		params.BeforeAt, params.BeforeID = &at, &id
+	page, err := search.Feed(r.Context(), s.Store.Pool, req)
+	if err != nil {
+		s.searchError(w, r, err)
+		return
 	}
-	rows, err := s.Store.Q.ListChanges(r.Context(), params)
+	writeJSON(w, http.StatusOK, page)
+}
+
+func (s *server) unseenChanges(w http.ResponseWriter, r *http.Request) {
+	n, err := search.UnseenCount(r.Context(), s.Store.Pool)
 	if err != nil {
 		s.internal(w, r, err)
 		return
 	}
-	out := make([]changeView, 0, len(rows))
-	for _, c := range rows {
-		out = append(out, changeView{
-			ID: c.ID, AssetID: c.AssetID, ProgramID: c.ProgramID, Program: c.Program, AssetKind: c.AssetKind,
-			AssetKey: c.AssetKey, Kind: c.Kind, Layer: c.Layer, Before: raw(c.Before), After: raw(c.After),
-			RunID: c.RunID, At: c.At,
-		})
+	writeJSON(w, http.StatusOK, map[string]any{"unseen": n, "capped": n >= search.MaxUnseen})
+}
+
+// markChangesSeen marks as seen what a feed read shows: the assets behind its
+// unseen changes, as opening each of them would.
+func (s *server) markChangesSeen(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Q   string `json:"q"`
+		Run string `json:"run"`
 	}
-	res := map[string]any{"changes": out}
-	if len(rows) == changesPage {
-		last := rows[len(rows)-1]
-		res["next"] = changeCursor(last.At, last.ID)
+	if !readJSON(w, r, &body) {
+		return
 	}
-	writeJSON(w, http.StatusOK, res)
+	req, ok := s.feedRequest(w, body.Q, "unseen", body.Run, "")
+	if !ok {
+		return
+	}
+	n, err := search.MarkSeen(r.Context(), s.Store.Pool, req)
+	if err != nil {
+		s.searchError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"assets": n})
+}
+
+func (s *server) listNotifications(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.Store.Q.RecentNotifications(r.Context())
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	if rows == nil {
+		rows = []sqlcgen.Notification{}
+	}
+	channels := s.Channels
+	if channels == nil {
+		channels = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"notifications": rows, "channels": channels})
 }
 
 // probeAsset puts the asset's host first in line for a full. Verification is the
@@ -209,6 +213,7 @@ func (s *server) createSavedSearch(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, r, err)
 		return
 	}
+	s.evaluateSoon(row.Alert)
 	writeJSON(w, http.StatusCreated, row)
 }
 
@@ -230,6 +235,7 @@ func (s *server) patchSavedSearch(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return 0, nil, err
 		}
+		wasAlert := cur.Alert
 		if msg, ok := body.apply(&cur, s.now()); !ok {
 			writeError(w, http.StatusBadRequest, "bad_field", msg)
 			return 0, nil, errHandled
@@ -241,8 +247,26 @@ func (s *server) patchSavedSearch(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "exists", "a saved search has that name")
 			return 0, nil, errHandled
 		}
-		return http.StatusOK, row, err
+		if err != nil {
+			return 0, nil, err
+		}
+		// Off, the matches go: switched on again, it starts over.
+		if wasAlert && !row.Alert {
+			if err := q.ClearMatches(r.Context(), id); err != nil {
+				return 0, nil, err
+			}
+		}
+		s.evaluateSoon(row.Alert)
+		return http.StatusOK, row, nil
 	})
+}
+
+// evaluateSoon records an alerting search's matches without delay, so what
+// enters after it was switched on is not taken for what it already matched.
+func (s *server) evaluateSoon(alert bool) {
+	if alert && s.Evaluate != nil {
+		s.Evaluate()
+	}
 }
 
 func (s *server) deleteSavedSearch(w http.ResponseWriter, r *http.Request) {

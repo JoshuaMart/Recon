@@ -38,6 +38,7 @@ type Config struct {
 	Verification    Verification    `koanf:"verification"`
 	Render          Render          `koanf:"render"`
 	Screenshots     Screenshots     `koanf:"screenshots"`
+	Notify          Notify          `koanf:"notify"`
 	// GeoIPDir holds GeoLite2-ASN.mmdb and GeoLite2-City.mmdb. Without them,
 	// ASN and country stay empty.
 	GeoIPDir string `koanf:"geoip_dir"`
@@ -60,6 +61,19 @@ type Screenshots struct {
 	Dir     string `koanf:"dir"`
 	Quality int    `koanf:"quality"` // JPEG quality, 1 to 100
 	Keep    int    `koanf:"keep"`    // distinct screenshots kept per asset
+	// DiskThreshold is the share of the screenshot filesystem in use past
+	// which a health notification fires.
+	DiskThreshold float64 `koanf:"disk_threshold"`
+}
+
+// Notify holds the channels notifications go to. With none, they are kept and
+// listed on the settings page only.
+type Notify struct {
+	DiscordURL    string `koanf:"discord_url" secret:"true"`
+	WebhookURL    string `koanf:"webhook_url" secret:"true"`    // such URLs commonly hold their token
+	WebhookHeader string `koanf:"webhook_header" secret:"true"` // "Name: value", sent with each webhook call
+	// BrokenAfter is how long a component fails before it is announced.
+	BrokenAfter time.Duration `koanf:"broken_after"`
 }
 
 // Verification is the periodic probing of known hosts.
@@ -155,7 +169,8 @@ func Defaults() Config {
 		Render: Render{
 			Concurrency: 20, Timeout: 2 * time.Minute, Periodic: 21 * 24 * time.Hour, Retry: 6 * time.Hour,
 		},
-		Screenshots: Screenshots{Dir: "/data/screenshots", Quality: 70, Keep: 3},
+		Screenshots: Screenshots{Dir: "/data/screenshots", Quality: 70, Keep: 3, DiskThreshold: 0.9},
+		Notify:      Notify{BrokenAfter: 5 * time.Minute},
 		GeoIPDir:    "/data/geoip",
 		Verification: Verification{
 			Enabled: true, Batch: 500, Resolve: 24 * time.Hour, Full: 72 * time.Hour,
@@ -276,8 +291,25 @@ func (c Config) Validate() error {
 	if r := c.Render; r.Concurrency < 1 || r.Timeout < time.Second || r.Periodic < time.Hour || r.Retry < time.Minute {
 		errs = append(errs, errors.New("render: concurrency at least 1, timeout at least 1s, periodic at least 1h, retry at least 1m"))
 	}
-	if s := c.Screenshots; s.Dir == "" || s.Quality < 1 || s.Quality > 100 || s.Keep < 1 {
-		errs = append(errs, errors.New("screenshots: dir required, quality 1 to 100, keep at least 1"))
+	if s := c.Screenshots; s.Dir == "" || s.Quality < 1 || s.Quality > 100 || s.Keep < 1 || s.DiskThreshold <= 0 || s.DiskThreshold > 1 {
+		errs = append(errs, errors.New("screenshots: dir required, quality 1 to 100, keep at least 1, disk_threshold above 0 and at most 1"))
+	}
+	for name, v := range map[string]string{"notify.discord_url": c.Notify.DiscordURL, "notify.webhook_url": c.Notify.WebhookURL} {
+		if v == "" {
+			continue
+		}
+		if u, err := url.Parse(v); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			// The value may hold a token: name the setting, never print it.
+			errs = append(errs, fmt.Errorf("%s must be an absolute http or https URL", name))
+		}
+	}
+	if h := c.Notify.WebhookHeader; h != "" {
+		if name, value, ok := strings.Cut(h, ":"); !ok || strings.TrimSpace(name) == "" || strings.TrimSpace(value) == "" {
+			errs = append(errs, errors.New("notify.webhook_header must be in 'Name: value' form"))
+		}
+	}
+	if c.Notify.BrokenAfter < time.Minute {
+		errs = append(errs, errors.New("notify.broken_after must be at least 1m"))
 	}
 	if len(c.Discovery.Ports) == 0 {
 		errs = append(errs, errors.New("discovery.ports cannot be empty"))

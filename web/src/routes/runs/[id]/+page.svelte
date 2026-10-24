@@ -37,7 +37,10 @@
 				<h1>{run.kind === 'recon' ? 'Recon' : 'Verification'} {#if run.apex}<span class="mono">*.{run.apex}</span>{/if}</h1>
 				<p>{label(run.state)} · {run.stage} · by {run.trigger} · queued {ago(run.queued_at)} · took {duration(run.started_at, run.finished_at)}</p>
 			</div>
-			<a class="btn" href="/programs/{run.program_id}">Its program</a>
+			<div class="head-actions">
+				<a class="btn" href="/changes?view=all&run={run.id}">Its changes</a>
+				<a class="btn" href="/programs/{run.program_id}">Its program</a>
+			</div>
 		</div>
 		{#if run.error}<p class="error">{run.error}</p>{/if}
 
@@ -83,6 +86,10 @@
 		font-size: 13px;
 		text-decoration: none;
 		width: max-content;
+	}
+	.head-actions {
+		display: flex;
+		gap: 8px;
 	}
 	.cols {
 		display: flex;

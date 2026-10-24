@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -201,6 +202,14 @@ func TestReconFillsTheInventory(t *testing.T) {
 	if err != nil || w.LastReconAt == nil || w.AssetsFound != 5 {
 		t.Errorf("wildcard = %+v, %v", w, err)
 	}
+
+	// You started it: one message, with the counts and the run's changes.
+	ns, err := f.st.Q.RecentNotifications(ctx)
+	if err != nil || len(ns) != 1 || ns[0].Kind != "recon_finished" ||
+		ns[0].Title != "*.example.com finished: "+strconv.Itoa(s.Hosts)+" hosts, 5 new, 3 new services" ||
+		ns[0].Link == nil || !strings.HasSuffix(*ns[0].Link, "/changes?run="+r.ID.String()) {
+		t.Errorf("notifications = %+v, %v", ns, err)
+	}
 }
 
 func TestSecondReconIsDeduplicated(t *testing.T) {
@@ -325,6 +334,10 @@ func TestFailedRunLeavesTheWildcard(t *testing.T) {
 	if w.LastReconAt != nil {
 		t.Error("a failed recon must not move last_recon_at")
 	}
+	ns, err := f.st.Q.RecentNotifications(ctx)
+	if err != nil || len(ns) != 1 || !strings.HasPrefix(ns[0].Title, "*.example.com failed: ") {
+		t.Errorf("a failed recon is announced too: %+v, %v", ns, err)
+	}
 }
 
 func TestRefreshDeclaresAndReclassifies(t *testing.T) {
@@ -375,5 +388,26 @@ func TestAutoScanQueuesANewWildcard(t *testing.T) {
 	runsList, _ := f.st.Q.ListRuns(ctx, sqlcgen.ListRunsParams{ProgramID: &p.ID, Lim: 10})
 	if len(runsList) != 1 || runsList[0].Run.Trigger != "auto_scan" || *runsList[0].Apex != "new.io" {
 		t.Errorf("runs = %+v", runsList)
+	}
+}
+
+// A recon cut by a restart ends like any other: failed, and announced.
+func TestRecoverAnnouncesAnInterruptedRecon(t *testing.T) {
+	ctx := context.Background()
+	f := setup(t, readFixture(t))
+	r, queued, reason, err := runs.EnqueueRecon(ctx, f.st.Q, f.wildcard, "user", time.Now().UTC())
+	if err != nil || !queued {
+		t.Fatalf("enqueue: %v %s", err, reason)
+	}
+	if _, err := f.st.Pool.Exec(ctx, `UPDATE run SET state = 'running', started_at = now() WHERE id = $1`, r.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.sched.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := f.st.Q.GetRun(ctx, r.ID)
+	ns, err := f.st.Q.RecentNotifications(ctx)
+	if got.State != "failed" || err != nil || len(ns) != 1 || ns[0].Title != "*.example.com failed: interrupted by a restart" {
+		t.Fatalf("run %s, notifications %+v %v", got.State, ns, err)
 	}
 }

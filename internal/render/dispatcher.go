@@ -49,6 +49,9 @@ type Dispatcher struct {
 	Log     *slog.Logger
 	Max     int // the most renders in flight, below the Fingerprinter's own limit
 	Tick    time.Duration
+	// OnWritten is called after a render is written: technologies and
+	// versions may have moved. Nil does nothing.
+	OnWritten func()
 
 	mu         sync.Mutex
 	limit      int // current concurrency, halved on a 429
@@ -250,6 +253,9 @@ func (d *Dispatcher) render(ctx context.Context, t Target) {
 	}
 	if out.ScreenshotError != nil {
 		d.Log.WarnContext(ctx, "render: unusable screenshot, render kept without it", "url", t.URL(), "err", out.ScreenshotError)
+	}
+	if d.OnWritten != nil {
+		d.OnWritten()
 	}
 	d.mu.Lock()
 	d.successes++

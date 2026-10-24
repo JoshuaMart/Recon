@@ -3,6 +3,7 @@
 package api
 
 import (
+	"net/url"
 	"testing"
 	"time"
 
@@ -82,6 +83,45 @@ func TestChangesFeed(t *testing.T) {
 	}
 	if code, body := c.do("GET", "/api/changes?cursor=nope", ""); code != 400 {
 		t.Fatalf("bad cursor = %d %v", code, body)
+	}
+
+	count := func(path string) int {
+		t.Helper()
+		code, f := c.do("GET", path, "")
+		if code != 200 {
+			t.Fatalf("%s = %d %v", path, code, f)
+		}
+		return len(f["changes"].([]any))
+	}
+	if n := count("/api/changes?q=" + url.QueryEscape("change:new_asset host:a.acme.com")); n != 1 {
+		t.Fatalf("change: and the language together = %d rows, want 1", n)
+	}
+	if n := count("/api/changes?q=change:port_opened"); n != 0 {
+		t.Fatalf("change:port_opened = %d rows, want 0", n)
+	}
+	_, before := c.do("GET", "/api/changes/unseen", "")
+
+	// Marking as seen what a query shows leaves the rest unseen.
+	if code, r := c.do("POST", "/api/changes/seen", `{"q":"host:a.acme.com"}`); code != 200 || r["assets"].(float64) != 1 {
+		t.Fatalf("mark seen = %d %v", code, r)
+	}
+	if n := count("/api/changes?q=host:a.acme.com"); n != 0 {
+		t.Fatalf("a seen asset's changes still unseen: %d", n)
+	}
+	if n := count("/api/changes?view=all&q=host:a.acme.com"); n != 1 {
+		t.Fatalf("the all view lost a seen change: %d", n)
+	}
+	if n := count("/api/changes?q=host:b.acme.com"); n != 1 {
+		t.Fatalf("b was marked seen too: %d", n)
+	}
+	_, after := c.do("GET", "/api/changes/unseen", "")
+	if after["unseen"].(float64) != before["unseen"].(float64)-1 {
+		t.Fatalf("unseen %v then %v, want one less", before["unseen"], after["unseen"])
+	}
+
+	// change: belongs to the feed: search refuses it rather than ignoring it.
+	if code, body := c.do("GET", "/api/search?q=change:new_asset", ""); code != 400 || body["error"] != "unknown_field" {
+		t.Fatalf("change: in search = %d %v", code, body)
 	}
 }
 

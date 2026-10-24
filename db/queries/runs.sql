@@ -29,11 +29,12 @@ WHERE id = sqlc.arg(id) AND state = 'running';
 -- name: TimeOutRuns :many
 UPDATE run SET state = 'timed_out', finished_at = sqlc.arg(now)::timestamptz, error = 'deadline passed'
 WHERE state = 'running' AND deadline < sqlc.arg(now)::timestamptz
-RETURNING id;
+RETURNING id, kind, wildcard_id;
 
--- name: FailInterruptedRuns :execrows
+-- name: FailInterruptedRuns :many
 UPDATE run SET state = 'failed', finished_at = sqlc.arg(now)::timestamptz, error = 'interrupted: the process stopped during the run'
-WHERE state = 'running';
+WHERE state = 'running'
+RETURNING id, kind, wildcard_id;
 
 -- name: GetRun :one
 SELECT * FROM run WHERE id = $1;

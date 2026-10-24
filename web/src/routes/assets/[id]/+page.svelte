@@ -3,6 +3,7 @@
 	import { api, ApiError, qs, shotURL } from '#lib/api.ts';
 	import { ago, dateTime, displayKey, due, label } from '#lib/format.ts';
 	import type { Program, Triage } from '#lib/types.ts';
+	import { refreshUnseen } from '#lib/unseen.svelte.ts';
 	import Status from '#lib/components/Status.svelte';
 	import Lifecycle from '#lib/components/Lifecycle.svelte';
 
@@ -108,8 +109,8 @@
 			note = a.triage.note ?? '';
 			noteSaved = true;
 			api.get<Program>(`/api/programs/${a.asset.program_id}`).then((p) => (program = p));
-			// Opening it is what seen means.
-			if (a.triage.state === 'new' || !a.triage.seen_at) triage({ seen: true });
+			// Opening it is what seen means: its changes so far stop being unseen.
+			triage({ seen: true }).then(refreshUnseen);
 		} catch (e) {
 			error = e instanceof ApiError && e.status === 404 ? 'No asset has this id.' : String(e);
 		}

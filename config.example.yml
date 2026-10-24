@@ -56,6 +56,13 @@ screenshots:
   dir: /data/screenshots
   quality: 70          # JPEG quality of the stored image and thumbnail
   keep: 3              # visually distinct screenshots kept per asset
+  disk_threshold: 0.9  # share of the filesystem in use past which a health notification fires
+
+notify:
+  discord_url: ""      # a Discord webhook URL; empty sends nothing there
+  webhook_url: ""      # a generic webhook receiving a JSON body
+  webhook_header: ""   # "Name: value" sent with each webhook call
+  broken_after: 5m     # how long a component fails before it is announced
 
 fastrecon:
   url: ""              # a `fastrecon serve` instance; empty leaves runs queued

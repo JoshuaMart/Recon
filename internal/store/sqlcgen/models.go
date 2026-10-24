@@ -108,9 +108,33 @@ type Change struct {
 	At        time.Time  `json:"at"`
 }
 
+type HealthState struct {
+	Component    string     `json:"component"`
+	FailingSince *time.Time `json:"failing_since"`
+	Announced    bool       `json:"announced"`
+	Detail       *string    `json:"detail"`
+}
+
 type Instance struct {
 	ID        bool      `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+type Notification struct {
+	ID        int64      `json:"id"`
+	Kind      string     `json:"kind"`
+	GroupKey  string     `json:"group_key"`
+	Title     string     `json:"title"`
+	Items     []string   `json:"items"`
+	Total     int32      `json:"total"`
+	Link      *string    `json:"link"`
+	CreatedAt time.Time  `json:"created_at"`
+	DueAt     time.Time  `json:"due_at"`
+	SentAt    *time.Time `json:"sent_at"`
+	Outcome   *string    `json:"outcome"`
+	Attempts  int32      `json:"attempts"`
+	Delivered []string   `json:"delivered"`
+	LastError *string    `json:"last_error"`
 }
 
 type Observation struct {
@@ -164,13 +188,20 @@ type Run struct {
 }
 
 type SavedSearch struct {
-	ID        uuid.UUID `json:"id"`
-	Name      string    `json:"name"`
-	Query     string    `json:"query"`
-	View      string    `json:"view"`
-	Alert     bool      `json:"alert"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID          uuid.UUID  `json:"id"`
+	Name        string     `json:"name"`
+	Query       string     `json:"query"`
+	View        string     `json:"view"`
+	Alert       bool       `json:"alert"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	EvaluatedAt *time.Time `json:"evaluated_at"`
+}
+
+type SavedSearchMatch struct {
+	SavedSearchID uuid.UUID `json:"saved_search_id"`
+	AssetID       uuid.UUID `json:"asset_id"`
+	Since         time.Time `json:"since"`
 }
 
 type ScopeRule struct {

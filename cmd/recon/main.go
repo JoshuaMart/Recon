@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -27,6 +28,7 @@ import (
 	"github.com/JoshuaMart/recon/internal/ingest"
 	"github.com/JoshuaMart/recon/internal/inventory"
 	"github.com/JoshuaMart/recon/internal/lifecycle"
+	"github.com/JoshuaMart/recon/internal/notify"
 	"github.com/JoshuaMart/recon/internal/render"
 	"github.com/JoshuaMart/recon/internal/runs"
 	"github.com/JoshuaMart/recon/internal/scope"
@@ -210,8 +212,13 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, st *store.S
 		log.InfoContext(ctx, "no GeoLite2 files: ASN and country stay empty", "dir", cfg.GeoIPDir)
 	}
 	defer geo.Close()
+	evaluator := &notify.Evaluator{
+		Pool: st.Pool, Q: st.Q, Log: log, Now: time.Now, PublicURL: cfg.PublicURL,
+		Every: 15 * time.Minute, Settle: 10 * time.Second,
+	}
+	deps.Evaluate = evaluator.Kick
 	sched := &runs.Scheduler{
-		GeoIP: geo,
+		GeoIP: geo, PublicURL: cfg.PublicURL, OnIngested: evaluator.Kick,
 		Store: st, Log: log, Slots: cfg.FastRecon.Slots, Timeout: cfg.FastRecon.Timeout,
 		Ports: cfg.Discovery.Ports, Tick: 5 * time.Second, Now: time.Now,
 		Verification: vc.Enabled, Batch: vc.Batch, ArchiveAfter: vc.ArchiveAfter, Cadences: &cad, Signatures: sigs,
@@ -255,6 +262,7 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, st *store.S
 				},
 			},
 			Scanner: fingerprint.NewClient(rc.URL, rc.Timeout), Log: log, Max: rc.Concurrency, Tick: 2 * time.Second,
+			OnWritten: evaluator.Kick,
 		}
 		deps.Storage, deps.Render = storage, disp.Status
 		spawn(disp.Loop)
@@ -262,6 +270,44 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, st *store.S
 		log.InfoContext(ctx, "no render.url: renders stay due")
 	}
 	spawn(func(ctx context.Context) { maintain(ctx, log, st) })
+	spawn(evaluator.Loop)
+	var channels []notify.Channel
+	if n := cfg.Notify; n.DiscordURL != "" {
+		channels = append(channels, notify.Discord{URL: n.DiscordURL})
+	}
+	if n := cfg.Notify; n.WebhookURL != "" {
+		channels = append(channels, notify.Webhook{URL: n.WebhookURL, Header: n.WebhookHeader})
+	}
+	if len(channels) == 0 {
+		log.InfoContext(ctx, "no notification channel: notifications are listed on the settings page only")
+	}
+	for _, c := range channels {
+		deps.Channels = append(deps.Channels, c.Name())
+	}
+	spawn((&notify.Sender{Q: st.Q, Channels: channels, Log: log, Now: time.Now, Tick: 15 * time.Second}).Loop)
+	var checks []notify.Check
+	if f := cfg.FastRecon; f.URL != "" {
+		checks = append(checks, notify.HTTPCheck("FastRecon", strings.TrimRight(f.URL, "/")+"/healthz"))
+	}
+	if deps.Render != nil {
+		// Screenshots are only written with a renderer: without one their
+		// directory may not even exist.
+		checks = append(checks, notify.DiskCheck("screenshot disk", cfg.Screenshots.Dir, cfg.Screenshots.DiskThreshold))
+		render := deps.Render
+		checks = append(checks, notify.Check{Component: "Fingerprinter", Probe: func(context.Context) (bool, string) {
+			if render().Healthy {
+				return true, ""
+			}
+			return false, "unreachable"
+		}})
+	}
+	if cfg.ScopesExtractor.URL != "" {
+		checks = append(checks, notify.SyncCheck(st.Q))
+	}
+	spawn((&notify.Watcher{
+		Pool: st.Pool, Q: st.Q, Log: log, Now: time.Now, Checks: checks,
+		BrokenAfter: cfg.Notify.BrokenAfter, Tick: time.Minute,
+	}).Loop)
 	// Off the startup path: the API answers while the inventory catches up.
 	spawn(func(ctx context.Context) {
 		r, err := inventory.RefreshAll(ctx, st.Pool, st.Q, time.Now().UTC().Truncate(time.Microsecond))

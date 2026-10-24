@@ -38,7 +38,10 @@ The API key is set in the config. A write with the cookie must also carry an `Or
 | `GET /api/screenshots/{key}` | one screenshot or thumbnail, only for a key a row names, as `image/jpeg` with `nosniff` |
 | `POST /api/assets/{id}/render`, `POST /api/assets/{id}/probe` | render now (high priority), probe now (its host goes first in line for `full`) |
 | `PATCH /api/assets/{id}/triage` | triage state, tags, note, mark as seen |
-| `GET /api/changes?program=&cursor=` | the changes feed, newest first |
+| `GET /api/changes?q=&view=unseen\|all&run=&cursor=` | the changes feed, newest first |
+| `GET /api/changes/unseen` | how many changes are unseen, for the navigation |
+| `POST /api/changes/seen` | mark as seen what a feed query shows (`q`, `run`) |
+| `GET /api/notifications` | the last notifications, sent or not, and the channels set |
 | `GET /api/programs`, `POST /api/programs` | list, create a manual program |
 | `GET /api/programs/{id}`, `PATCH /api/programs/{id}` | one program, edit state or auto-scan |
 | `POST /api/programs/{id}/rules` | open a local rule |

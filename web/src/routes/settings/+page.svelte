@@ -2,8 +2,8 @@
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import { api, ApiError, qs } from '#lib/api.ts';
-	import { bytes, count, label } from '#lib/format.ts';
-	import type { SavedSearch } from '#lib/types.ts';
+	import { ago, bytes, count, dateTime, label } from '#lib/format.ts';
+	import type { Notification, SavedSearch } from '#lib/types.ts';
 
 	type Config = Record<string, any>;
 	interface Settings {
@@ -26,6 +26,14 @@
 	let editing = $state('');
 	let editName = $state('');
 	let deleting = $state('');
+	let notifications = $state<Notification[]>([]);
+	let channels = $state<string[]>([]);
+
+	async function loadNotifications() {
+		const r = await api.get<{ notifications: Notification[]; channels: string[] }>('/api/notifications');
+		notifications = r.notifications;
+		channels = r.channels;
+	}
 
 	async function loadSaved() {
 		saved = (await api.get<{ saved_searches: SavedSearch[] }>('/api/saved-searches')).saved_searches;
@@ -43,7 +51,11 @@
 		api.get<Settings>('/api/settings').then((s) => (settings = s));
 		loadHealth();
 		loadSaved();
-		const t = setInterval(loadHealth, 30_000);
+		loadNotifications();
+		const t = setInterval(() => {
+			loadHealth();
+			loadNotifications();
+		}, 30_000);
 		return () => clearInterval(t);
 	});
 
@@ -93,7 +105,7 @@
 		return unit(s, 'second');
 	}
 
-	type Kind = 'text' | 'mono' | 'duration' | 'secret' | 'flag' | 'ports' | 'origins';
+	type Kind = 'text' | 'mono' | 'duration' | 'secret' | 'flag' | 'ports' | 'origins' | 'share';
 	interface Row {
 		key: string;
 		label: string;
@@ -162,7 +174,17 @@
 				{ key: 'render.timeout', label: 'Timeout', kind: 'duration' },
 				{ key: 'screenshots.dir', label: 'Screenshots', kind: 'mono' },
 				{ key: 'screenshots.keep', label: 'Kept per asset', kind: 'text' },
-				{ key: 'screenshots.quality', label: 'JPEG quality', kind: 'text' }
+				{ key: 'screenshots.quality', label: 'JPEG quality', kind: 'text' },
+				{ key: 'screenshots.disk_threshold', label: 'Disk alert past', kind: 'share', hint: 'of the filesystem in use' }
+			]
+		},
+		{
+			title: 'Notifications',
+			rows: [
+				{ key: 'notify.discord_url', label: 'Discord webhook', kind: 'secret' },
+				{ key: 'notify.webhook_url', label: 'Webhook', kind: 'secret' },
+				{ key: 'notify.webhook_header', label: 'Webhook header', kind: 'secret' },
+				{ key: 'notify.broken_after', label: 'Broken after', kind: 'duration', hint: 'a component failing this long is announced' }
 			]
 		}
 	];
@@ -289,6 +311,37 @@
 		{/if}
 	</section>
 
+	<section class="panel" aria-label="Notifications">
+		<div class="panel-head">
+			<h2>Notifications</h2>
+			<span class="muted small">
+				{channels.length ? 'Sent to ' + channels.join(' and ') : 'No channel set: kept here only'}
+			</span>
+		</div>
+		{#if notifications.length}
+			<ul class="notes">
+				{#each notifications as n (n.id)}
+					<li>
+						<time class="muted num" datetime={n.created_at} title={dateTime(n.created_at)}>{ago(n.created_at)}</time>
+						<div class="what">
+							<span>{n.kind === 'saved_search' ? `Saved search “${n.title}”: ${n.total} new match${n.total === 1 ? '' : 'es'}` : n.title}</span>
+							{#if n.items.length}
+								<span class="mono muted q">{n.items.slice(0, 3).join(' · ')}{n.total > 3 ? ` · and ${n.total - 3} more` : ''}</span>
+							{/if}
+							{#if n.last_error}<span class="err small">{n.last_error}</span>{/if}
+						</div>
+						<span class="badge {n.outcome === 'sent' ? 'ok' : n.outcome === 'failed' ? 'bad' : n.outcome === 'no_channel' ? '' : 'info'}">
+							{n.outcome === 'sent' ? 'sent' : n.outcome === 'failed' ? 'failed' : n.outcome === 'no_channel' ? 'not sent' : n.attempts ? 'retrying' : 'waiting'}
+						</span>
+						{#if n.link}<a class="small" href={n.link.replace(/^https?:\/\/[^/]+/, '')}>Open</a>{/if}
+					</li>
+				{/each}
+			</ul>
+		{:else}
+			<p class="muted small">None yet. A recon that ends, an alerting saved search with new matches or a component failing for a while sends one.</p>
+		{/if}
+	</section>
+
 	{#if settings}
 		<div class="groups">
 			{#each shownGroups as g (g.title)}
@@ -307,6 +360,8 @@
 										<span class="badge {v?.set ? 'ok' : 'warn'}">{v?.set ? 'set' : 'not set'}</span>
 									{:else if r.kind === 'flag'}
 										<span class="badge {v ? 'ok' : ''}">{v ? 'on' : 'off'}</span>
+									{:else if r.kind === 'share'}
+										<span class="num">{Math.round(Number(v) * 100)}%</span>
 									{:else if r.kind === 'duration'}
 										<span class="num" title={String(v)}>{duration(String(v))}</span>
 									{:else if r.kind === 'ports'}
@@ -455,6 +510,46 @@
 		background: var(--bad-bg);
 		border-color: transparent;
 		color: oklch(0.9 0.06 25);
+	}
+	.panel-head {
+		display: flex;
+		justify-content: space-between;
+		align-items: baseline;
+		gap: 12px;
+		flex-wrap: wrap;
+	}
+	.panel-head h2 {
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+		color: var(--faint);
+	}
+	.notes {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+	}
+	.notes li {
+		display: flex;
+		gap: 12px;
+		align-items: center;
+		padding: 9px 0;
+		border-top: 1px solid var(--line-soft);
+		font-size: 13px;
+	}
+	.notes li:first-child {
+		border-top: 0;
+		padding-top: 0;
+	}
+	.notes time {
+		flex: 0 0 110px;
+		font-size: 12px;
+	}
+	.err {
+		color: oklch(0.8 0.1 25);
 	}
 	.groups {
 		display: grid;

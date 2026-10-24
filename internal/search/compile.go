@@ -39,8 +39,10 @@ type Compiled struct {
 // Compile turns a tree into a parameterized condition. A nil tree is TRUE.
 // Every value is a bind parameter: nothing from the query reaches the SQL
 // text but field names, which come from the registry.
-func Compile(n Node, now time.Time) (Compiled, error) {
-	c := &compiler{now: now}
+func Compile(n Node, now time.Time) (Compiled, error) { return compile(n, now, false) }
+
+func compile(n Node, now time.Time, feed bool) (Compiled, error) {
+	c := &compiler{now: now, feed: feed}
 	if n == nil {
 		return Compiled{Where: "TRUE"}, nil
 	}
@@ -73,6 +75,8 @@ func asksKind(n Node, positive bool) bool {
 type compiler struct {
 	now  time.Time
 	args []any
+	// feed allows change:, which reads the change a feed row is.
+	feed bool
 }
 
 func (c *compiler) arg(v any) string {
@@ -122,6 +126,12 @@ func (c *compiler) term(t Term) (string, error) {
 		return c.anyOf(t, func(v Value) (string, error) {
 			return c.text("ac.headers ->> "+c.arg(strings.ToLower(name)), t.Field, v)
 		})
+	}
+	if t.Field == changeField.Name {
+		if !c.feed {
+			return "", &QueryError{Kind: "unknown_field", Field: t.Field, Detail: "change: filters the changes feed only"}
+		}
+		return c.enum(changeField, t)
 	}
 	f, ok := fields[t.Field]
 	if !ok {

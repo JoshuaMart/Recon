@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import { onMount } from 'svelte';
 	import Logo from './Logo.svelte';
+	import { refreshUnseen, unseen } from '#lib/unseen.svelte.ts';
 
 	interface Health {
 		status: string;
@@ -31,7 +32,11 @@
 
 	onMount(() => {
 		load();
-		const t = setInterval(load, 30_000);
+		refreshUnseen();
+		const t = setInterval(() => {
+			load();
+			refreshUnseen();
+		}, 30_000);
 		return () => clearInterval(t);
 	});
 
@@ -56,7 +61,12 @@
 		<a class="brand" href="/"><Logo /> Recon</a>
 		<nav aria-label="Main">
 			{#each links as l (l.href)}
-				<a class="nav" href={l.href} aria-current={current(l) ? 'page' : undefined}>{l.label}</a>
+				<a class="nav" href={l.href} aria-current={current(l) ? 'page' : undefined}>
+					{l.label}
+					{#if l.href === '/changes' && unseen.count > 0}
+						<span class="count num" aria-label="{unseen.count}{unseen.capped ? ' or more' : ''} unseen">{unseen.count}{unseen.capped ? '+' : ''}</span>
+					{/if}
+				</a>
 			{/each}
 		</nav>
 		{#if health}
@@ -109,6 +119,15 @@
 		border-radius: 6px;
 		display: inline-flex;
 		align-items: center;
+		gap: 6px;
+	}
+	.count {
+		font-size: 11px;
+		font-weight: 600;
+		padding: 1px 6px;
+		border-radius: 999px;
+		background: var(--info-bg);
+		color: var(--info-text);
 	}
 	.nav[aria-current='page'] {
 		color: var(--text-strong);

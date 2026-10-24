@@ -18,6 +18,7 @@ import (
 	"github.com/JoshuaMart/recon/internal/enrich"
 	"github.com/JoshuaMart/recon/internal/ingest"
 	"github.com/JoshuaMart/recon/internal/lifecycle"
+	"github.com/JoshuaMart/recon/internal/notify"
 	"github.com/JoshuaMart/recon/internal/scope"
 	"github.com/JoshuaMart/recon/internal/store"
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
@@ -47,19 +48,43 @@ type Scheduler struct {
 	Rand         func() float64
 	GeoIP        *enrich.GeoIP
 
+	// PublicURL is where a recon message's link points.
+	PublicURL string
+	// OnIngested is called after a report is ingested: the saved searches
+	// have something new to evaluate. Nil does nothing.
+	OnIngested func()
+
 	wg sync.WaitGroup
 }
 
 func (s *Scheduler) now() time.Time { return s.Now().UTC().Truncate(time.Microsecond) }
 
 // Recover fails the runs a stopped process left running: a synchronous call
-// does not survive its caller.
+// does not survive its caller. A recon among them is announced, as any recon
+// that ends.
 func (s *Scheduler) Recover(ctx context.Context) error {
-	n, err := s.Store.Q.FailInterruptedRuns(ctx, s.now())
-	if err == nil && n > 0 {
-		s.Log.WarnContext(ctx, "runs interrupted by a restart marked failed", "count", n)
+	tx, err := s.Store.Pool.Begin(ctx)
+	if err != nil {
+		return err
 	}
-	return err
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.Store.Q.WithTx(tx)
+	now := s.now()
+	rows, err := q.FailInterruptedRuns(ctx, now)
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		if r.Kind == "recon" {
+			if err := s.reconEnded(ctx, q, r.ID, r.WildcardID, "failed: interrupted by a restart", now); err != nil {
+				return err
+			}
+		}
+	}
+	if len(rows) > 0 {
+		s.Log.WarnContext(ctx, "runs interrupted by a restart marked failed", "count", len(rows))
+	}
+	return tx.Commit(ctx)
 }
 
 // Loop sweeps and starts runs every tick until ctx ends, then waits for the
@@ -82,12 +107,8 @@ func (s *Scheduler) Loop(ctx context.Context) {
 
 // Pass times out overdue runs and starts as many queued ones as slots allow.
 func (s *Scheduler) Pass(ctx context.Context) error {
-	ids, err := s.Store.Q.TimeOutRuns(ctx, s.now())
-	if err != nil {
+	if err := s.timeOut(ctx); err != nil {
 		return err
-	}
-	for _, id := range ids {
-		s.Log.WarnContext(ctx, "run timed out", "run", id)
 	}
 	if err := s.archiveStale(ctx); err != nil {
 		return err
@@ -131,7 +152,7 @@ func (s *Scheduler) execute(callCtx context.Context, r sqlcgen.Run) {
 	log := s.Log.With("run", r.ID, "kind", r.Kind)
 	req, apex, err := s.request(ctx, r)
 	if err != nil {
-		s.finish(ctx, r.ID, "failed", err.Error(), nil, nil)
+		s.finish(ctx, r, "failed", err.Error(), nil, nil)
 		log.ErrorContext(ctx, "run not started", "err", err)
 		return
 	}
@@ -144,17 +165,20 @@ func (s *Scheduler) execute(callCtx context.Context, r sqlcgen.Run) {
 		}
 		return
 	case err != nil:
-		s.finish(ctx, r.ID, "failed", err.Error(), nil, nil)
+		s.finish(ctx, r, "failed", err.Error(), nil, nil)
 		log.ErrorContext(ctx, "run failed", "err", err)
 		return
 	}
 	sum, err := s.ingest(ctx, r, apex, raw)
 	if err != nil {
-		s.finish(ctx, r.ID, "failed", "ingestion: "+err.Error(), nil, nil)
+		s.finish(ctx, r, "failed", "ingestion: "+err.Error(), nil, nil)
 		log.ErrorContext(ctx, "ingestion failed", "err", err)
 		return
 	}
 	log.InfoContext(ctx, "run ingested", "summary", sum)
+	if s.OnIngested != nil {
+		s.OnIngested()
+	}
 }
 
 // enqueueVerification queues one run over the due hosts of the program holding
@@ -323,15 +347,88 @@ func (s *Scheduler) ingest(ctx context.Context, r sqlcgen.Run, apex string, raw 
 			return ingest.Summary{}, err
 		}
 	}
+	if r.Kind == "recon" {
+		title := fmt.Sprintf("*.%s finished: %s hosts, %s new, %s new services",
+			apex, notify.Count(sum.Hosts), notify.Count(sum.AssetsCreated), notify.Count(sum.ServicesCreated))
+		if err := s.notifyRecon(ctx, q, r.ID, title, "/changes?run="+r.ID.String(), now); err != nil {
+			return ingest.Summary{}, err
+		}
+	}
 	return sum, tx.Commit(ctx)
 }
 
-func (s *Scheduler) finish(ctx context.Context, id uuid.UUID, state, msg string, meta, sum []byte) {
-	if _, err := s.Store.Q.FinishRun(ctx, sqlcgen.FinishRunParams{
-		ID: id, State: state, Now: s.now(), Error: &msg, ReportMeta: meta, Ingest: sum,
-	}); err != nil {
-		s.Log.ErrorContext(ctx, "finishing run", "run", id, "err", err)
+// notifyRecon records the message of a recon that ended: you started it, or
+// auto-scan did.
+func (s *Scheduler) notifyRecon(ctx context.Context, q *sqlcgen.Queries, id uuid.UUID, title, path string, now time.Time) error {
+	return notify.Enqueue(ctx, q, notify.Event{
+		Kind: notify.KindReconFinished, Group: "run:" + id.String(), Title: title,
+		Link: strings.TrimRight(s.PublicURL, "/") + path,
+	}, now)
+}
+
+// reconEnded writes the message of a recon that ended without a report.
+func (s *Scheduler) reconEnded(ctx context.Context, q *sqlcgen.Queries, id uuid.UUID, wildcard *uuid.UUID, what string, now time.Time) error {
+	name := "a recon"
+	if wildcard != nil {
+		if w, err := q.GetWildcard(ctx, *wildcard); err == nil {
+			name = "*." + w.Apex
+		}
 	}
+	if r := []rune(what); len(r) > 200 {
+		what = string(r[:199]) + "…"
+	}
+	return s.notifyRecon(ctx, q, id, name+" "+what, "/runs/"+id.String(), now)
+}
+
+// finish ends a run that brought no report, with its message when it is a
+// recon, in one transaction.
+func (s *Scheduler) finish(ctx context.Context, r sqlcgen.Run, state, msg string, meta, sum []byte) {
+	err := func() error {
+		tx, err := s.Store.Pool.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		q := s.Store.Q.WithTx(tx)
+		now := s.now()
+		n, err := q.FinishRun(ctx, sqlcgen.FinishRunParams{ID: r.ID, State: state, Now: now, Error: &msg, ReportMeta: meta, Ingest: sum})
+		if err != nil {
+			return err
+		}
+		if n > 0 && r.Kind == "recon" {
+			if err := s.reconEnded(ctx, q, r.ID, r.WildcardID, "failed: "+msg, now); err != nil {
+				return err
+			}
+		}
+		return tx.Commit(ctx)
+	}()
+	if err != nil {
+		s.Log.ErrorContext(ctx, "finishing run", "run", r.ID, "err", err)
+	}
+}
+
+// timeOut ends the runs past their deadline, a recon with its message.
+func (s *Scheduler) timeOut(ctx context.Context) error {
+	tx, err := s.Store.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := s.Store.Q.WithTx(tx)
+	now := s.now()
+	rows, err := q.TimeOutRuns(ctx, now)
+	if err != nil {
+		return err
+	}
+	for _, r := range rows {
+		s.Log.WarnContext(ctx, "run timed out", "run", r.ID)
+		if r.Kind == "recon" {
+			if err := s.reconEnded(ctx, q, r.ID, r.WildcardID, "timed out", now); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 // EnqueueRecon queues a recon on a wildcard. queued is false, with a reason,

@@ -40,9 +40,9 @@ A `change` row is written in the same transaction as what caused it
 | Notification | Why it earns one | Sent |
 |---|---|---|
 | **A name from a certificate now serves HTTP** | the freshness advantage: a service going live minutes after its certificate | 5 min after the first one, grouped per program |
-| **A wildcard recon finished** | you started it, or auto-scan did | when the run ends, one message with counts |
+| **A wildcard recon finished** | you started it, or auto-scan did | when the run ends, one message with counts, or with the error if it failed |
 | **An alerting saved search has new matches** | you asked for it | 15 min after the first new match, grouped per search |
-| **Something is broken** | ScopesExtractor sync, CT feed, Fingerprinter or a runner failing for more than 5 minutes, disk past its threshold | once when it starts, once when it recovers |
+| **Something is broken** | ScopesExtractor sync, CT feed, Fingerprinter or FastRecon (`/healthz`) failing for more than 5 minutes, the screenshot disk past its threshold | once when it starts, once when it recovers |
 
 The windows are trailing: the first event opens the window, and everything arriving before it closes
 goes in the same message.
@@ -66,6 +66,12 @@ Only an asset that **enters** the result set notifies. One that leaves loses its
 notifies again if it comes back. The timer pass catches queries whose result moves with time alone, such
 as `first_seen:<24h`.
 
+Switching an alert on records what the search already matches **without** notifying: the alert is about
+what comes next, not about the inventory you already have. Editing its query or view does the same.
+
+A search selecting more than 100 000 assets is not evaluated, and says so in the log: a sample would
+differ from pass to pass and read as assets entering.
+
 ## Messages
 
 One message per window, never one per asset:
@@ -78,17 +84,48 @@ One message per window, never one per asset:
         jenkins.acme.com:8080 (2.401), ci.foo.io:443 (2.387)
 ```
 
+## Delivery
+
+```mermaid
+flowchart LR
+  E[event, in the transaction<br/>that caused it] --> O{open notification<br/>for its group?}
+  O -->|yes| A[append the item]
+  O -->|no| N[new notification,<br/>due at now + window]
+  A --> Q[(notification)]
+  N --> Q
+  Q -->|due| S[sender, every 15 s] --> C[channels]
+  C -->|failed| R[retry in 1, 5, 15 min,<br/>6 attempts at most]
+```
+
+| Rule | Why |
+|---|---|
+| the notification row is written in the transaction of its event | a crash between the two neither loses nor invents one |
+| a group is a program, a saved search, a run or a component | what the windows above group by |
+| ten items per message, then `and N more` | one message per window, whatever its size |
+| a retry goes to the channels that did not get it | one channel down must not make the others repeat |
+| no channel configured: the row is kept and marked as such | the settings page lists the last notifications either way |
+| Discord mentions are disabled | a page title from a target must not ping anyone |
+
 ## Outputs
 
 Channels are set in the config file, not in the UI.
 
-| Channel | Config |
-|---|---|
-| Discord webhook | URL |
-| Generic webhook | URL, optional header, JSON body |
+| Channel | Config | Body |
+|---|---|---|
+| Discord webhook | `notify.discord_url` | the message text |
+| Generic webhook | `notify.webhook_url`, optional `notify.webhook_header` | JSON: `kind`, `title`, `items`, `more`, `link`, `text` |
 
 ## The changes feed
 
 The feed lists changes, newest first, filterable with the same [search language](/architecture/search/)
-plus `change:` (`change:port_opened,tech_version_changed`). A change is unseen while it is newer than
-the asset's `seen_at`, and opening an asset marks everything on it as seen.
+plus `change:` (`change:port_opened,tech_version_changed`), which only the feed accepts. A change is
+unseen while it is newer than the asset's `seen_at`, and opening an asset marks everything on it as seen.
+
+| View | Shows |
+|---|---|
+| **Unseen** (the default) | the unseen changes of what the query matches; the navigation shows their count |
+| **All** | every change of what the query matches |
+| a run, `?run=` | the changes one run caused, the link a recon message carries |
+
+**Mark as seen** sets `seen_at` on the assets behind the unseen changes the query shows, as opening each
+of them would.

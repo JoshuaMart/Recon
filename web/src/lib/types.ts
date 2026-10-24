@@ -111,6 +111,7 @@ export interface Change {
 	after: unknown;
 	run_id: string | null;
 	at: string;
+	unseen?: boolean;
 }
 
 export interface SavedSearch {
@@ -129,4 +130,20 @@ export interface Triage {
 	tags: string[];
 	note: string | null;
 	seen_at: string | null;
+}
+
+export interface Notification {
+	id: number;
+	kind: string;
+	group_key: string;
+	title: string;
+	items: string[];
+	total: number;
+	link: string | null;
+	created_at: string;
+	due_at: string;
+	sent_at: string | null;
+	outcome: string | null;
+	attempts: number;
+	last_error: string | null;
 }

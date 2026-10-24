@@ -108,17 +108,36 @@ func (q *Queries) EnqueueRun(ctx context.Context, arg EnqueueRunParams) (Run, er
 	return i, err
 }
 
-const failInterruptedRuns = `-- name: FailInterruptedRuns :execrows
+const failInterruptedRuns = `-- name: FailInterruptedRuns :many
 UPDATE run SET state = 'failed', finished_at = $1::timestamptz, error = 'interrupted: the process stopped during the run'
 WHERE state = 'running'
+RETURNING id, kind, wildcard_id
 `
 
-func (q *Queries) FailInterruptedRuns(ctx context.Context, now time.Time) (int64, error) {
-	result, err := q.db.Exec(ctx, failInterruptedRuns, now)
+type FailInterruptedRunsRow struct {
+	ID         uuid.UUID  `json:"id"`
+	Kind       string     `json:"kind"`
+	WildcardID *uuid.UUID `json:"wildcard_id"`
+}
+
+func (q *Queries) FailInterruptedRuns(ctx context.Context, now time.Time) ([]FailInterruptedRunsRow, error) {
+	rows, err := q.db.Query(ctx, failInterruptedRuns, now)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return result.RowsAffected(), nil
+	defer rows.Close()
+	var items []FailInterruptedRunsRow
+	for rows.Next() {
+		var i FailInterruptedRunsRow
+		if err := rows.Scan(&i.ID, &i.Kind, &i.WildcardID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const finishRun = `-- name: FinishRun :execrows
@@ -399,22 +418,28 @@ func (q *Queries) RequeueRun(ctx context.Context, id uuid.UUID) error {
 const timeOutRuns = `-- name: TimeOutRuns :many
 UPDATE run SET state = 'timed_out', finished_at = $1::timestamptz, error = 'deadline passed'
 WHERE state = 'running' AND deadline < $1::timestamptz
-RETURNING id
+RETURNING id, kind, wildcard_id
 `
 
-func (q *Queries) TimeOutRuns(ctx context.Context, now time.Time) ([]uuid.UUID, error) {
+type TimeOutRunsRow struct {
+	ID         uuid.UUID  `json:"id"`
+	Kind       string     `json:"kind"`
+	WildcardID *uuid.UUID `json:"wildcard_id"`
+}
+
+func (q *Queries) TimeOutRuns(ctx context.Context, now time.Time) ([]TimeOutRunsRow, error) {
 	rows, err := q.db.Query(ctx, timeOutRuns, now)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []uuid.UUID
+	var items []TimeOutRunsRow
 	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
+		var i TimeOutRunsRow
+		if err := rows.Scan(&i.ID, &i.Kind, &i.WildcardID); err != nil {
 			return nil, err
 		}
-		items = append(items, id)
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

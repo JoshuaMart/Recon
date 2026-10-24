@@ -12,10 +12,19 @@ import (
 	"github.com/google/uuid"
 )
 
+const clearMatches = `-- name: ClearMatches :exec
+DELETE FROM saved_search_match WHERE saved_search_id = $1
+`
+
+func (q *Queries) ClearMatches(ctx context.Context, savedSearchID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, clearMatches, savedSearchID)
+	return err
+}
+
 const createSavedSearch = `-- name: CreateSavedSearch :one
 INSERT INTO saved_search (name, query, view, alert, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $5::timestamptz, $5::timestamptz)
-RETURNING id, name, query, view, alert, created_at, updated_at
+RETURNING id, name, query, view, alert, created_at, updated_at, evaluated_at
 `
 
 type CreateSavedSearchParams struct {
@@ -43,6 +52,7 @@ func (q *Queries) CreateSavedSearch(ctx context.Context, arg CreateSavedSearchPa
 		&i.Alert,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.EvaluatedAt,
 	)
 	return i, err
 }
@@ -60,7 +70,7 @@ func (q *Queries) DeleteSavedSearch(ctx context.Context, id uuid.UUID) (int64, e
 }
 
 const getSavedSearch = `-- name: GetSavedSearch :one
-SELECT id, name, query, view, alert, created_at, updated_at FROM saved_search WHERE id = $1 FOR UPDATE
+SELECT id, name, query, view, alert, created_at, updated_at, evaluated_at FROM saved_search WHERE id = $1 FOR UPDATE
 `
 
 func (q *Queries) GetSavedSearch(ctx context.Context, id uuid.UUID) (SavedSearch, error) {
@@ -74,12 +84,13 @@ func (q *Queries) GetSavedSearch(ctx context.Context, id uuid.UUID) (SavedSearch
 		&i.Alert,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.EvaluatedAt,
 	)
 	return i, err
 }
 
 const listSavedSearches = `-- name: ListSavedSearches :many
-SELECT id, name, query, view, alert, created_at, updated_at FROM saved_search ORDER BY name
+SELECT id, name, query, view, alert, created_at, updated_at, evaluated_at FROM saved_search ORDER BY name
 `
 
 func (q *Queries) ListSavedSearches(ctx context.Context) ([]SavedSearch, error) {
@@ -99,6 +110,7 @@ func (q *Queries) ListSavedSearches(ctx context.Context) ([]SavedSearch, error) 
 			&i.Alert,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.EvaluatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -111,8 +123,9 @@ func (q *Queries) ListSavedSearches(ctx context.Context) ([]SavedSearch, error) 
 }
 
 const updateSavedSearch = `-- name: UpdateSavedSearch :one
-UPDATE saved_search SET name = $2, query = $3, view = $4, alert = $5, updated_at = $6::timestamptz
-WHERE id = $1 RETURNING id, name, query, view, alert, created_at, updated_at
+UPDATE saved_search SET name = $2, query = $3, view = $4, alert = $5, updated_at = $6::timestamptz,
+  evaluated_at = CASE WHEN $5 AND (NOT alert OR query <> $3 OR view <> $4) THEN NULL ELSE evaluated_at END
+WHERE id = $1 RETURNING id, name, query, view, alert, created_at, updated_at, evaluated_at
 `
 
 type UpdateSavedSearchParams struct {
@@ -124,6 +137,8 @@ type UpdateSavedSearchParams struct {
 	Now   time.Time `json:"now"`
 }
 
+// Switching the alert on, or changing what an alerting search asks, starts it
+// over: the next evaluation records the matches without notifying.
 func (q *Queries) UpdateSavedSearch(ctx context.Context, arg UpdateSavedSearchParams) (SavedSearch, error) {
 	row := q.db.QueryRow(ctx, updateSavedSearch,
 		arg.ID,
@@ -142,6 +157,7 @@ func (q *Queries) UpdateSavedSearch(ctx context.Context, arg UpdateSavedSearchPa
 		&i.Alert,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.EvaluatedAt,
 	)
 	return i, err
 }

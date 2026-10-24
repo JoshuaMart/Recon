@@ -345,3 +345,47 @@ func (r Row) URL() string {
 	}
 	return ""
 }
+
+// Querier runs a query: a pool or a transaction.
+type Querier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// MaxMatches bounds what one alerting search tracks. A variable for tests.
+var MaxMatches = 100_000
+
+// ErrTooManyMatches is a search selecting more than MaxMatches assets: a
+// sample of them would change from pass to pass, and the evaluator would
+// take what it left out last time for assets that just entered.
+var ErrTooManyMatches = errors.New("the search selects too many assets to alert on")
+
+// Matches lists the assets a request selects, as its view counts them: the
+// hosts view answers with hosts, the others with the matching assets. Past
+// MaxMatches it answers ErrTooManyMatches rather than a partial list.
+func Matches(ctx context.Context, db Querier, req Request) ([]uuid.UUID, error) {
+	if req.View == "" {
+		req.View = ViewServices
+	}
+	_, c, err := prepare(req)
+	if err != nil {
+		return nil, err
+	}
+	args := append(c.Args, MaxMatches+1)
+	lim := "$" + strconv.Itoa(len(args))
+	sql := `SELECT ac.asset_id FROM ` + From + ` WHERE ` + c.Where + ` LIMIT ` + lim
+	if req.View == ViewHosts {
+		sql = `WITH m AS (SELECT ac.program_id, ac.host FROM ` + From + ` WHERE ` + c.Where + `)
+SELECT h.asset_id FROM asset_current h
+WHERE h.kind IN ('fqdn', 'ip') AND EXISTS (SELECT 1 FROM m WHERE m.program_id = h.program_id AND m.host = h.host)
+LIMIT ` + lim
+	}
+	rows, err := db.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err == nil && len(ids) > MaxMatches {
+		return nil, ErrTooManyMatches
+	}
+	return ids, err
+}

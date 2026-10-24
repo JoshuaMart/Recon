@@ -49,6 +49,10 @@ type Deps struct {
 	Settings any
 	// UI serves the interface on every path the API does not own; nil serves none.
 	UI http.Handler
+	// Evaluate asks for a saved search evaluation soon; nil does nothing.
+	Evaluate func()
+	// Channels names the notification channels set, for the settings page.
+	Channels []string
 }
 
 type server struct{ Deps }
@@ -91,6 +95,9 @@ func Handler(d Deps) http.Handler {
 		authed("POST /api/sync", s.runSync)
 		authed("POST /api/assets/{id}/probe", s.probeAsset)
 		authed("GET /api/changes", s.listChanges)
+		authed("GET /api/changes/unseen", s.unseenChanges)
+		authed("POST /api/changes/seen", s.markChangesSeen)
+		authed("GET /api/notifications", s.listNotifications)
 		authed("GET /api/saved-searches", s.listSavedSearches)
 		authed("POST /api/saved-searches", s.createSavedSearch)
 		authed("PATCH /api/saved-searches/{id}", s.patchSavedSearch)

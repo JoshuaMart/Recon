@@ -23,12 +23,3 @@ VALUES (sqlc.arg(asset_id), sqlc.arg(program_id), sqlc.arg(kind), sqlc.narg(laye
 -- name: ListAssetChanges :many
 SELECT * FROM change WHERE asset_id = $1 ORDER BY at DESC, id DESC;
 
--- The feed, newest first, walked with a keyset cursor on (at, id).
--- name: ListChanges :many
-SELECT c.id, c.asset_id, c.program_id, p.name AS program, a.kind AS asset_kind, a.key AS asset_key,
-       c.kind, c.layer, c.before, c.after, c.run_id, c.at
-FROM change c JOIN asset a ON a.id = c.asset_id JOIN program p ON p.id = c.program_id
-WHERE (sqlc.narg(program_id)::uuid IS NULL OR c.program_id = sqlc.narg(program_id))
-  AND (sqlc.narg(before_at)::timestamptz IS NULL OR (c.at, c.id) < (sqlc.narg(before_at), sqlc.narg(before_id)::bigint))
-ORDER BY c.at DESC, c.id DESC
-LIMIT sqlc.arg(lim);
