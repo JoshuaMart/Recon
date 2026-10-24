@@ -34,3 +34,12 @@ export function without(q: string, index: number): string {
 	ts.splice(index, 1);
 	return ts.join(' ');
 }
+
+/** A literal as the language prints it, quoted when bare it would end early
+ * or read as something else. The same rule as the Go printer. */
+export function quote(s: string): string {
+	if (s === '' || /[ \t,()"@]/.test(s) || s.includes('..') || /^[<>/]/.test(s)) {
+		return '"' + s.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+	}
+	return s;
+}

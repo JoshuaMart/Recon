@@ -4,12 +4,13 @@
 	import { onMount } from 'svelte';
 	import { api, ApiError, qs } from '#lib/api.ts';
 	import { ago, count, displayKey, label, splitTech } from '#lib/format.ts';
-	import { terms, toggle, without } from '#lib/query.ts';
-	import type { FacetValue, Page, Row, SavedSearch } from '#lib/types.ts';
+	import { quote, terms, toggle, without } from '#lib/query.ts';
+	import type { FacetValue, Page, Program, Row, SavedSearch } from '#lib/types.ts';
 	import Shot from '#lib/components/Shot.svelte';
 	import Status from '#lib/components/Status.svelte';
 	import Lifecycle from '#lib/components/Lifecycle.svelte';
 	import More from '#lib/components/More.svelte';
+	import Combobox from '#lib/components/Combobox.svelte';
 
 	interface Field {
 		name: string;
@@ -41,6 +42,10 @@
 	let more = $state(false);
 	let saved = $state<SavedSearch[]>([]);
 	let fields = $state<Field[]>([]);
+	let programs = $state<Program[]>([]);
+	// Facets opened past their first values.
+	let expanded = $state<Record<string, boolean>>({});
+	const shown = 5;
 	let saving = $state(false);
 	let saveName = $state('');
 	let saveError = $state('');
@@ -101,6 +106,7 @@
 	onMount(() => {
 		loadSaved();
 		api.get<{ fields: Field[] }>('/api/search/fields').then((r) => (fields = r.fields));
+		api.get<{ programs: Program[] }>('/api/programs').then((r) => (programs = r.programs));
 		const onKey = (e: KeyboardEvent) => {
 			const t = e.target as HTMLElement;
 			if (e.key === '/' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName)) {
@@ -132,6 +138,17 @@
 	}
 
 	const chips = $derived(terms(q));
+	const programTerm = (name: string) => 'program:' + quote(name);
+	// Every program, not only the 20 the facet counts: the count is shown
+	// when this query has one.
+	const programOptions = $derived.by(() => {
+		const counts = new Map((facets.programs ?? []).map((f) => [f.value, f.count]));
+		return programs
+			.filter((p) => p.state !== 'archived' || counts.has(p.name))
+			.map((p) => ({ value: p.name, label: p.name, hint: counts.has(p.name) ? count(counts.get(p.name)!) : undefined }))
+			.sort((a, b) => (counts.get(b.value) ?? -1) - (counts.get(a.value) ?? -1) || a.label.localeCompare(b.label));
+	});
+	const pickedPrograms = $derived(chips.filter((t) => t.startsWith('program:')));
 	const active = $derived(new Set(chips));
 	const exportURL = (format: string) => '/api/search/export' + qs({ q, view, format });
 	const savedMatch = $derived(saved.find((s) => s.query === q && s.view === view));
@@ -275,15 +292,47 @@
 	<div class="body">
 		<aside aria-label="Facets" class="facets">
 			{#each facetOrder as [k, title] (k)}
-				{#if facets[k]?.length}
+				{#if k === 'programs'}
+					{#if programs.length}
+						<section>
+							<h2 class="label">{title}</h2>
+							<Combobox
+								id="facet-program"
+								label="Filter by program"
+								placeholder="Filter by program"
+								options={programOptions}
+								full
+								onpick={(o) => {
+									const t = programTerm(o.value);
+									if (!active.has(t)) nav({ q: toggle(q, t) });
+								}}
+							/>
+							{#each pickedPrograms as t (t)}
+								<button class="facet" type="button" aria-pressed="true" onclick={() => nav({ q: toggle(q, t) })} aria-label="Remove {t}">
+									<span class="v">{t.slice('program:'.length).replace(/^"|"$/g, '')}</span>
+									<span class="c" aria-hidden="true">×</span>
+								</button>
+							{/each}
+						</section>
+					{/if}
+				{:else if facets[k]?.length}
+					{@const all = facets[k]}
+					{@const open = expanded[k]}
 					<section>
 						<h2 class="label">{title}</h2>
-						{#each facets[k] as v (v.term)}
-							<button class="facet" type="button" aria-pressed={active.has(v.term)} onclick={() => nav({ q: toggle(q, v.term) })}>
-								<span class="v">{label(v.value)}</span>
-								<span class="num c">{count(v.count)}</span>
-							</button>
+						{#each all as v, i (v.term)}
+							{#if open || i < shown || active.has(v.term)}
+								<button class="facet" type="button" aria-pressed={active.has(v.term)} onclick={() => nav({ q: toggle(q, v.term) })}>
+									<span class="v">{label(v.value)}</span>
+									<span class="num c">{count(v.count)}</span>
+								</button>
+							{/if}
 						{/each}
+						{#if all.length > shown}
+							<button class="facet-more" type="button" aria-expanded={!!open} onclick={() => (expanded[k] = !open)}>
+								{open ? 'Show less' : `Show ${all.length - shown} more`}
+							</button>
+						{/if}
 					</section>
 				{/if}
 			{/each}
@@ -569,6 +618,22 @@
 		cursor: pointer;
 		text-align: start;
 		align-items: center;
+	}
+	.facet-more {
+		font: inherit;
+		font-size: 12px;
+		text-align: start;
+		height: 26px;
+		padding: 0 8px;
+		border: 0;
+		border-radius: 6px;
+		background: transparent;
+		color: var(--accent-text);
+		cursor: pointer;
+		width: max-content;
+	}
+	.facets :global(.combo) {
+		margin-bottom: 4px;
 	}
 	.facet[aria-pressed='true'] {
 		background: oklch(0.26 0.04 162);

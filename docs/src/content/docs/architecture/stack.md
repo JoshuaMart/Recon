@@ -71,7 +71,7 @@ A FastRecon run is started by a **runner**, behind one interface:
 | Runner | Where FastRecon runs | How the report comes back |
 |---|---|---|
 | `serve` | `fastrecon serve`, a service of the compose stack | as the response to `POST /run`, synchronously |
-| `scaleway` (later) | a Scaleway Serverless Job, to scan from other addresses than the VPS | webhook to `public_url`, which must then be reachable over HTTPS |
+| `scaleway` ([phase 9](/architecture/roadmap/)) | a Scaleway Serverless Job, to scan from other addresses than the VPS | webhook to `public_url`, which must then be reachable over HTTPS |
 
 `serve` is the default and needs no credential on Recon's side beyond the FastRecon token: no Docker
 socket, no webhook, no target URL. One `fastrecon serve` instance runs one run at a time and answers

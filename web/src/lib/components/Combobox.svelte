@@ -11,8 +11,20 @@
 		value = $bindable(''),
 		label,
 		placeholder = 'Any',
-		id
-	}: { options: Option[]; value?: string; label: string; placeholder?: string; id: string } = $props();
+		id,
+		onpick,
+		full = false
+	}: {
+		options: Option[];
+		value?: string;
+		label: string;
+		placeholder?: string;
+		id: string;
+		// With onpick the field is an action, not a filter: a pick is handed
+		// over and the field empties.
+		onpick?: (o: Option) => void;
+		full?: boolean;
+	} = $props();
 
 	let text = $state('');
 	let open = $state(false);
@@ -34,6 +46,13 @@
 	});
 
 	function choose(o: Option | undefined) {
+		if (onpick) {
+			if (o) onpick(o);
+			value = '';
+			open = false;
+			text = '';
+			return;
+		}
 		value = o?.value ?? '';
 		open = false;
 		text = o?.label ?? '';
@@ -67,7 +86,7 @@
 	}
 </script>
 
-<div class="combo">
+<div class="combo" class:full>
 	<label for={id} class="sr-only">{label}</label>
 	<input
 		{id}
@@ -132,6 +151,9 @@
 		width: 280px;
 		max-width: 100%;
 	}
+	.combo.full {
+		width: 100%;
+	}
 	input {
 		width: 100%;
 		padding-right: 30px;
@@ -158,7 +180,7 @@
 		top: calc(100% + 6px);
 		left: 0;
 		right: 0;
-		min-width: 280px;
+		min-width: min(280px, 100%);
 		max-height: 320px;
 		overflow-y: auto;
 		margin: 0;

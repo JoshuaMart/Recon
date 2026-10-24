@@ -195,8 +195,8 @@
 						<select id="rk" class="select" bind:value={rule.kind}><option value="include">Include</option><option value="exclude">Exclude</option></select>
 						<label class="sr-only" for="rm">Matcher</label>
 						<select id="rm" class="select" bind:value={rule.matcher}>
-							<option value="apex">Apex (a domain and below)</option>
-							<option value="fqdn">One name</option>
+							<option value="apex">apex</option>
+							<option value="fqdn">fqdn</option>
 							<option value="url_prefix">URL prefix</option>
 							<option value="cidr">CIDR</option>
 						</select>
