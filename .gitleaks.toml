@@ -1,2 +1,7 @@
 [extend]
 useDefault = true
+
+# The placeholder key of the tests and of the CI compose check.
+[[allowlists]]
+description = "test key"
+regexes = ['''0123456789abcdef0123456789abcdef''']
