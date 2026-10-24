@@ -142,6 +142,7 @@ queue is not an incident, so it does not notify.
 | Fingerprinter answer | Observation | Due date |
 |---|---|---|
 | `200`, result | written, normalized and deduplicated, `outcome = ok` | the periodic cadence (21 d) |
+| `200`, result without a usable screenshot, on a page that is not a redirect | written as above: the page answered | as a target failure: 6 h, doubled, capped at the periodic cadence. A loaded renderer drops the capture when the page takes its whole budget |
 | `500` "no responses received", `500` "navigating to …" (a `net::ERR_*` or a page that never loads), `408` scan timed out | the target did not answer the browser: `outcome = error` with the reason (`connection_refused`, `timeout`, …), which counts toward `unobservable`, never `inactive` | retried after 6 h, doubled on each failure in a row, capped at the periodic cadence |
 | `429` | **nothing**: the service was busy, the asset did nothing | unchanged |
 | any other `5xx`, connection refused, Recon's own timeout | nothing: a fault of the renderer, not of the target | unchanged, dispatcher pauses |

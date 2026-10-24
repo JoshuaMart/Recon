@@ -30,10 +30,11 @@ WHERE ac.next_render_at <= sqlc.arg(now)::timestamptz AND p.state = 'active'
   AND ac.scope_status = 'in_scope' AND ac.lifecycle <> 'archived'
 GROUP BY ac.render_priority ORDER BY ac.render_priority DESC;
 
--- A render written: the failures in a row end with it.
+-- A render written, with the failures in a row it leaves: none, or one more
+-- when the page gave no capture.
 -- name: ScheduleRender :exec
 UPDATE asset_current SET next_render_at = sqlc.arg(next)::timestamptz, render_priority = 0,
-  last_render_at = COALESCE(sqlc.narg(rendered_at), last_render_at), render_failures = 0
+  last_render_at = COALESCE(sqlc.narg(rendered_at), last_render_at), render_failures = sqlc.arg(failures)::smallint
 WHERE asset_id = sqlc.arg(asset_id);
 
 -- A target the browser could not render: one more failure in a row, which

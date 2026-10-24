@@ -330,19 +330,26 @@ func (q *Queries) RerenderAll(ctx context.Context, now time.Time) (int64, error)
 
 const scheduleRender = `-- name: ScheduleRender :exec
 UPDATE asset_current SET next_render_at = $1::timestamptz, render_priority = 0,
-  last_render_at = COALESCE($2, last_render_at), render_failures = 0
-WHERE asset_id = $3
+  last_render_at = COALESCE($2, last_render_at), render_failures = $3::smallint
+WHERE asset_id = $4
 `
 
 type ScheduleRenderParams struct {
 	Next       time.Time  `json:"next"`
 	RenderedAt *time.Time `json:"rendered_at"`
+	Failures   int16      `json:"failures"`
 	AssetID    uuid.UUID  `json:"asset_id"`
 }
 
-// A render written: the failures in a row end with it.
+// A render written, with the failures in a row it leaves: none, or one more
+// when the page gave no capture.
 func (q *Queries) ScheduleRender(ctx context.Context, arg ScheduleRenderParams) error {
-	_, err := q.db.Exec(ctx, scheduleRender, arg.Next, arg.RenderedAt, arg.AssetID)
+	_, err := q.db.Exec(ctx, scheduleRender,
+		arg.Next,
+		arg.RenderedAt,
+		arg.Failures,
+		arg.AssetID,
+	)
 	return err
 }
 

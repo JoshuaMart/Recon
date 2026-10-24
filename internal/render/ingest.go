@@ -99,6 +99,15 @@ func (w *Writer) retryAfter(failures int) time.Duration {
 	return min(d, w.Settings.Periodic)
 }
 
+// redirect says whether the render ended on a redirect, which has no page.
+func redirect(r *fingerprint.Result) bool {
+	if len(r.Chain) == 0 {
+		return false
+	}
+	c := r.Chain[len(r.Chain)-1].StatusCode
+	return c >= 300 && c < 400
+}
+
 // Outcome is what writing a render did.
 type Outcome struct {
 	Changed        bool
@@ -165,7 +174,15 @@ func (w *Writer) Result(ctx context.Context, t Target, r *fingerprint.Result) (O
 	if _, _, err := wr.Settle(ctx, inventory.Settle{ID: t.AssetID, Kind: t.Kind, Outcomes: map[string]string{"fingerprint": "ok"}, Verify: true}); err != nil {
 		return out, err
 	}
-	if err := q.ScheduleRender(ctx, sqlcgen.ScheduleRenderParams{AssetID: t.AssetID, Next: w.after(w.Settings.Periodic), RenderedAt: &now}); err != nil {
+	// A page without its capture is rendered again soon, backing off like a
+	// failure: a loaded renderer drops it when the page takes its whole
+	// budget. A redirect has none to give, its target is rendered on its own.
+	next, failures := w.after(w.Settings.Periodic), int16(0)
+	if shot == nil && !redirect(r) {
+		failures = min(cur.RenderFailures, 32766) + 1
+		next = w.after(w.retryAfter(int(failures)))
+	}
+	if err := q.ScheduleRender(ctx, sqlcgen.ScheduleRenderParams{AssetID: t.AssetID, Next: next, RenderedAt: &now, Failures: failures}); err != nil {
 		return out, err
 	}
 	if shot != nil {

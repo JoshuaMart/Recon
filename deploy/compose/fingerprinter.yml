@@ -21,7 +21,8 @@ browser:
     - "http://chrome-3:9222"
   # About three times concurrent_scans, so saturation shows as a 429 rather than a timeout.
   max_pages: 180
-  page_timeout: 15s
+  # Loading and capture share it: at 15 s a slow page lost its screenshot.
+  page_timeout: 30s
 
 detections:
   yaml_dir: "./detections/"

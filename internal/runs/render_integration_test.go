@@ -268,6 +268,44 @@ func TestTargetFailuresInARowBackOff(t *testing.T) {
 	}
 }
 
+// A page the renderer answered without its capture is rendered again soon; a
+// redirect, which has none to give, is not.
+func TestARenderWithoutItsCaptureIsRetried(t *testing.T) {
+	r := renderSetup(t)
+	shot := false
+	r.scanner.result = func(url string) (*fingerprint.Result, error) {
+		res := page(t, "1.24", 240)
+		if url == "http://api.example.com/" {
+			res.Chain = append(res.Chain, fingerprint.Hop{URL: url, StatusCode: 301})
+			res.Screenshot = nil
+		} else if !shot {
+			res.Screenshot = nil
+		}
+		return res, nil
+	}
+	svc := func(key string) sqlcgen.AssetCurrent { return current(t, r.st, r.program.ID, "service", key) }
+	now := func() time.Time { return r.clock.now().Truncate(time.Microsecond) }
+	for i, want := range []time.Duration{6 * time.Hour, 12 * time.Hour} {
+		r.drain(t)
+		s := svc("api.example.com:443/tcp")
+		if s.RenderFailures != int16(i+1) || s.LastRenderAt == nil || s.NextRenderAt.Sub(now()) != want {
+			t.Fatalf("render %d without a capture: count %d last %v next in %s, want %s",
+				i+1, s.RenderFailures, s.LastRenderAt, s.NextRenderAt.Sub(now()), want)
+		}
+		if i == 0 {
+			if red := svc("api.example.com:80/tcp"); red.RenderFailures != 0 || red.NextRenderAt.Before(now().Add(20*24*time.Hour)) {
+				t.Errorf("a redirect without a capture: count %d next %v, want the periodic cadence", red.RenderFailures, red.NextRenderAt)
+			}
+		}
+		r.clock.set(*s.NextRenderAt)
+	}
+	shot = true
+	r.drain(t)
+	if s := svc("api.example.com:443/tcp"); s.RenderFailures != 0 || s.NextRenderAt.Before(now().Add(20*24*time.Hour)) {
+		t.Errorf("with its capture: count %d next %v, want 0 and the periodic cadence", s.RenderFailures, s.NextRenderAt)
+	}
+}
+
 func TestMajorVersionMakesEverythingDue(t *testing.T) {
 	r := renderSetup(t)
 	r.scanner.result = func(string) (*fingerprint.Result, error) { return page(t, "1.24", 240), nil }
