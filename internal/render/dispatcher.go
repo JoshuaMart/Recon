@@ -53,11 +53,14 @@ type Dispatcher struct {
 	// versions may have moved. Nil does nothing.
 	OnWritten func()
 
-	mu         sync.Mutex
-	limit      int // current concurrency, halved on a 429
-	successes  int
-	paused     time.Time
-	inflight   map[uuid.UUID]bool
+	mu        sync.Mutex
+	limit     int // current concurrency, halved on a 429
+	successes int
+	paused    time.Time
+	inflight  map[uuid.UUID]bool
+	// released holds the assets whose render ended since this pass read the
+	// queue: the read is stale for them, it may still call them due.
+	released   map[uuid.UUID]bool
 	hosts      map[string]int
 	domains    map[string]int
 	healthy    bool
@@ -85,6 +88,7 @@ func (d *Dispatcher) init() {
 	defer d.mu.Unlock()
 	if d.inflight == nil {
 		d.inflight, d.hosts, d.domains = map[uuid.UUID]bool{}, map[string]int{}, map[string]int{}
+		d.released = map[uuid.UUID]bool{}
 		d.limit = d.Max
 	}
 }
@@ -137,6 +141,8 @@ func (d *Dispatcher) Pass(ctx context.Context) error {
 
 	d.mu.Lock()
 	free := d.limit - len(d.inflight)
+	// Ended before this read, a render's write is in it.
+	clear(d.released)
 	d.mu.Unlock()
 	// Page through the queue until the free slots are filled: a head of the
 	// queue held back by politeness (a thousand vhosts of one domain) must not
@@ -197,7 +203,7 @@ func (d *Dispatcher) claim(t Target) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	dom := domainOf(t.Host)
-	if d.inflight[t.AssetID] || d.hosts[t.Host] >= perHost || d.domains[dom] >= perDomain {
+	if d.inflight[t.AssetID] || d.released[t.AssetID] || d.hosts[t.Host] >= perHost || d.domains[dom] >= perDomain {
 		return false
 	}
 	d.inflight[t.AssetID] = true
@@ -210,6 +216,7 @@ func (d *Dispatcher) release(t Target) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	delete(d.inflight, t.AssetID)
+	d.released[t.AssetID] = true
 	d.hosts[t.Host]--
 	d.domains[domainOf(t.Host)]--
 }

@@ -49,7 +49,15 @@ func TestPoliteness(t *testing.T) {
 		t.Error("an asset in flight is claimed once")
 	}
 	d.release(same)
+	// The pass read the queue before this render was written: it would
+	// render the asset twice.
+	if d.claim(same) {
+		t.Error("an asset released during a pass was claimed again by it")
+	}
+	d.mu.Lock()
+	clear(d.released)
+	d.mu.Unlock()
 	if !d.claim(same) {
-		t.Error("a released asset can be claimed again")
+		t.Error("a released asset can be claimed again by the next pass")
 	}
 }
