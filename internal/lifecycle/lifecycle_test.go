@@ -1,341 +1,149 @@
-package lifecycle_test
+package lifecycle
 
 import (
 	"testing"
 	"time"
-
-	"github.com/JoshuaMart/recon/internal/lifecycle"
 )
 
-var start = time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+var t0 = time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 
-// run folds a series of outcomes spaced by one delay each.
-func run(gap time.Duration, outcomes ...string) lifecycle.Counters {
-	var counters lifecycle.Counters
-	at := start
-	for _, outcome := range outcomes {
-		counters = lifecycle.Next(counters, outcome, at)
-		at = at.Add(gap)
+// run applies a sequence of (outcome, at) on one layer of an fqdn and returns
+// the states it went through.
+func run(start string, steps ...struct {
+	outcome string
+	after   time.Duration
+},
+) []string {
+	state, l := start, Layer{}
+	var out []string
+	for _, s := range steps {
+		now := t0.Add(s.after)
+		l = Apply(l, s.outcome, now, true)
+		state = Verdict("fqdn", state, map[string]Layer{"dns": l}, s.outcome == OK, now)
+		out = append(out, state)
 	}
-	return counters
+	return out
 }
 
-func TestThreeInformativeFailuresOverADayAreADeath(t *testing.T) {
-	counters := run(12*time.Hour, lifecycle.OutcomeFail, lifecycle.OutcomeFail, lifecycle.OutcomeFail)
-
-	if counters.State != lifecycle.LayerDead {
-		t.Fatalf("three nxdomains spread over 24 h left the layer %q", counters.State)
-	}
-	if state := lifecycle.Decide(lifecycle.Active, true, lifecycle.Reach{}, counters); state != lifecycle.Inactive {
-		t.Fatalf("a dead layer left the asset %q", state)
-	}
+type step = struct {
+	outcome string
+	after   time.Duration
 }
 
-// The floor is the assertion, not the count: the backoff curve can deliver three
-// failures inside ninety minutes, too short to tell an outage from a disappearance.
-func TestThreeInformativeFailuresInNinetyMinutesAreNot(t *testing.T) {
-	counters := run(45*time.Minute, lifecycle.OutcomeFail, lifecycle.OutcomeFail, lifecycle.OutcomeFail)
-
-	if counters.State != lifecycle.LayerFailing {
-		t.Fatalf("three nxdomains inside 90 min left the layer %q, and the 24 h floor is what separates them", counters.State)
+func equal(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
 	}
-	if state := lifecycle.Decide(lifecycle.Active, true, lifecycle.Reach{}, counters); state != lifecycle.Flapping {
-		t.Fatalf("the asset went to %q on failures that span less than a day", state)
-	}
-}
-
-// The one signal that must never conclude anything: a timeout is indistinguishable
-// from a filter or ban, and reading it as death archives every host behind a firewall
-// that started dropping.
-func TestARepeatedTimeoutNeverProducesADeath(t *testing.T) {
-	counters := run(24*time.Hour,
-		lifecycle.OutcomeError, lifecycle.OutcomeError, lifecycle.OutcomeError,
-		lifecycle.OutcomeError, lifecycle.OutcomeError, lifecycle.OutcomeError)
-
-	if counters.State == lifecycle.LayerDead {
-		t.Fatal("six timeouts spread over six days produced a death")
-	}
-	if counters.NonInformative != 6 {
-		t.Fatalf("the non informative counter is %d, and it is what phase 3 reads", counters.NonInformative)
-	}
-	if state := lifecycle.Decide(lifecycle.Active, true, lifecycle.Reach{}, counters); state != lifecycle.Active {
-		t.Fatalf("timeouts moved the asset to %q, when nothing was measured at all", state)
-	}
-}
-
-func TestOneSuccessIsTheWholeOfTheRecoveryRule(t *testing.T) {
-	failing := run(12*time.Hour, lifecycle.OutcomeFail, lifecycle.OutcomeFail)
-	if state := lifecycle.Decide(lifecycle.Active, true, lifecycle.Reach{}, failing); state != lifecycle.Flapping {
-		t.Fatalf("two failures left the asset %q", state)
-	}
-
-	recovered := lifecycle.Next(failing, lifecycle.OutcomeOK, start.Add(36*time.Hour))
-	if recovered.Informative != 0 || !recovered.FirstFailureAt.IsZero() {
-		t.Fatalf("a success left %d failures and a first failure at %s",
-			recovered.Informative, recovered.FirstFailureAt)
-	}
-	if state := lifecycle.Decide(lifecycle.Flapping, true, lifecycle.Reach{}, recovered); state != lifecycle.Active {
-		t.Fatalf("a single success left the asset %q", state)
-	}
-}
-
-// A timeout between two nxdomains is not proof the name came back, so it must not
-// reset the run. Only a success does, which makes "consecutive" mean what the
-// threshold needs.
-func TestATimeoutDoesNotEraseAFailureRun(t *testing.T) {
-	counters := run(12*time.Hour,
-		lifecycle.OutcomeFail, lifecycle.OutcomeError, lifecycle.OutcomeFail, lifecycle.OutcomeFail)
-
-	if counters.Informative != 3 {
-		t.Fatalf("the informative run is %d, and an inconclusive probe in the middle is what it survived", counters.Informative)
-	}
-	if counters.State != lifecycle.LayerDead {
-		t.Fatalf("the layer is %q after three qualified failures spread over 36 h", counters.State)
-	}
-}
-
-// The case forcing the most-severe rule: with a dead origin behind a fronted asset,
-// dns and tcp succeed at the edge. If a success elsewhere restored the asset, the only
-// death signal behind a CDN would be lost.
-func TestADeadOriginBehindALiveEdgeStillDies(t *testing.T) {
-	edge := run(24*time.Hour, lifecycle.OutcomeOK)
-	origin := run(12*time.Hour, lifecycle.OutcomeFail, lifecycle.OutcomeFail, lifecycle.OutcomeFail)
-
-	if state := lifecycle.Decide(lifecycle.Active, true, lifecycle.Reach{}, edge, edge, origin); state != lifecycle.Inactive {
-		t.Fatalf("dns ok, tcp ok and a dead http layer gave %q", state)
-	}
-}
-
-func TestALayerNothingMeasuredHasNoOpinion(t *testing.T) {
-	healthy := run(0, lifecycle.OutcomeOK)
-
-	if state := lifecycle.Decide(lifecycle.Candidate, true, lifecycle.Reach{}, healthy, lifecycle.Counters{}); state != lifecycle.Active {
-		t.Fatalf("an unmeasured layer beside a healthy one gave %q", state)
-	}
-	if state := lifecycle.Decide(lifecycle.Candidate, true, lifecycle.Reach{}, lifecycle.Counters{}); state != lifecycle.Candidate {
-		t.Fatalf("an asset nothing has probed became %q", state)
-	}
-}
-
-// Archived is out of the scheduler and returns on rediscovery. It has no due date, so
-// only an enumeration finding it again can reach it.
-func TestArchivedComesBackOnASuccessAndOnNothingElse(t *testing.T) {
-	if !lifecycle.Revived(lifecycle.Archived, lifecycle.OutcomeOK) {
-		t.Fatal("a success on an archived asset is a rediscovery, and nothing else can ever reach it")
-	}
-
-	// A failure is not a rediscovery: an observation that measured nothing, or a death,
-	// must not pull an asset back into a queue it left.
-	for _, outcome := range []string{lifecycle.OutcomeError, lifecycle.OutcomeFail} {
-		if lifecycle.Revived(lifecycle.Archived, outcome) {
-			t.Errorf("%q reopened an archived asset", outcome)
+	for i := range a {
+		if a[i] != b[i] {
+			return false
 		}
 	}
+	return true
+}
 
-	// And the reading is on the observation, never the counters: a layer keeps its last
-	// conclusive state, so an archived asset with a healthy layer would be revived by a
-	// timeout.
-	healthy := run(0, lifecycle.OutcomeOK)
-	if state := lifecycle.Decide(lifecycle.Archived, true, lifecycle.Reach{}, healthy); state != lifecycle.Archived {
-		t.Fatalf("a stale healthy layer reopened an archived asset as %q", state)
+func TestTakenDownGoesFlappingThenInactive(t *testing.T) {
+	got := run(Active,
+		step{Fail, 0}, step{Fail, 15 * time.Minute}, step{Fail, 75 * time.Minute},
+		step{Fail, 7 * time.Hour}, step{Fail, 25 * time.Hour})
+	want := []string{Flapping, Flapping, Flapping, Flapping, Inactive}
+	if !equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
 	}
 }
 
-func TestACurveClampsRatherThanWraps(t *testing.T) {
-	last := lifecycle.CandidateCurve[len(lifecycle.CandidateCurve)-1]
-	if got := lifecycle.CandidateCurve.At(99); got != last {
-		t.Fatalf("tier 99 gave %s, and wrapping to the first rung would probe a hopeless candidate every minute forever", got)
-	}
-	if got := lifecycle.CandidateCurve.At(-1); got != lifecycle.CandidateCurve[0] {
-		t.Fatalf("tier -1 gave %s", got)
+func TestThreeFailuresInAnHourAreNotADeath(t *testing.T) {
+	got := run(Active, step{Fail, 0}, step{Fail, 15 * time.Minute}, step{Fail, time.Hour})
+	if got[2] != Flapping {
+		t.Errorf("got %v: the 24 h floor must hold", got)
 	}
 }
 
-// Proportional, not additive: the curves span four orders of magnitude, and fifteen
-// minutes of jitter deletes a one-minute rung.
-func TestJitterNeverSwallowsAShortRung(t *testing.T) {
-	cadence := lifecycle.DefaultCadence()
-
-	short := cadence.Spread(time.Minute, 0.999)
-	if short > 75*time.Second {
-		t.Fatalf("a one minute rung became %s", short)
-	}
-	long := cadence.Spread(24*time.Hour, 1)
-	if long < 24*time.Hour || long > 24*time.Hour+cadence.Jitter {
-		t.Fatalf("a day became %s, outside [24h, 24h15m]", long)
-	}
-	if exact := cadence.Spread(24*time.Hour, 0); exact != 24*time.Hour {
-		t.Fatalf("no jitter gave %s", exact)
+func TestOneSuccessRestores(t *testing.T) {
+	got := run(Active, step{Fail, 0}, step{Fail, time.Hour}, step{OK, 2 * time.Hour})
+	if got[2] != Active {
+		t.Errorf("got %v", got)
 	}
 }
 
-func TestTheTierResetsWhenAnAssetComesBack(t *testing.T) {
-	if tier := lifecycle.NextTier(lifecycle.Flapping, 2); tier != 3 {
-		t.Fatalf("a failing asset went to tier %d", tier)
+func TestTimeoutsNeverKill(t *testing.T) {
+	var steps []step
+	for i := range 20 {
+		steps = append(steps, step{Error, time.Duration(i) * 24 * time.Hour})
 	}
-	if tier := lifecycle.NextTier(lifecycle.Active, 6); tier != 0 {
-		t.Fatalf("an asset that came back kept tier %d, so it would be probed on the widened delay it earned while it was down", tier)
-	}
-}
-
-func TestACandidateBudgetRunsOut(t *testing.T) {
-	if lifecycle.Exhausted(start, start.Add(13*24*time.Hour)) {
-		t.Fatal("a candidate was given up on at 13 days")
-	}
-	if !lifecycle.Exhausted(start, start.Add(15*24*time.Hour)) {
-		t.Fatal("a candidate was still being chased at 15 days")
-	}
-}
-
-// A backoff curve is a confirmation rate written for the cheap rung. Unchanged on the
-// expensive one it means a hundred connections per host four times an hour, on an asset
-// failing on a layer where the target answers and the sweep costs everything.
-func TestTheExpensiveRungHasAFloorAndTheCheapOneDoesNot(t *testing.T) {
-	cadence := lifecycle.DefaultCadence()
-
-	if got := cadence.Delay(lifecycle.Flapping, lifecycle.RungResolve, 0); got != 15*time.Minute {
-		t.Errorf("the cheap rung waits %s, and the curve asks for 15m", got)
-	}
-	if got := cadence.Delay(lifecycle.Flapping, lifecycle.RungFull, 0); got != cadence.FullFloor {
-		t.Errorf("the expensive rung waits %s, want the floor of %s", got, cadence.FullFloor)
-	}
-	// The floor is on a backoff, never on the schedule: an asset that is fine
-	// keeps its nominal cadence.
-	if got := cadence.Delay(lifecycle.Active, lifecycle.RungFull, 0); got != cadence.Full {
-		t.Errorf("a healthy asset waits %s, want the nominal %s", got, cadence.Full)
-	}
-	// And a rung the curve already puts past the floor is left alone.
-	if got := cadence.Delay(lifecycle.Flapping, lifecycle.RungFull, 3); got != 24*time.Hour {
-		t.Errorf("the last rung became %s", got)
-	}
-}
-
-// Neither observer gets a result: the asset is unmeasurable, not unstable, and never
-// passes through flapping.
-func TestNeitherObserverGettingThroughIsNotADeath(t *testing.T) {
-	healthy := run(0, lifecycle.OutcomeOK)
-	blind := lifecycle.Reach{HTTP: -3, Fingerprint: -3}
-
-	if state := lifecycle.Decide(lifecycle.Active, true, blind, healthy); state != lifecycle.Unobservable {
-		t.Fatalf("an asset neither observer reaches is %q", state)
-	}
-
-	// Both must have tried. A streak at zero is an observer that never ran, and reading it
-	// as failing would tip every asset the renderer has not reached into another state.
-	half := lifecycle.Reach{HTTP: -9, Fingerprint: 0}
-	if state := lifecycle.Decide(lifecycle.Active, true, half, healthy); state == lifecycle.Unobservable {
-		t.Fatal("an asset the renderer never ran on was called unobservable")
-	}
-
-	// One probe getting through ends it, on a single success, which is why the
-	// counter is read after this observation rather than the settled flag.
-	back := lifecycle.Reach{HTTP: -3, Fingerprint: 1}
-	if state := lifecycle.Decide(lifecycle.Unobservable, true, back, healthy); state != lifecycle.Active {
-		t.Fatalf("one observer got through and the asset is %q", state)
-	}
-}
-
-// An observed death is not a silence: an edge reporting its origin gone is an
-// informative failure though the probe learned nothing about the service, so the asset
-// ends inactive even if the renderer fails at the same moment.
-func TestADeathBeatsUnmeasurability(t *testing.T) {
-	dead := run(12*time.Hour, lifecycle.OutcomeFail, lifecycle.OutcomeFail, lifecycle.OutcomeFail)
-	blind := lifecycle.Reach{HTTP: -4, Fingerprint: -4}
-
-	if state := lifecycle.Decide(lifecycle.Active, true, blind, dead); state != lifecycle.Inactive {
-		t.Fatalf("an observed death on an unreachable asset gave %q", state)
-	}
-}
-
-// Four regimes, the two middle ones making this a table. With the raw client blocked
-// the renderer is the only detector and runs at a detector's rate; with the renderer
-// blocked, paying for a browser every three weeks to be turned away learns nothing.
-func TestEachRegimeHasItsOwnRenderCadence(t *testing.T) {
-	cadence := lifecycle.DefaultCadence()
-	yes, no := true, false
-
-	cases := []struct {
-		name   string
-		regime lifecycle.Regime
-		want   time.Duration
-	}{
-		{"nominal", lifecycle.Regime{HTTP: &yes, Fingerprint: &yes}, cadence.Fingerprint},
-		{"the renderer is the only detector", lifecycle.Regime{HTTP: &no, Fingerprint: &yes}, cadence.RenderSole},
-		{"the renderer is the one blocked", lifecycle.Regime{HTTP: &yes, Fingerprint: &no}, cadence.RenderRecovery},
-		{"neither", lifecycle.Regime{HTTP: &no, Fingerprint: &no}, cadence.RenderBlind},
-		// Undefined is not false: observers that have not agreed three times yet give no
-		// regime, and failure would put every fresh service on the alert cadence.
-		{"undefined", lifecycle.Regime{}, cadence.Fingerprint},
-	}
-
-	for _, c := range cases {
-		if got := cadence.Render(c.regime); got != c.want {
-			t.Errorf("%s renders every %s, want %s", c.name, got, c.want)
+	got := run(Active, steps...)
+	for i, s := range got {
+		if s == Inactive || s == Flapping {
+			t.Fatalf("step %d is %s: a timeout is not informative", i, s)
 		}
 	}
-
-	blocked := lifecycle.Regime{HTTP: &no}
-	if blocked.Detector() {
-		t.Error("a blocked raw client is still reported as the detector, so its diffs would keep buying browsers")
+	if got[1] != Active || got[2] != Unobservable {
+		t.Errorf("got %v, want unobservable from the third error", got[:4])
+	}
+	if s := run(Unobservable, step{OK, 0}); s[0] != Active {
+		t.Errorf("one success leaves unobservable, got %v", s)
 	}
 }
 
-// Read off the curve, not a running system. "A candidate going live is detected within
-// the hour" is false after the first hour, deliberately: the curve widens to six hours
-// then a day, buying density where it pays. It promises the first hour, and this is
-// that promise in arithmetic.
-func TestTheCandidateCurveChecksSeveralTimesInsideTheFirstHour(t *testing.T) {
-	var elapsed time.Duration
-	checks := 0
-	for tier := 0; ; tier++ {
-		elapsed += lifecycle.CandidateCurve.At(tier)
-		if elapsed > time.Hour {
-			break
-		}
-		checks++
-		if tier > 20 {
-			t.Fatal("the curve never leaves the first hour, so it has no tail at all")
+func TestCandidateHasTwoExits(t *testing.T) {
+	var steps []step
+	for i := range 6 {
+		steps = append(steps, step{Fail, time.Duration(i) * 24 * time.Hour})
+	}
+	for _, s := range run(Candidate, steps...) {
+		if s != Candidate {
+			t.Fatalf("a failing candidate became %s", s)
 		}
 	}
-
-	// One minute, six, twenty-one: a service going live in its first hour is found within
-	// twenty minutes, which the roadmap's earlier assertion would have failed.
-	if checks < 3 {
-		t.Errorf("the curve schedules %d checks inside the first hour, and probing often "+
-			"during it is where the freshness advantage actually is", checks)
-	}
-
-	// And it does widen, or the tail would cost more than the head is worth.
-	if last := lifecycle.CandidateCurve.At(len(lifecycle.CandidateCurve)); last < 24*time.Hour {
-		t.Errorf("the curve's last rung is %s, so a hopeless candidate is chased at that rate "+
-			"for a fortnight", last)
+	if s := run(Candidate, step{OK, 0}); s[0] != Active {
+		t.Errorf("an answering candidate = %v", s)
 	}
 }
 
-// A candidate is given up on rather than declared dead, and the budget is what
-// bounds a name that never existed.
-func TestACandidateIsGivenUpOnAtItsBudgetAndNotBefore(t *testing.T) {
-	born := time.Date(2026, 8, 24, 9, 0, 0, 0, time.UTC)
-
-	if lifecycle.Exhausted(born, born.Add(lifecycle.CandidateBudget-time.Minute)) {
-		t.Error("a candidate was given up on before its budget ran out")
+func TestArchivedRevivesOnSuccessOnly(t *testing.T) {
+	if s := run(Archived, step{Error, 0}, step{Fail, time.Hour}); s[1] != Archived {
+		t.Errorf("got %v", s)
 	}
-	if !lifecycle.Exhausted(born, born.Add(lifecycle.CandidateBudget)) {
-		t.Error("a candidate is still chased past its budget, and a name reissued forever by " +
-			"an automation pointing nowhere would be chased forever with it")
+	if s := run(Archived, step{OK, 0}); s[0] != Active {
+		t.Errorf("got %v", s)
 	}
 }
 
-// The two exits belong to the kinds the budget can archive. A service is a candidate
-// until something addresses it, and a dead layer does: holding one here would close an
-// exit nothing else opens and the death would never be emitted.
-func TestOnlyAScheduledCandidateKeepsItsTwoExits(t *testing.T) {
-	dead := lifecycle.Counters{State: lifecycle.LayerDead, Informative: 3}
-
-	if state := lifecycle.Decide(lifecycle.Candidate, true, lifecycle.Reach{}, dead); state != lifecycle.Candidate {
-		t.Errorf("a host candidate became %q on a death, and a name that never existed did not die", state)
+func TestReconNeverCountsTowardDeath(t *testing.T) {
+	l := Layer{}
+	for range 5 {
+		l = Apply(l, Fail, t0.Add(48*time.Hour), false)
 	}
-	if state := lifecycle.Decide(lifecycle.Candidate, false, lifecycle.Reach{}, dead); state != lifecycle.Inactive {
-		t.Errorf("a service candidate stayed %q on a death, and nothing else would ever move it", state)
+	if l.Informative != 0 {
+		t.Errorf("a recon counted %d failures", l.Informative)
+	}
+}
+
+func TestWorstLayerWins(t *testing.T) {
+	// Behind a CDN: dns and tcp answer, http says the origin is gone.
+	first := t0
+	layers := map[string]Layer{
+		"dns":  {LastOK: &t0},
+		"tcp":  {LastOK: &t0},
+		"http": {Informative: 3, FirstFailure: &first},
+	}
+	if s := Verdict("service", Active, layers, true, t0.Add(25*time.Hour)); s != Inactive {
+		t.Errorf("got %s", s)
+	}
+	layers["http"] = Layer{}
+	layers["fingerprint"] = Layer{Informative: 9, FirstFailure: &first}
+	if s := Verdict("service", Active, layers, true, t0.Add(25*time.Hour)); s != Active {
+		t.Errorf("the fingerprint layer moved the asset to %s", s)
+	}
+}
+
+func TestServiceUnobservableNeedsBothObservers(t *testing.T) {
+	layers := map[string]Layer{"http": {NonInformative: 5}}
+	if s := Verdict("service", Active, layers, false, t0); s != Active {
+		t.Errorf("with the renderer never run, got %s", s)
+	}
+	layers["fingerprint"] = Layer{NonInformative: 3}
+	if s := Verdict("service", Active, layers, false, t0); s != Unobservable {
+		t.Errorf("both observers failing, got %s", s)
 	}
 }

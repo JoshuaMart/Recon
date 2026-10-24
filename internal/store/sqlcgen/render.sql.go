@@ -7,339 +7,81 @@ package sqlcgen
 
 import (
 	"context"
+	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/google/uuid"
 )
 
-const assetForRender = `-- name: AssetForRender :one
-SELECT c.asset_id, c.org_id, c.program_id, c.kind, c.key, c.lifecycle,
-       c.scope_status, c.port, c.backoff_tier, c.http_streak, c.fingerprint_streak,
-       c.http_reachable, c.fingerprint_reachable, c.first_seen,
-       (SELECT jsonb_object_agg(l.layer, jsonb_build_object(
-                   'state', l.state,
-                   'informative', l.informative_failures,
-                   'non_informative', l.non_informative_failures,
-                   'first_failure_at', l.first_failure_at,
-                   'last_ok_at', l.last_ok_at,
-                   'last_checked_at', l.last_checked_at))
-          FROM asset_layer l WHERE l.asset_id = c.asset_id) AS layers
-  FROM asset_current c
- WHERE c.asset_id = $1::uuid
+const deleteScreenshot = `-- name: DeleteScreenshot :exec
+DELETE FROM screenshot WHERE id = $1
 `
 
-type AssetForRenderParams struct {
-	AssetID pgtype.UUID
+func (q *Queries) DeleteScreenshot(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, deleteScreenshot, id)
+	return err
 }
 
-type AssetForRenderRow struct {
-	AssetID              pgtype.UUID
-	OrgID                pgtype.UUID
-	ProgramID            pgtype.UUID
-	Kind                 string
-	Key                  string
-	Lifecycle            string
-	ScopeStatus          string
-	Port                 *int32
-	BackoffTier          int32
-	HttpStreak           int32
-	FingerprintStreak    int32
-	HttpReachable        *bool
-	FingerprintReachable *bool
-	FirstSeen            pgtype.Timestamptz
-	Layers               []byte
-}
-
-// AssetForRender reads the counters a render needs and creates nothing. The upsert path
-// exists because a report discovers things; a render is for an existing asset, and the same
-// statement would let the rendering service invent inventory, the one thing the isolated
-// component must not do.
-//
-// @tenant: keyed
-func (q *Queries) AssetForRender(ctx context.Context, arg AssetForRenderParams) (AssetForRenderRow, error) {
-	row := q.db.QueryRow(ctx, assetForRender, arg.AssetID)
-	var i AssetForRenderRow
-	err := row.Scan(
-		&i.AssetID,
-		&i.OrgID,
-		&i.ProgramID,
-		&i.Kind,
-		&i.Key,
-		&i.Lifecycle,
-		&i.ScopeStatus,
-		&i.Port,
-		&i.BackoffTier,
-		&i.HttpStreak,
-		&i.FingerprintStreak,
-		&i.HttpReachable,
-		&i.FingerprintReachable,
-		&i.FirstSeen,
-		&i.Layers,
-	)
-	return i, err
-}
-
-const countUnobservable = `-- name: CountUnobservable :many
-SELECT c.program_id, c.org_id, p.name,
-       count(*) FILTER (WHERE c.lifecycle = 'unobservable') AS unobservable,
-       count(*) AS total
-  FROM asset_current c
-  JOIN program p ON p.id = c.program_id
- WHERE c.scope_status = 'in_scope'
-   AND c.lifecycle <> 'archived'
- GROUP BY c.program_id, c.org_id, p.name
-HAVING count(*) FILTER (WHERE c.lifecycle = 'unobservable') > 0
- ORDER BY c.program_id
+const deleteTech = `-- name: DeleteTech :exec
+DELETE FROM asset_tech WHERE asset_id = $1 AND name = $2
 `
 
-type CountUnobservableRow struct {
-	ProgramID    pgtype.UUID
-	OrgID        pgtype.UUID
-	Name         string
-	Unobservable int64
-	Total        int64
+type DeleteTechParams struct {
+	AssetID uuid.UUID `json:"asset_id"`
+	Name    string    `json:"name"`
 }
 
-// CountUnobservable is what the per-programme alert reads. A mass tip into unobservable
-// differs from one asset going quiet and usually says something about the observer (a
-// banned address, a broken egress, a renderer no longer clearing challenges); a per-asset
-// summary would hide it exactly when it matters.
-//
-// @tenant: cross-org
-// @why: the mass tip alert is computed for every programme in one pass. It
-//
-//	groups by tenant and never merges two, which is what makes the crossing a
-//	traversal rather than a leak.
-func (q *Queries) CountUnobservable(ctx context.Context) ([]CountUnobservableRow, error) {
-	rows, err := q.db.Query(ctx, countUnobservable)
+func (q *Queries) DeleteTech(ctx context.Context, arg DeleteTechParams) error {
+	_, err := q.db.Exec(ctx, deleteTech, arg.AssetID, arg.Name)
+	return err
+}
+
+const dueRenders = `-- name: DueRenders :many
+SELECT ac.asset_id, ac.program_id, ac.kind, ac.key, ac.host, ac.port, ac.scheme, ac.render_priority, ac.next_render_at
+FROM asset_current ac JOIN program p ON p.id = ac.program_id
+WHERE ac.next_render_at <= $1::timestamptz AND p.state = 'active'
+  AND ac.scope_status = 'in_scope' AND ac.lifecycle <> 'archived'
+ORDER BY ac.render_priority DESC, ac.next_render_at, ac.asset_id
+LIMIT $3 OFFSET $2
+`
+
+type DueRendersParams struct {
+	Now  time.Time `json:"now"`
+	Skip int32     `json:"skip"`
+	Lim  int32     `json:"lim"`
+}
+
+type DueRendersRow struct {
+	AssetID        uuid.UUID  `json:"asset_id"`
+	ProgramID      uuid.UUID  `json:"program_id"`
+	Kind           string     `json:"kind"`
+	Key            string     `json:"key"`
+	Host           string     `json:"host"`
+	Port           *int32     `json:"port"`
+	Scheme         *string    `json:"scheme"`
+	RenderPriority int16      `json:"render_priority"`
+	NextRenderAt   *time.Time `json:"next_render_at"`
+}
+
+// One page of the due renders, in queue order.
+func (q *Queries) DueRenders(ctx context.Context, arg DueRendersParams) ([]DueRendersRow, error) {
+	rows, err := q.db.Query(ctx, dueRenders, arg.Now, arg.Skip, arg.Lim)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []CountUnobservableRow{}
+	var items []DueRendersRow
 	for rows.Next() {
-		var i CountUnobservableRow
-		if err := rows.Scan(
-			&i.ProgramID,
-			&i.OrgID,
-			&i.Name,
-			&i.Unobservable,
-			&i.Total,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const earnBaseline = `-- name: EarnBaseline :exec
-UPDATE asset_current SET
-    next_fingerprint_at  = $1::timestamptz,
-    fingerprint_priority = $2::smallint
- WHERE asset_id = $3::uuid
-   AND scope_status = 'in_scope'
-   AND lifecycle <> 'archived'
-   AND next_fingerprint_at IS NULL
-`
-
-type EarnBaselineParams struct {
-	At       pgtype.Timestamptz
-	Priority int16
-	AssetID  pgtype.UUID
-}
-
-// EarnBaseline arms a service's first render, once. Unlike PromoteRender (earlier of two
-// dates, more urgent of two priorities), a baseline is the line being created: it applies
-// only where there is none and must not touch an asset queued for any other reason. The
-// promote path would leave it at the column's default priority and put a mass of first
-// renders in the queue that must stay short.
-//
-// @tenant: keyed
-func (q *Queries) EarnBaseline(ctx context.Context, arg EarnBaselineParams) error {
-	_, err := q.db.Exec(ctx, earnBaseline, arg.At, arg.Priority, arg.AssetID)
-	return err
-}
-
-const promoteRender = `-- name: PromoteRender :exec
-UPDATE asset_current SET
-    next_fingerprint_at  = LEAST(COALESCE(next_fingerprint_at, $1::timestamptz), $1::timestamptz),
-    fingerprint_priority = LEAST(fingerprint_priority, $2::smallint)
- WHERE asset_id = $3::uuid
-   AND scope_status = 'in_scope'
-   AND lifecycle <> 'archived'
-`
-
-type PromoteRenderParams struct {
-	At       pgtype.Timestamptz
-	Priority int16
-	AssetID  pgtype.UUID
-}
-
-// PromoteRender brings a render forward and never delays one. A detected change, a manual
-// request and the post-update sweep all use it; the one-way rule is load-bearing, since a
-// manual request lives in the high queue with an immediate date and a replan a second
-// later would bury it for a week without trace.
-//
-// @tenant: keyed
-func (q *Queries) PromoteRender(ctx context.Context, arg PromoteRenderParams) error {
-	_, err := q.db.Exec(ctx, promoteRender, arg.At, arg.Priority, arg.AssetID)
-	return err
-}
-
-const replanRenders = `-- name: ReplanRenders :execrows
-WITH input AS (
-    SELECT
-        $1::uuid           AS org_id,
-        $2::timestamptz        AS at,
-        $3::bigint AS spread
-),
-numbered AS (
-    SELECT c.asset_id, row_number() OVER (ORDER BY c.asset_id) AS position
-      FROM asset_current c, input i
-     WHERE c.org_id = i.org_id
-       AND c.next_fingerprint_at IS NOT NULL
-       AND c.lifecycle <> 'archived'
-)
-UPDATE asset_current c SET
-    next_fingerprint_at = LEAST(
-        c.next_fingerprint_at,
-        i.at + ((n.position % i.spread) * interval '1 second'))
-  FROM numbered n, input i
- WHERE c.asset_id = n.asset_id
-`
-
-type ReplanRendersParams struct {
-	OrgID         pgtype.UUID
-	At            pgtype.Timestamptz
-	SpreadSeconds int64
-}
-
-// ReplanRenders is the forced refresh after a major update of the service. The whole
-// inventory is replanned in the low queue, spread over days, restoring baselines without a
-// mass alert. It only brings a render forward, never delays one, and leaves assets that
-// left the scheduler alone.
-//
-// The spread is the walk order, not a random draw, so a replan run twice lands every asset
-// on the same date instead of reshuffling an inventory already queued.
-//
-// @tenant: scoped
-func (q *Queries) ReplanRenders(ctx context.Context, arg ReplanRendersParams) (int64, error) {
-	result, err := q.db.Exec(ctx, replanRenders, arg.OrgID, arg.At, arg.SpreadSeconds)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const rescheduleRender = `-- name: RescheduleRender :exec
-UPDATE asset_current SET
-    next_fingerprint_at  = CASE WHEN scope_status = 'in_scope' AND lifecycle <> 'archived'
-                                THEN $1::timestamptz END,
-    fingerprint_priority = $2::smallint
- WHERE asset_id = $3::uuid
-`
-
-type RescheduleRenderParams struct {
-	At       pgtype.Timestamptz
-	Priority int16
-	AssetID  pgtype.UUID
-}
-
-// RescheduleRender moves a render out to its next due date. The ordinary direction, unlike
-// PromoteRender (forward only): the render happened, so the asset returns to the low queue
-// at its regime's cadence. A raised priority would keep a once-urgent asset ahead for
-// every later pass.
-//
-// @tenant: keyed
-func (q *Queries) RescheduleRender(ctx context.Context, arg RescheduleRenderParams) error {
-	_, err := q.db.Exec(ctx, rescheduleRender, arg.At, arg.Priority, arg.AssetID)
-	return err
-}
-
-const selectDueRenders = `-- name: SelectDueRenders :many
-
-SELECT c.asset_id, c.org_id, c.program_id, c.kind, c.key, c.host, c.port, c.scheme,
-       c.final_url, c.http_reachable, c.fingerprint_reachable,
-       c.is_cdn, c.cdn_provider, p.rate_limit_rps
-  FROM asset_current c
-  JOIN program p ON p.id = c.program_id
- WHERE c.next_fingerprint_at <= $1::timestamptz
-   AND c.lifecycle <> 'archived'
-   AND c.scope_status = 'in_scope'
-   AND p.state = 'active'
-   AND p.authorized_from <= $1::timestamptz
-   AND (p.authorized_to IS NULL OR p.authorized_to > $1::timestamptz)
- ORDER BY c.fingerprint_priority, c.next_fingerprint_at, c.asset_id
- LIMIT $2::int
-`
-
-type SelectDueRendersParams struct {
-	At        pgtype.Timestamptz
-	BatchSize int32
-}
-
-type SelectDueRendersRow struct {
-	AssetID              pgtype.UUID
-	OrgID                pgtype.UUID
-	ProgramID            pgtype.UUID
-	Kind                 string
-	Key                  string
-	Host                 *string
-	Port                 *int32
-	Scheme               *string
-	FinalUrl             *string
-	HttpReachable        *bool
-	FingerprintReachable *bool
-	IsCdn                *bool
-	CdnProvider          *string
-	RateLimitRps         int32
-}
-
-// The render queue is a predicate, not a list. It is re-evaluated every tick and holds no
-// state between them, which makes the path idempotent: a render has no lease, the due date
-// is the queue, and a refused asset keeps a date in the past. Nothing to reconcile, and no
-// crash window between a refusal and a retry drops the work.
-// SelectDueRenders is one pass.
-//
-// Priority sorts before the due date, protecting the urgent case: a first scan makes
-// thousands of baselines due at one instant, and a change-triggered render five minutes
-// later has a later date, so date alone would sort it behind all of them.
-//
-// The authorization window is read here, not only at run provisioning: a render is a
-// request to someone's server, and an expired programme must not get one because a due
-// date said so.
-//
-// @tenant: cross-org
-// @why: the render queue is one predicate over the whole inventory, and the
-//
-//	budget it competes for is the deployment's rather than a tenant's.
-func (q *Queries) SelectDueRenders(ctx context.Context, arg SelectDueRendersParams) ([]SelectDueRendersRow, error) {
-	rows, err := q.db.Query(ctx, selectDueRenders, arg.At, arg.BatchSize)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []SelectDueRendersRow{}
-	for rows.Next() {
-		var i SelectDueRendersRow
+		var i DueRendersRow
 		if err := rows.Scan(
 			&i.AssetID,
-			&i.OrgID,
 			&i.ProgramID,
 			&i.Kind,
 			&i.Key,
 			&i.Host,
 			&i.Port,
 			&i.Scheme,
-			&i.FinalUrl,
-			&i.HttpReachable,
-			&i.FingerprintReachable,
-			&i.IsCdn,
-			&i.CdnProvider,
-			&i.RateLimitRps,
+			&i.RenderPriority,
+			&i.NextRenderAt,
 		); err != nil {
 			return nil, err
 		}
@@ -349,4 +91,442 @@ func (q *Queries) SelectDueRenders(ctx context.Context, arg SelectDueRendersPara
 		return nil, err
 	}
 	return items, nil
+}
+
+const getRenderVersion = `-- name: GetRenderVersion :one
+SELECT producer_version FROM render_state
+`
+
+func (q *Queries) GetRenderVersion(ctx context.Context) (*string, error) {
+	row := q.db.QueryRow(ctx, getRenderVersion)
+	var producer_version *string
+	err := row.Scan(&producer_version)
+	return producer_version, err
+}
+
+const insertScreenshot = `-- name: InsertScreenshot :one
+INSERT INTO screenshot (asset_id, key, thumb_key, phash, bytes, width, height, taken_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz)
+RETURNING id, asset_id, key, thumb_key, phash, bytes, width, height, taken_at
+`
+
+type InsertScreenshotParams struct {
+	AssetID  uuid.UUID `json:"asset_id"`
+	Key      string    `json:"key"`
+	ThumbKey string    `json:"thumb_key"`
+	Phash    int64     `json:"phash"`
+	Bytes    int32     `json:"bytes"`
+	Width    int32     `json:"width"`
+	Height   int32     `json:"height"`
+	Now      time.Time `json:"now"`
+}
+
+func (q *Queries) InsertScreenshot(ctx context.Context, arg InsertScreenshotParams) (Screenshot, error) {
+	row := q.db.QueryRow(ctx, insertScreenshot,
+		arg.AssetID,
+		arg.Key,
+		arg.ThumbKey,
+		arg.Phash,
+		arg.Bytes,
+		arg.Width,
+		arg.Height,
+		arg.Now,
+	)
+	var i Screenshot
+	err := row.Scan(
+		&i.ID,
+		&i.AssetID,
+		&i.Key,
+		&i.ThumbKey,
+		&i.Phash,
+		&i.Bytes,
+		&i.Width,
+		&i.Height,
+		&i.TakenAt,
+	)
+	return i, err
+}
+
+const lastScreenshot = `-- name: LastScreenshot :one
+SELECT id, asset_id, key, thumb_key, phash, bytes, width, height, taken_at FROM screenshot WHERE asset_id = $1 ORDER BY taken_at DESC, id DESC LIMIT 1
+`
+
+func (q *Queries) LastScreenshot(ctx context.Context, assetID uuid.UUID) (Screenshot, error) {
+	row := q.db.QueryRow(ctx, lastScreenshot, assetID)
+	var i Screenshot
+	err := row.Scan(
+		&i.ID,
+		&i.AssetID,
+		&i.Key,
+		&i.ThumbKey,
+		&i.Phash,
+		&i.Bytes,
+		&i.Width,
+		&i.Height,
+		&i.TakenAt,
+	)
+	return i, err
+}
+
+const listScreenshots = `-- name: ListScreenshots :many
+SELECT id, asset_id, key, thumb_key, phash, bytes, width, height, taken_at FROM screenshot WHERE asset_id = $1 ORDER BY taken_at DESC, id DESC
+`
+
+func (q *Queries) ListScreenshots(ctx context.Context, assetID uuid.UUID) ([]Screenshot, error) {
+	rows, err := q.db.Query(ctx, listScreenshots, assetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Screenshot
+	for rows.Next() {
+		var i Screenshot
+		if err := rows.Scan(
+			&i.ID,
+			&i.AssetID,
+			&i.Key,
+			&i.ThumbKey,
+			&i.Phash,
+			&i.Bytes,
+			&i.Width,
+			&i.Height,
+			&i.TakenAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTech = `-- name: ListTech :many
+SELECT asset_id, name, category, version_raw, version, cpe, proof FROM asset_tech WHERE asset_id = $1 ORDER BY name
+`
+
+func (q *Queries) ListTech(ctx context.Context, assetID uuid.UUID) ([]AssetTech, error) {
+	rows, err := q.db.Query(ctx, listTech, assetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AssetTech
+	for rows.Next() {
+		var i AssetTech
+		if err := rows.Scan(
+			&i.AssetID,
+			&i.Name,
+			&i.Category,
+			&i.VersionRaw,
+			&i.Version,
+			&i.Cpe,
+			&i.Proof,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const putTech = `-- name: PutTech :exec
+INSERT INTO asset_tech (asset_id, name, category, version_raw, version, cpe, proof)
+VALUES ($1, $2, $3, $4, $5::int[], $6, $7::jsonb)
+ON CONFLICT (asset_id, name) DO UPDATE
+SET category = EXCLUDED.category, version_raw = EXCLUDED.version_raw, version = EXCLUDED.version,
+    cpe = EXCLUDED.cpe, proof = EXCLUDED.proof
+`
+
+type PutTechParams struct {
+	AssetID    uuid.UUID `json:"asset_id"`
+	Name       string    `json:"name"`
+	Category   string    `json:"category"`
+	VersionRaw string    `json:"version_raw"`
+	Version    []int32   `json:"version"`
+	Cpe        *string   `json:"cpe"`
+	Proof      []byte    `json:"proof"`
+}
+
+func (q *Queries) PutTech(ctx context.Context, arg PutTechParams) error {
+	_, err := q.db.Exec(ctx, putTech,
+		arg.AssetID,
+		arg.Name,
+		arg.Category,
+		arg.VersionRaw,
+		arg.Version,
+		arg.Cpe,
+		arg.Proof,
+	)
+	return err
+}
+
+const renderQueueDepth = `-- name: RenderQueueDepth :many
+SELECT ac.render_priority, count(*)::int AS depth
+FROM asset_current ac JOIN program p ON p.id = ac.program_id
+WHERE ac.next_render_at <= $1::timestamptz AND p.state = 'active'
+  AND ac.scope_status = 'in_scope' AND ac.lifecycle <> 'archived'
+GROUP BY ac.render_priority ORDER BY ac.render_priority DESC
+`
+
+type RenderQueueDepthRow struct {
+	RenderPriority int16 `json:"render_priority"`
+	Depth          int32 `json:"depth"`
+}
+
+// Counted with the same filters as DueRenders, so the depth is what will render.
+func (q *Queries) RenderQueueDepth(ctx context.Context, now time.Time) ([]RenderQueueDepthRow, error) {
+	rows, err := q.db.Query(ctx, renderQueueDepth, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []RenderQueueDepthRow
+	for rows.Next() {
+		var i RenderQueueDepthRow
+		if err := rows.Scan(&i.RenderPriority, &i.Depth); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const rerenderAll = `-- name: RerenderAll :execrows
+UPDATE asset_current SET next_render_at = LEAST(COALESCE(next_render_at, $1::timestamptz), $1::timestamptz)
+WHERE last_render_at IS NOT NULL
+`
+
+// A new major makes every rendered asset due, low priority.
+func (q *Queries) RerenderAll(ctx context.Context, now time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, rerenderAll, now)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const scheduleRender = `-- name: ScheduleRender :exec
+UPDATE asset_current SET next_render_at = $1::timestamptz, render_priority = 0,
+  last_render_at = COALESCE($2, last_render_at)
+WHERE asset_id = $3
+`
+
+type ScheduleRenderParams struct {
+	Next       time.Time  `json:"next"`
+	RenderedAt *time.Time `json:"rendered_at"`
+	AssetID    uuid.UUID  `json:"asset_id"`
+}
+
+func (q *Queries) ScheduleRender(ctx context.Context, arg ScheduleRenderParams) error {
+	_, err := q.db.Exec(ctx, scheduleRender, arg.Next, arg.RenderedAt, arg.AssetID)
+	return err
+}
+
+const screenshotKeyInUse = `-- name: ScreenshotKeyInUse :one
+SELECT EXISTS (SELECT 1 FROM screenshot WHERE key = $1 OR thumb_key = $1)::bool
+`
+
+func (q *Queries) ScreenshotKeyInUse(ctx context.Context, key string) (bool, error) {
+	row := q.db.QueryRow(ctx, screenshotKeyInUse, key)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const screenshotKeysInUse = `-- name: ScreenshotKeysInUse :many
+SELECT k::text FROM unnest($1::text[]) AS k
+WHERE EXISTS (SELECT 1 FROM screenshot s WHERE s.key = k OR s.thumb_key = k)
+`
+
+func (q *Queries) ScreenshotKeysInUse(ctx context.Context, keys []string) ([]string, error) {
+	rows, err := q.db.Query(ctx, screenshotKeysInUse, keys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, err
+		}
+		items = append(items, k)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const screenshotStorage = `-- name: ScreenshotStorage :one
+SELECT count(*)::int AS count, COALESCE(sum(bytes), 0)::bigint AS bytes FROM screenshot
+`
+
+type ScreenshotStorageRow struct {
+	Count int32 `json:"count"`
+	Bytes int64 `json:"bytes"`
+}
+
+func (q *Queries) ScreenshotStorage(ctx context.Context) (ScreenshotStorageRow, error) {
+	row := q.db.QueryRow(ctx, screenshotStorage)
+	var i ScreenshotStorageRow
+	err := row.Scan(&i.Count, &i.Bytes)
+	return i, err
+}
+
+const screenshotsBeyond = `-- name: ScreenshotsBeyond :many
+SELECT id, asset_id, key, thumb_key, phash, bytes, width, height, taken_at FROM screenshot WHERE asset_id = $1 ORDER BY taken_at DESC, id DESC OFFSET $2
+`
+
+type ScreenshotsBeyondParams struct {
+	AssetID uuid.UUID `json:"asset_id"`
+	Keep    int32     `json:"keep"`
+}
+
+// The screenshots of an asset beyond the newest n, to delete.
+func (q *Queries) ScreenshotsBeyond(ctx context.Context, arg ScreenshotsBeyondParams) ([]Screenshot, error) {
+	rows, err := q.db.Query(ctx, screenshotsBeyond, arg.AssetID, arg.Keep)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Screenshot
+	for rows.Next() {
+		var i Screenshot
+		if err := rows.Scan(
+			&i.ID,
+			&i.AssetID,
+			&i.Key,
+			&i.ThumbKey,
+			&i.Phash,
+			&i.Bytes,
+			&i.Width,
+			&i.Height,
+			&i.TakenAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const setRenderCurrent = `-- name: SetRenderCurrent :exec
+UPDATE asset_current
+SET redirect_hosts = $1, header_names = $2,
+    cookie_names = $3, script_hashes = $4,
+    favicon_hash = $5, external_hosts = $6,
+    web_sockets = $7, has_robots = $8,
+    has_sitemap = $9, has_llms_txt = $10, waf = $11,
+    headers = $12::jsonb
+WHERE asset_id = $13
+`
+
+type SetRenderCurrentParams struct {
+	RedirectHosts []string  `json:"redirect_hosts"`
+	HeaderNames   []string  `json:"header_names"`
+	CookieNames   []string  `json:"cookie_names"`
+	ScriptHashes  []string  `json:"script_hashes"`
+	FaviconHash   *string   `json:"favicon_hash"`
+	ExternalHosts []string  `json:"external_hosts"`
+	WebSockets    []string  `json:"web_sockets"`
+	HasRobots     *bool     `json:"has_robots"`
+	HasSitemap    *bool     `json:"has_sitemap"`
+	HasLlmsTxt    *bool     `json:"has_llms_txt"`
+	Waf           *string   `json:"waf"`
+	Headers       []byte    `json:"headers"`
+	AssetID       uuid.UUID `json:"asset_id"`
+}
+
+func (q *Queries) SetRenderCurrent(ctx context.Context, arg SetRenderCurrentParams) error {
+	_, err := q.db.Exec(ctx, setRenderCurrent,
+		arg.RedirectHosts,
+		arg.HeaderNames,
+		arg.CookieNames,
+		arg.ScriptHashes,
+		arg.FaviconHash,
+		arg.ExternalHosts,
+		arg.WebSockets,
+		arg.HasRobots,
+		arg.HasSitemap,
+		arg.HasLlmsTxt,
+		arg.Waf,
+		arg.Headers,
+		arg.AssetID,
+	)
+	return err
+}
+
+const setRenderVersion = `-- name: SetRenderVersion :exec
+UPDATE render_state SET producer_version = $1
+`
+
+func (q *Queries) SetRenderVersion(ctx context.Context, producerVersion *string) error {
+	_, err := q.db.Exec(ctx, setRenderVersion, producerVersion)
+	return err
+}
+
+const triggerChildURLs = `-- name: TriggerChildURLs :execrows
+UPDATE asset_current ac
+SET next_render_at = LEAST(COALESCE(ac.next_render_at, $1::timestamptz), $1::timestamptz),
+    render_priority = GREATEST(ac.render_priority, $2::smallint)
+FROM asset a, program p
+WHERE a.id = ac.asset_id AND a.parent_asset_id = $3 AND ac.kind = 'url'
+  AND p.id = ac.program_id AND p.state = 'active' AND ac.scope_status = 'in_scope' AND ac.lifecycle <> 'archived'
+`
+
+type TriggerChildURLsParams struct {
+	Now       time.Time  `json:"now"`
+	Priority  int16      `json:"priority"`
+	ServiceID *uuid.UUID `json:"service_id"`
+}
+
+// Declared URLs on a service earn their render once the service answers.
+func (q *Queries) TriggerChildURLs(ctx context.Context, arg TriggerChildURLsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, triggerChildURLs, arg.Now, arg.Priority, arg.ServiceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const triggerRender = `-- name: TriggerRender :execrows
+UPDATE asset_current ac
+SET next_render_at = LEAST(COALESCE(ac.next_render_at, $1::timestamptz), $1::timestamptz),
+    render_priority = GREATEST(ac.render_priority, $2::smallint)
+FROM program p
+WHERE ac.asset_id = $3 AND p.id = ac.program_id AND p.state = 'active'
+  AND ac.scope_status = 'in_scope' AND ac.lifecycle <> 'archived'
+  AND ((ac.kind = 'service' AND ac.http_state IS NOT NULL)
+       OR (ac.kind = 'url' AND EXISTS (
+            SELECT 1 FROM asset u JOIN asset_current s ON s.asset_id = u.parent_asset_id
+            WHERE u.id = ac.asset_id AND s.http_state IS NOT NULL)))
+`
+
+type TriggerRenderParams struct {
+	Now      time.Time `json:"now"`
+	Priority int16     `json:"priority"`
+	AssetID  uuid.UUID `json:"asset_id"`
+}
+
+// A trigger never adds a row: it pulls the date in and raises the priority.
+// Only what can be rendered takes one: an in-scope web service or declared URL
+// of an active program, not archived.
+func (q *Queries) TriggerRender(ctx context.Context, arg TriggerRenderParams) (int64, error) {
+	result, err := q.db.Exec(ctx, triggerRender, arg.Now, arg.Priority, arg.AssetID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

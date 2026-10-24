@@ -6,257 +6,288 @@ package sqlcgen
 
 import (
 	"net/netip"
+	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/google/uuid"
 )
 
-type ApiToken struct {
-	ID        pgtype.UUID
-	OrgID     pgtype.UUID
-	CreatedBy pgtype.UUID
-	Name      string
-	TokenHash []byte
-	Scopes    []string
-	CreatedAt pgtype.Timestamptz
-	ExpiresAt pgtype.Timestamptz
-	RevokedAt pgtype.Timestamptz
-}
-
-type AppUser struct {
-	ID        pgtype.UUID
-	Email     string
-	CreatedAt pgtype.Timestamptz
-}
-
 type Asset struct {
-	ID              pgtype.UUID
-	OrgID           pgtype.UUID
-	ProgramID       pgtype.UUID
-	Kind            string
-	Key             string
-	Host            *string
-	ParentAssetID   pgtype.UUID
-	DiscoverySource string
-	DiscoveryPath   []byte
-	ScopeStatus     string
-	FirstSeen       pgtype.Timestamptz
-	LastSeen        pgtype.Timestamptz
+	ID              uuid.UUID  `json:"id"`
+	ProgramID       uuid.UUID  `json:"program_id"`
+	Kind            string     `json:"kind"`
+	Key             string     `json:"key"`
+	Host            string     `json:"host"`
+	Port            *int32     `json:"port"`
+	Scheme          *string    `json:"scheme"`
+	ParentAssetID   *uuid.UUID `json:"parent_asset_id"`
+	WildcardID      *uuid.UUID `json:"wildcard_id"`
+	DiscoverySource string     `json:"discovery_source"`
+	DiscoveryPath   []byte     `json:"discovery_path"`
+	ScopeStatus     string     `json:"scope_status"`
+	FirstSeen       time.Time  `json:"first_seen"`
+	LastSeen        time.Time  `json:"last_seen"`
 }
 
 type AssetCurrent struct {
-	AssetID              pgtype.UUID
-	OrgID                pgtype.UUID
-	ProgramID            pgtype.UUID
-	Kind                 string
-	Key                  string
-	ScopeStatus          string
-	DnsState             *string
-	TcpState             *string
-	HttpState            *string
-	Lifecycle            string
-	NextResolveAt        pgtype.Timestamptz
-	NextFullAt           pgtype.Timestamptz
-	NextFingerprintAt    pgtype.Timestamptz
-	FingerprintPriority  int16
-	BackoffTier          int32
-	TotalAttempts        int32
-	HttpReachable        *bool
-	FingerprintReachable *bool
-	HttpStreak           int32
-	FingerprintStreak    int32
-	Host                 *string
-	Port                 *int32
-	Scheme               *string
-	Ip                   netip.Addr
-	StatusCode           *int32
-	StatusChain          []int32
-	FinalUrl             *string
-	Title                *string
-	Server               *string
-	Asn                  *int32
-	AsnOrg               *string
-	Country              *string
-	Region               *string
-	City                 *string
-	IsCdn                *bool
-	CdnProvider          *string
-	WafDetected          *bool
-	WafVendor            *string
-	Technologies         []string
-	ChangeBuckets        []int32
-	BucketsDay           pgtype.Date
-	Attributes           []byte
-	FirstSeen            pgtype.Timestamptz
-	LastSeen             pgtype.Timestamptz
-	LastCheckedAt        pgtype.Timestamptz
-	LastFingerprintAt    pgtype.Timestamptz
-	LastOkAt             pgtype.Timestamptz
-	LastChangedAt        pgtype.Timestamptz
+	AssetID        uuid.UUID    `json:"asset_id"`
+	ProgramID      uuid.UUID    `json:"program_id"`
+	Kind           string       `json:"kind"`
+	Key            string       `json:"key"`
+	Host           string       `json:"host"`
+	Port           *int32       `json:"port"`
+	Scheme         *string      `json:"scheme"`
+	ScopeStatus    string       `json:"scope_status"`
+	Lifecycle      string       `json:"lifecycle"`
+	DnsState       *string      `json:"dns_state"`
+	TcpState       *string      `json:"tcp_state"`
+	HttpState      *string      `json:"http_state"`
+	Ips            []netip.Addr `json:"ips"`
+	Cname          []string     `json:"cname"`
+	Cdn            *string      `json:"cdn"`
+	StatusCode     *int32       `json:"status_code"`
+	Title          *string      `json:"title"`
+	Server         *string      `json:"server"`
+	FinalUrl       *string      `json:"final_url"`
+	FirstSeen      time.Time    `json:"first_seen"`
+	LastSeen       time.Time    `json:"last_seen"`
+	LastChanged    *time.Time   `json:"last_changed"`
+	NextResolveAt  *time.Time   `json:"next_resolve_at"`
+	NextFullAt     *time.Time   `json:"next_full_at"`
+	BackoffTier    int32        `json:"backoff_tier"`
+	LifecycleSince time.Time    `json:"lifecycle_since"`
+	LastCheckedAt  *time.Time   `json:"last_checked_at"`
+	NextRenderAt   *time.Time   `json:"next_render_at"`
+	RenderPriority int16        `json:"render_priority"`
+	LastRenderAt   *time.Time   `json:"last_render_at"`
+	RedirectHosts  []string     `json:"redirect_hosts"`
+	HeaderNames    []string     `json:"header_names"`
+	CookieNames    []string     `json:"cookie_names"`
+	ScriptHashes   []string     `json:"script_hashes"`
+	FaviconHash    *string      `json:"favicon_hash"`
+	ExternalHosts  []string     `json:"external_hosts"`
+	WebSockets     []string     `json:"web_sockets"`
+	HasRobots      *bool        `json:"has_robots"`
+	HasSitemap     *bool        `json:"has_sitemap"`
+	HasLlmsTxt     *bool        `json:"has_llms_txt"`
+	Waf            *string      `json:"waf"`
+	Headers        []byte       `json:"headers"`
+	Asn            *int32       `json:"asn"`
+	AsnOrg         *string      `json:"asn_org"`
+	Country        *string      `json:"country"`
+	CtLane         bool         `json:"ct_lane"`
 }
 
 type AssetLayer struct {
-	AssetID                pgtype.UUID
-	OrgID                  pgtype.UUID
-	Layer                  string
-	State                  string
-	InformativeFailures    int32
-	NonInformativeFailures int32
-	FirstFailureAt         pgtype.Timestamptz
-	LastOkAt               pgtype.Timestamptz
-	LastCheckedAt          pgtype.Timestamptz
+	AssetID                uuid.UUID  `json:"asset_id"`
+	Layer                  string     `json:"layer"`
+	InformativeFailures    int32      `json:"informative_failures"`
+	NonInformativeFailures int32      `json:"non_informative_failures"`
+	FirstFailureAt         *time.Time `json:"first_failure_at"`
+	LastOkAt               *time.Time `json:"last_ok_at"`
+	LastCheckedAt          time.Time  `json:"last_checked_at"`
+}
+
+type AssetTech struct {
+	AssetID    uuid.UUID `json:"asset_id"`
+	Name       string    `json:"name"`
+	Category   string    `json:"category"`
+	VersionRaw string    `json:"version_raw"`
+	Version    []int32   `json:"version"`
+	Cpe        *string   `json:"cpe"`
+	Proof      []byte    `json:"proof"`
+}
+
+type Change struct {
+	ID        int64      `json:"id"`
+	AssetID   uuid.UUID  `json:"asset_id"`
+	ProgramID uuid.UUID  `json:"program_id"`
+	Kind      string     `json:"kind"`
+	Layer     *string    `json:"layer"`
+	Before    []byte     `json:"before"`
+	After     []byte     `json:"after"`
+	RunID     *uuid.UUID `json:"run_id"`
+	At        time.Time  `json:"at"`
 }
 
 type CtApex struct {
-	OrgID          pgtype.UUID
-	ProgramID      pgtype.UUID
-	Apex           string
-	WatchedSince   pgtype.Timestamptz
-	SanCount       int64
-	WildcardCount  int64
-	LastSanAt      pgtype.Timestamptz
-	LastWildcardAt pgtype.Timestamptz
-	// Candidates the per programme ceiling refused. A silent cap reads as a small answer rather than a truncated one, so this is stored beside san_count rather than logged.
-	Dropped int64
+	WildcardID     uuid.UUID  `json:"wildcard_id"`
+	WatchedSince   time.Time  `json:"watched_since"`
+	Names          int64      `json:"names"`
+	Wildcards      int64      `json:"wildcards"`
+	Dropped        int64      `json:"dropped"`
+	LastNameAt     *time.Time `json:"last_name_at"`
+	LastWildcardAt *time.Time `json:"last_wildcard_at"`
 }
 
-// One row per minute the Certificate Transparency feed delivered a frame. Coverage over a window reads this to tell an outage from an apex the logs are silent on.
-type CtFeedMinute struct {
-	Minute pgtype.Timestamptz
-	Frames int64
+type CtSession struct {
+	ID             int64      `json:"id"`
+	ConnectedAt    time.Time  `json:"connected_at"`
+	DisconnectedAt *time.Time `json:"disconnected_at"`
+	Error          *string    `json:"error"`
+	Certificates   int64      `json:"certificates"`
+	Matched        int64      `json:"matched"`
+	Created        int64      `json:"created"`
+	Revived        int64      `json:"revived"`
+	Overflow       int64      `json:"overflow"`
+	Dropped        int64      `json:"dropped"`
 }
 
-type FaviconImage struct {
-	OrgID     pgtype.UUID
-	Hash      string
-	MediaType string
-	Bytes     []byte
-	CreatedAt pgtype.Timestamptz
+type HealthState struct {
+	Component    string     `json:"component"`
+	FailingSince *time.Time `json:"failing_since"`
+	Announced    bool       `json:"announced"`
+	Detail       *string    `json:"detail"`
 }
 
-type GenericPivotValue struct {
-	PivotType string
-	Pattern   string
-	Note      *string
+type Instance struct {
+	ID        bool      `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
-type Membership struct {
-	UserID pgtype.UUID
-	OrgID  pgtype.UUID
-	Role   string
-}
-
-type NotificationChannel struct {
-	ID          pgtype.UUID
-	OrgID       pgtype.UUID
-	Kind        string
-	Url         string
-	SecretRef   *string
-	Template    *string
-	Enabled     bool
-	MinPriority string
-	ManagedBy   string
-	CreatedAt   pgtype.Timestamptz
-}
-
-type NotificationEvent struct {
-	ID         int64
-	OrgID      pgtype.UUID
-	ProgramID  pgtype.UUID
-	AssetID    pgtype.UUID
-	Kind       string
-	Priority   string
-	Payload    []byte
-	CreatedAt  pgtype.Timestamptz
-	NotifiedAt pgtype.Timestamptz
-	Suppressed bool
+type Notification struct {
+	ID        int64      `json:"id"`
+	Kind      string     `json:"kind"`
+	GroupKey  string     `json:"group_key"`
+	Title     string     `json:"title"`
+	Items     []string   `json:"items"`
+	Total     int32      `json:"total"`
+	Link      *string    `json:"link"`
+	CreatedAt time.Time  `json:"created_at"`
+	DueAt     time.Time  `json:"due_at"`
+	SentAt    *time.Time `json:"sent_at"`
+	Outcome   *string    `json:"outcome"`
+	Attempts  int32      `json:"attempts"`
+	Delivered []string   `json:"delivered"`
+	LastError *string    `json:"last_error"`
 }
 
 type Observation struct {
-	ID                  int64
-	OrgID               pgtype.UUID
-	AssetID             pgtype.UUID
-	ObservedAt          pgtype.Timestamptz
-	LastConfirmedAt     pgtype.Timestamptz
-	RunID               pgtype.UUID
-	Source              string
-	Layer               string
-	Outcome             string
-	ProducerVersion     *string
-	LastProducerVersion *string
-	Data                []byte
-}
-
-type Org struct {
-	ID        pgtype.UUID
-	Name      string
-	CreatedAt pgtype.Timestamptz
-}
-
-type PivotCount struct {
-	OrgID      pgtype.UUID
-	PivotType  string
-	PivotValue string
-	Count      int32
+	ID                  int64      `json:"id"`
+	AssetID             uuid.UUID  `json:"asset_id"`
+	Layer               string     `json:"layer"`
+	Outcome             string     `json:"outcome"`
+	Data                []byte     `json:"data"`
+	ObservedAt          time.Time  `json:"observed_at"`
+	LastConfirmedAt     time.Time  `json:"last_confirmed_at"`
+	RunID               *uuid.UUID `json:"run_id"`
+	ProducerVersion     *string    `json:"producer_version"`
+	LastProducerVersion *string    `json:"last_producer_version"`
 }
 
 type Program struct {
-	ID                pgtype.UUID
-	OrgID             pgtype.UUID
-	Name              string
-	Platform          *string
-	PlatformRef       *string
-	AuthorizedFrom    pgtype.Timestamptz
-	AuthorizedTo      pgtype.Timestamptz
-	AuthorizationRef  *string
-	RateLimitRps      int32
-	DiscoveryInterval pgtype.Interval
-	LastDiscoveryAt   pgtype.Timestamptz
-	State             string
-	Version           int32
-	CreatedBy         pgtype.UUID
-	UpdatedBy         pgtype.UUID
-	CreatedAt         pgtype.Timestamptz
-	UpdatedAt         pgtype.Timestamptz
+	ID         uuid.UUID `json:"id"`
+	Origin     string    `json:"origin"`
+	Platform   *string   `json:"platform"`
+	Slug       *string   `json:"slug"`
+	Name       string    `json:"name"`
+	Bounty     *bool     `json:"bounty"`
+	State      string    `json:"state"`
+	ArchivedBy *string   `json:"archived_by"`
+	AutoScan   *string   `json:"auto_scan"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type RenderState struct {
+	ID              bool    `json:"id"`
+	ProducerVersion *string `json:"producer_version"`
 }
 
 type Run struct {
-	ID          pgtype.UUID
-	OrgID       pgtype.UUID
-	ProgramID   pgtype.UUID
-	Kind        string
-	Scope       string
-	State       string
-	Deadline    pgtype.Timestamptz
-	CreatedAt   pgtype.Timestamptz
-	StartedAt   pgtype.Timestamptz
-	FinishedAt  pgtype.Timestamptz
-	TargetCount *int32
-	Summary     []byte
-	Error       *string
-	ExternalID  *string
-	// The single root domain a discovery run enumerates. Null on a verification, which is driven by a frozen target list. The scanner takes one domain per execution, so a programme with several apexes gets one run each rather than one run naming several.
-	Apex *string
+	ID         uuid.UUID  `json:"id"`
+	ProgramID  uuid.UUID  `json:"program_id"`
+	Kind       string     `json:"kind"`
+	Stage      string     `json:"stage"`
+	WildcardID *uuid.UUID `json:"wildcard_id"`
+	State      string     `json:"state"`
+	Trigger    string     `json:"trigger"`
+	QueuedAt   time.Time  `json:"queued_at"`
+	StartedAt  *time.Time `json:"started_at"`
+	FinishedAt *time.Time `json:"finished_at"`
+	Deadline   *time.Time `json:"deadline"`
+	Error      *string    `json:"error"`
+	ReportMeta []byte     `json:"report_meta"`
+	Ingest     []byte     `json:"ingest"`
+	Targets    []string   `json:"targets"`
+	Runner     string     `json:"runner"`
+	ExternalID *string    `json:"external_id"`
 }
 
-type RunTarget struct {
-	RunID   pgtype.UUID
-	AssetID pgtype.UUID
-	OrgID   pgtype.UUID
-	Key     string
+type SavedSearch struct {
+	ID          uuid.UUID  `json:"id"`
+	Name        string     `json:"name"`
+	Query       string     `json:"query"`
+	View        string     `json:"view"`
+	Alert       bool       `json:"alert"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+	EvaluatedAt *time.Time `json:"evaluated_at"`
+}
+
+type SavedSearchMatch struct {
+	SavedSearchID uuid.UUID `json:"saved_search_id"`
+	AssetID       uuid.UUID `json:"asset_id"`
+	Since         time.Time `json:"since"`
 }
 
 type ScopeRule struct {
-	ID        pgtype.UUID
-	OrgID     pgtype.UUID
-	ProgramID pgtype.UUID
-	Kind      string
-	Matcher   string
-	Pattern   string
-	ValidFrom pgtype.Timestamptz
-	ValidTo   pgtype.Timestamptz
-	Note      *string
-	Version   int32
-	CreatedBy pgtype.UUID
-	UpdatedBy pgtype.UUID
-	CreatedAt pgtype.Timestamptz
+	ID        uuid.UUID  `json:"id"`
+	ProgramID uuid.UUID  `json:"program_id"`
+	Kind      string     `json:"kind"`
+	Matcher   string     `json:"matcher"`
+	Pattern   string     `json:"pattern"`
+	Origin    string     `json:"origin"`
+	Note      *string    `json:"note"`
+	ValidFrom time.Time  `json:"valid_from"`
+	ValidTo   *time.Time `json:"valid_to"`
+}
+
+type ScopeSync struct {
+	ID            bool       `json:"id"`
+	LastStartedAt *time.Time `json:"last_started_at"`
+	LastSuccessAt *time.Time `json:"last_success_at"`
+	LastError     *string    `json:"last_error"`
+	LastErrorAt   *time.Time `json:"last_error_at"`
+	LastSummary   []byte     `json:"last_summary"`
+}
+
+type Screenshot struct {
+	ID       int64     `json:"id"`
+	AssetID  uuid.UUID `json:"asset_id"`
+	Key      string    `json:"key"`
+	ThumbKey string    `json:"thumb_key"`
+	Phash    int64     `json:"phash"`
+	Bytes    int32     `json:"bytes"`
+	Width    int32     `json:"width"`
+	Height   int32     `json:"height"`
+	TakenAt  time.Time `json:"taken_at"`
+}
+
+type Triage struct {
+	AssetID uuid.UUID  `json:"asset_id"`
+	State   string     `json:"state"`
+	Tags    []string   `json:"tags"`
+	Note    *string    `json:"note"`
+	SeenAt  *time.Time `json:"seen_at"`
+}
+
+type UntrackedScope struct {
+	ProgramID   uuid.UUID  `json:"program_id"`
+	Value       string     `json:"value"`
+	Type        string     `json:"type"`
+	Reason      string     `json:"reason"`
+	FirstSeenAt time.Time  `json:"first_seen_at"`
+	LastSeenAt  time.Time  `json:"last_seen_at"`
+	GoneAt      *time.Time `json:"gone_at"`
+}
+
+type Wildcard struct {
+	ID           uuid.UUID  `json:"id"`
+	ProgramID    uuid.UUID  `json:"program_id"`
+	RuleID       uuid.UUID  `json:"rule_id"`
+	Apex         string     `json:"apex"`
+	LastReconAt  *time.Time `json:"last_recon_at"`
+	LastReconRun *uuid.UUID `json:"last_recon_run"`
+	AssetsFound  int32      `json:"assets_found"`
+	CreatedAt    time.Time  `json:"created_at"`
 }

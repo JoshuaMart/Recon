@@ -1,256 +1,193 @@
-package config_test
+package config
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/JoshuaMart/recon/internal/config"
+	"github.com/knadh/koanf/parsers/yaml"
 )
 
-// environ builds an environment for a test without touching the process's own,
-// which is what lets every test here run in parallel.
-func environ(vars ...string) func() []string {
-	return func() []string { return vars }
-}
+const key = "0123456789abcdef0123456789abcdef"
 
-func TestAnEmptyEnvironmentStillProducesAWorkingConfiguration(t *testing.T) {
-	t.Parallel()
+func TestLoadMergesFileThenEnvironment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	yml := "api_key: " + key + "\ndatabase:\n  url: postgres://file\nlog:\n  level: debug\n"
+	if err := os.WriteFile(path, []byte(yml), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
-	cfg, err := config.Load(config.RoleMigrate, config.Options{
-		Environ: environ("RECON_DATABASE__MIGRATION_URL=postgres://owner@localhost/recon"),
+	c, err := load(path, []string{
+		"RECON_DATABASE__URL=postgres://env",
+		"RECON_PUBLIC_URL=https://recon.example",
+		"OTHER_VAR=ignored",
 	})
 	if err != nil {
-		t.Fatalf("load: %v", err)
+		t.Fatal(err)
 	}
 
-	if cfg.Env != config.EnvDev {
-		t.Errorf("env = %q, want %q", cfg.Env, config.EnvDev)
+	if c.Database.URL != "postgres://env" {
+		t.Errorf("database.url = %q, the environment must win over the file", c.Database.URL)
 	}
-	if cfg.HTTP.ReadTimeout != 10*time.Second {
-		t.Errorf("http.read_timeout = %s, want 10s", cfg.HTTP.ReadTimeout)
+	if c.Log.Level != "debug" {
+		t.Errorf("log.level = %q, the file must win over the defaults", c.Log.Level)
 	}
-}
-
-func TestTwoUnderscoresNestAndOneDoesNot(t *testing.T) {
-	t.Parallel()
-
-	cfg, err := config.Load(config.RoleControlPlane, config.Options{
-		Environ: environ(
-			"RECON_DATABASE__URL=postgres://app@localhost/recon",
-			"RECON_DATABASE__SYSTEM_URL=postgres://sys@localhost/recon",
-			"RECON_SECURITY__SIGNING_KEY=a-signing-key-long-enough-to-be-one",
-			"RECON_VERIFICATION__PUBLIC_URL=https://recon.example",
-			// One underscore inside a key, two between levels. If the
-			// transform confused the two, this would land nowhere and the
-			// default would survive.
-			"RECON_HTTP__READ_TIMEOUT=42s",
-			"RECON_DATABASE__MAX_CONNS=25",
-		),
-	})
-	if err != nil {
-		t.Fatalf("load: %v", err)
+	if c.Log.Format != "json" {
+		t.Errorf("log.format = %q, the default must survive", c.Log.Format)
 	}
-
-	if cfg.HTTP.ReadTimeout != 42*time.Second {
-		t.Errorf("http.read_timeout = %s, want 42s", cfg.HTTP.ReadTimeout)
-	}
-	if cfg.Database.MaxConns != 25 {
-		t.Errorf("database.max_conns = %d, want 25", cfg.Database.MaxConns)
+	if c.PublicURL != "https://recon.example" {
+		t.Errorf("public_url = %q, a single underscore must stay inside the key", c.PublicURL)
 	}
 }
 
-// The refusal that is a security property rather than a check: role separation
-// buys nothing if whoever reaches execution in the control plane finds the
-// owner credentials next to the application ones.
-func TestTheControlPlaneRefusesTheOwnerCredential(t *testing.T) {
-	t.Parallel()
-
-	_, err := config.Load(config.RoleControlPlane, config.Options{
-		Environ: environ(
-			"RECON_DATABASE__URL=postgres://app@localhost/recon",
-			"RECON_DATABASE__MIGRATION_URL=postgres://owner@localhost/recon",
-			"RECON_SECURITY__SIGNING_KEY=a-signing-key-long-enough-to-be-one",
-			"RECON_VERIFICATION__PUBLIC_URL=https://recon.example",
-		),
-	})
+func TestValidateReportsEveryProblem(t *testing.T) {
+	_, err := load("", []string{"RECON_LOG__LEVEL=loud", "RECON_PUBLIC_URL=recon.example"})
 	if err == nil {
-		t.Fatal("expected the control plane to refuse database.migration_url")
+		t.Fatal("expected an error")
 	}
-	if !strings.Contains(err.Error(), "migration_url") {
-		t.Errorf("the error does not name the offending option: %v", err)
-	}
-}
-
-func TestTheMigratorRefusesTheApplicationCredential(t *testing.T) {
-	t.Parallel()
-
-	_, err := config.Load(config.RoleMigrate, config.Options{
-		Environ: environ(
-			"RECON_DATABASE__MIGRATION_URL=postgres://owner@localhost/recon",
-			"RECON_DATABASE__URL=postgres://app@localhost/recon",
-		),
-	})
-	if err == nil {
-		t.Fatal("expected the migrator to refuse database.url")
-	}
-}
-
-// A typo in configuration is a setting somebody believes they changed.
-func TestAnUnknownOptionIsRefused(t *testing.T) {
-	t.Parallel()
-
-	_, err := config.Load(config.RoleMigrate, config.Options{
-		Environ: environ(
-			"RECON_DATABASE__MIGRATION_URL=postgres://owner@localhost/recon",
-			"RECON_DATABSE__URL=typo",
-		),
-	})
-	if err == nil {
-		t.Fatal("expected an unknown option to be refused")
-	}
-}
-
-// A half-configured deployment is usually half-configured in several places.
-func TestEveryProblemIsReportedAtOnce(t *testing.T) {
-	t.Parallel()
-
-	_, err := config.Load(config.RoleControlPlane, config.Options{
-		Environ: environ(
-			"RECON_ENV=production",
-			"RECON_LOG__LEVEL=chatty",
-		),
-	})
-	if err == nil {
-		t.Fatal("expected the load to fail")
-	}
-
-	for _, want := range []string{"env", "log.level", "database.url"} {
+	for _, want := range []string{"api_key", "database.url", "public_url", "log.level"} {
 		if !strings.Contains(err.Error(), want) {
-			t.Errorf("the error does not mention %s:\n%v", want, err)
+			t.Errorf("error does not mention %s: %v", want, err)
 		}
 	}
 }
 
-// "production" is not "prod", and an unknown environment must fail rather than
-// fall through to the permissive side: several options are refused outside dev.
-func TestAnUnknownEnvironmentDoesNotDefaultToPermissive(t *testing.T) {
-	t.Parallel()
-
-	cfg := config.Defaults()
-	cfg.Env = "production"
-	if cfg.IsDev() {
-		t.Error("an unknown environment reads as dev")
-	}
-	if err := cfg.Validate(config.RoleMigrate); err == nil {
-		t.Error("expected an unknown environment to be refused")
+func TestScopesExtractorNeedsAKey(t *testing.T) {
+	_, err := load("", []string{
+		"RECON_API_KEY=" + key, "RECON_DATABASE__URL=postgres://x",
+		"RECON_SCOPES_EXTRACTOR__URL=http://scopes:4567",
+	})
+	if err == nil || !strings.Contains(err.Error(), "scopes_extractor.api_key") {
+		t.Fatalf("err = %v", err)
 	}
 }
 
-// RECON_CONFIG says where to read, not what to be, so it must not reach the
-// decoded structure. With ErrorUnused on, a leak shows up as a failed load.
-func TestTheConfigPathIsNotAnOption(t *testing.T) {
-	t.Parallel()
-
-	_, err := config.Load(config.RoleMigrate, config.Options{
-		Environ: environ(
-			"RECON_CONFIG=/nonexistent/recon.yaml",
-			"RECON_DATABASE__MIGRATION_URL=postgres://owner@localhost/recon",
-		),
+func TestDurationsFromTheEnvironment(t *testing.T) {
+	c, err := load("", []string{
+		"RECON_API_KEY=" + key, "RECON_DATABASE__URL=postgres://x",
+		"RECON_SCOPES_EXTRACTOR__INTERVAL=15m",
 	})
 	if err != nil {
-		t.Fatalf("load: %v", err)
+		t.Fatal(err)
+	}
+	if c.ScopesExtractor.Interval.String() != "15m0s" {
+		t.Errorf("interval = %v", c.ScopesExtractor.Interval)
 	}
 }
 
-// The loops serving every tenant need the role allowed to, and its absence has no safe
-// reading: under row-level security the application role answers them with zero rows,
-// so housekeeping creates no partition and the notifier sends nothing, looking healthy.
-func TestTheControlPlaneRefusesToStartWithOnlyOneCredential(t *testing.T) {
-	t.Parallel()
-
-	_, err := config.Load(config.RoleControlPlane, config.Options{
-		Environ: environ(
-			"RECON_DATABASE__URL=postgres://app@localhost/recon",
-			"RECON_SECURITY__SIGNING_KEY=a-signing-key-long-enough-to-be-one",
-			"RECON_VERIFICATION__PUBLIC_URL=https://recon.example",
-		),
-	})
-	if err == nil {
-		t.Fatal("a control plane with no system credential was accepted")
-	}
-	if !strings.Contains(err.Error(), "system_url") {
-		t.Errorf("the error does not name the option: %v", err)
+func TestShortAPIKeyIsRefused(t *testing.T) {
+	_, err := load("", []string{"RECON_API_KEY=short", "RECON_DATABASE__URL=postgres://x"})
+	if err == nil || !strings.Contains(err.Error(), "32 characters") {
+		t.Fatalf("err = %v, want the length rule", err)
 	}
 }
 
-// Two pools, two budgets: one setting read twice is a deployment tuned for N backends
-// quietly opening 2N, which on a managed instance with a hard max_connections breaks the
-// next service.
-func TestTheTwoPoolsAreBoundedSeparately(t *testing.T) {
-	t.Parallel()
+func TestMissingFileIsAnError(t *testing.T) {
+	if _, err := load(filepath.Join(t.TempDir(), "absent.yml"), nil); err == nil {
+		t.Fatal("a config path that does not exist must fail, not fall back to defaults")
+	}
+}
 
-	cfg, err := config.Load(config.RoleControlPlane, config.Options{
-		Environ: environ(
-			"RECON_DATABASE__URL=postgres://app@localhost/recon",
-			"RECON_DATABASE__SYSTEM_URL=postgres://sys@localhost/recon",
-			"RECON_SECURITY__SIGNING_KEY=a-signing-key-long-enough-to-be-one",
-			"RECON_VERIFICATION__PUBLIC_URL=https://recon.example",
-			"RECON_DATABASE__MAX_CONNS=40",
-		),
+// The example file documents every setting with its default, so it must decode
+// to exactly the defaults.
+func TestExampleFileMatchesDefaults(t *testing.T) {
+	c, err := load(filepath.Join("..", "..", "config.example.yml"), []string{
+		"RECON_API_KEY=" + key, "RECON_DATABASE__URL=postgres://x",
 	})
 	if err != nil {
-		t.Fatalf("load: %v", err)
+		t.Fatal(err)
 	}
-	if cfg.Database.MaxConns != 40 {
-		t.Errorf("database.max_conns = %d, want 40", cfg.Database.MaxConns)
-	}
-	if cfg.Database.SystemMaxConns == cfg.Database.MaxConns {
-		t.Errorf("the system pool inherited the request pool's bound of %d, so the deployment opens "+
-			"twice what it was tuned for", cfg.Database.SystemMaxConns)
-	}
-	if cfg.Database.SystemMaxConns <= 0 {
-		t.Errorf("database.system_max_conns defaults to %d", cfg.Database.SystemMaxConns)
+	want := Defaults()
+	want.APIKey, want.Database.URL = key, "postgres://x"
+	if !reflect.DeepEqual(c, want) {
+		t.Errorf("config.example.yml decodes to %+v, defaults are %+v", c, want)
 	}
 }
 
-// And the same credential twice is the separation being a naming convention
-// rather than a fact of deployment: the role that crosses tenants would be the
-// role that must not.
-func TestTheControlPlaneRefusesTheSameCredentialTwice(t *testing.T) {
-	t.Parallel()
-
-	_, err := config.Load(config.RoleControlPlane, config.Options{
-		Environ: environ(
-			"RECON_DATABASE__URL=postgres://app@localhost/recon",
-			"RECON_DATABASE__SYSTEM_URL=postgres://app@localhost/recon",
-			"RECON_SECURITY__SIGNING_KEY=a-signing-key-long-enough-to-be-one",
-			"RECON_VERIFICATION__PUBLIC_URL=https://recon.example",
-		),
-	})
-	if err == nil {
-		t.Fatal("one credential given for both roles was accepted")
+func TestPublicLeavesSecretsOut(t *testing.T) {
+	c := Defaults()
+	c.APIKey, c.Database.URL = "secret-key-1", "postgres://u:secret-db-2@db/recon"
+	c.ScopesExtractor.APIKey, c.FastRecon.APIToken = "secret-se-3", "secret-fr-4"
+	c.Notify.DiscordURL, c.Notify.WebhookURL = "https://discord.test/secret-dc-5", "https://hook.test/secret-wh-6"
+	c.Notify.WebhookHeader, c.Runner.SecretKey = "X-Token: secret-wh-7", "secret-scw-8"
+	b, err := json.Marshal(c.Public())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "same credential") {
-		t.Errorf("the error does not say what is wrong: %v", err)
+	if strings.Contains(string(b), "secret-") {
+		t.Fatalf("a secret reached the settings page: %s", b)
+	}
+	if !strings.Contains(string(b), `"api_key":{"set":true}`) {
+		t.Fatalf("whether the key is set is missing: %s", b)
 	}
 }
 
-// A guessable key is an unsigned one, so the refusal happens at startup rather
-// than on the first run the control plane tries to authenticate.
-func TestTheControlPlaneRefusesAShortSigningKey(t *testing.T) {
-	t.Parallel()
-
-	_, err := config.Load(config.RoleControlPlane, config.Options{
-		Environ: environ(
-			"RECON_DATABASE__URL=postgres://app@localhost/recon",
-			"RECON_SECURITY__SIGNING_KEY=short",
-		),
-	})
-	if err == nil {
-		t.Fatal("a five byte signing key was accepted")
+// The settings page shows every setting the example file documents: a new one
+// cannot be left out.
+func TestPublicListsEverySetting(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "config.example.yml"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "signing_key") {
-		t.Errorf("the error does not name the option: %v", err)
+	example, err := yaml.Parser().Unmarshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var walk func(prefix string, want, got map[string]any)
+	walk = func(prefix string, want, got map[string]any) {
+		for k, v := range want {
+			g, ok := got[k]
+			if !ok {
+				t.Errorf("%s%s is in config.example.yml but not on the settings page", prefix, k)
+				continue
+			}
+			if wm, ok := v.(map[string]any); ok {
+				if gm, ok := g.(map[string]any); ok && gm["set"] == nil {
+					walk(prefix+k+".", wm, gm)
+				}
+			}
+		}
+	}
+	walk("", example, Defaults().Public())
+}
+
+func TestRunnerValidation(t *testing.T) {
+	valid := func(mod func(*Config)) error {
+		c := Defaults()
+		c.APIKey, c.Database.URL = key, "postgres://x"
+		c.Runner.Provider, c.Runner.Region, c.Runner.JobID, c.Runner.SecretKey = "scaleway", "fr-par", "job", "secret"
+		c.PublicURL = "https://recon.example"
+		if mod != nil {
+			mod(&c)
+		}
+		return c.Validate()
+	}
+	if err := valid(nil); err != nil {
+		t.Fatalf("a full scaleway runner refused: %v", err)
+	}
+	for name, mod := range map[string]func(*Config){
+		"no secret":            func(c *Config) { c.Runner.SecretKey = "" },
+		"http callback":        func(c *Config) { c.Runner.CallbackURL = "http://vps.example:8080" },
+		"http public url":      func(c *Config) { c.PublicURL = "http://recon.example" },
+		"half set under serve": func(c *Config) { c.Runner.Provider, c.Runner.Region = "serve", "" },
+		"unknown provider":     func(c *Config) { c.Runner.Provider = "lambda" },
+	} {
+		if valid(mod) == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	for name, mod := range map[string]func(*Config){
+		"http to localhost": func(c *Config) { c.Runner.CallbackURL = "http://localhost:8080" },
+		"serve, kept set":   func(c *Config) { c.Runner.Provider = "serve" },
+		"serve, none set": func(c *Config) {
+			c.Runner.Provider, c.Runner.Region, c.Runner.JobID, c.Runner.SecretKey = "serve", "", "", ""
+		},
+	} {
+		if err := valid(mod); err != nil {
+			t.Errorf("%s: refused: %v", name, err)
+		}
 	}
 }

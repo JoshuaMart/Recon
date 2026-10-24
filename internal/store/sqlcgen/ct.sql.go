@@ -7,59 +7,36 @@ package sqlcgen
 
 import (
 	"context"
+	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/google/uuid"
 )
 
-const apexCoverage = `-- name: ApexCoverage :many
-SELECT apex, watched_since, san_count, wildcard_count, dropped,
-       last_san_at, last_wildcard_at
-  FROM ct_apex
- WHERE program_id = $1::uuid
- ORDER BY apex
+const cTApexes = `-- name: CTApexes :many
+SELECT w.id, w.apex, w.program_id FROM wildcard w
+JOIN scope_rule r ON r.id = w.rule_id
+JOIN program p ON p.id = w.program_id
+WHERE r.valid_to IS NULL AND p.state = 'active'
 `
 
-type ApexCoverageParams struct {
-	ProgramID pgtype.UUID
+type CTApexesRow struct {
+	ID        uuid.UUID `json:"id"`
+	Apex      string    `json:"apex"`
+	ProgramID uuid.UUID `json:"program_id"`
 }
 
-type ApexCoverageRow struct {
-	Apex           string
-	WatchedSince   pgtype.Timestamptz
-	SanCount       int64
-	WildcardCount  int64
-	Dropped        int64
-	LastSanAt      pgtype.Timestamptz
-	LastWildcardAt pgtype.Timestamptz
-}
-
-// ApexCoverage is what a programme's CT panel reads: counters since the apex was first
-// watched, never a rolling window, since an apex added yesterday and silent differs from
-// one watched a month and silent.
-//
-// No score: the numbers and the span they cover. One confidence figure is the composite
-// score the console is built without, as "no certificate in thirty days" and "watched
-// since this morning" differ and one number cannot say so.
-//
-// @tenant: keyed
-func (q *Queries) ApexCoverage(ctx context.Context, arg ApexCoverageParams) ([]ApexCoverageRow, error) {
-	rows, err := q.db.Query(ctx, apexCoverage, arg.ProgramID)
+// The apexes the matcher walks to: the wildcards of active programs whose
+// rule is in force.
+func (q *Queries) CTApexes(ctx context.Context) ([]CTApexesRow, error) {
+	rows, err := q.db.Query(ctx, cTApexes)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ApexCoverageRow{}
+	var items []CTApexesRow
 	for rows.Next() {
-		var i ApexCoverageRow
-		if err := rows.Scan(
-			&i.Apex,
-			&i.WatchedSince,
-			&i.SanCount,
-			&i.WildcardCount,
-			&i.Dropped,
-			&i.LastSanAt,
-			&i.LastWildcardAt,
-		); err != nil {
+		var i CTApexesRow
+		if err := rows.Scan(&i.ID, &i.Apex, &i.ProgramID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -70,56 +47,41 @@ func (q *Queries) ApexCoverage(ctx context.Context, arg ApexCoverageParams) ([]A
 	return items, nil
 }
 
-const apexSet = `-- name: ApexSet :many
-SELECT p.org_id, p.id AS program_id, r.pattern AS apex
-  FROM scope_rule r
-  JOIN program p ON p.id = r.program_id
- WHERE r.kind = 'include'
-   AND r.matcher = 'apex'
-   AND r.valid_from <= $1
-   AND (r.valid_to IS NULL OR r.valid_to > $1)
-   AND p.state = 'active'
-   AND p.authorized_from <= $1
-   AND (p.authorized_to IS NULL OR p.authorized_to > $1)
- ORDER BY p.id, r.pattern
+const cTLiveServices = `-- name: CTLiveServices :many
+SELECT s.key, s.status_code, s.title FROM asset_current s
+JOIN asset a ON a.id = s.asset_id
+JOIN asset_current h ON h.asset_id = a.parent_asset_id
+WHERE s.program_id = $1 AND s.kind = 'service' AND s.http_state = 'responding'
+  AND s.last_seen >= $2::timestamptz
+  AND h.ct_lane AND h.key = ANY($3::text[])
+ORDER BY s.key
 `
 
-type ApexSetParams struct {
-	At pgtype.Timestamptz
+type CTLiveServicesParams struct {
+	ProgramID uuid.UUID `json:"program_id"`
+	Since     time.Time `json:"since"`
+	Hosts     []string  `json:"hosts"`
 }
 
-type ApexSetRow struct {
-	OrgID     pgtype.UUID
-	ProgramID pgtype.UUID
-	Apex      string
+type CTLiveServicesRow struct {
+	Key        string  `json:"key"`
+	StatusCode *int32  `json:"status_code"`
+	Title      *string `json:"title"`
 }
 
-// ApexSet is what the Certificate Transparency matcher walks: apex include rules
-// alone. An fqdn rule already declared its host, so the asset exists with a due date
-// and the stream would create nothing; cidr and regex never named a thing.
-//
-// The authorization window is checked here, not only p.state, for the discovery
-// cadence's reason one level earlier: an expired programme left in the set keeps
-// creating assets on a perimeter nobody may scan, whose runs get refused.
-//
-// The instant is a parameter, not now(): valid_to and authorized_to are written by the
-// application, and the database clock would make the answer depend on two clocks.
-//
-// @tenant: cross-org
-// @why: the apex set spans every tenant by construction. One socket serves the
-//
-//	whole deployment, and this is the query that decides which organization
-//	a name belongs to, so it cannot be filtered by one.
-func (q *Queries) ApexSet(ctx context.Context, arg ApexSetParams) ([]ApexSetRow, error) {
-	rows, err := q.db.Query(ctx, apexSet, arg.At)
+// The services a full of the lane's hosts found answering HTTP: what the
+// certificate notification lists. Answering, and in this run: a dead origin
+// or a state left from before a revival is not a name serving HTTP now.
+func (q *Queries) CTLiveServices(ctx context.Context, arg CTLiveServicesParams) ([]CTLiveServicesRow, error) {
+	rows, err := q.db.Query(ctx, cTLiveServices, arg.ProgramID, arg.Since, arg.Hosts)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ApexSetRow{}
+	var items []CTLiveServicesRow
 	for rows.Next() {
-		var i ApexSetRow
-		if err := rows.Scan(&i.OrgID, &i.ProgramID, &i.Apex); err != nil {
+		var i CTLiveServicesRow
+		if err := rows.Scan(&i.Key, &i.StatusCode, &i.Title); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -130,184 +92,313 @@ func (q *Queries) ApexSet(ctx context.Context, arg ApexSetParams) ([]ApexSetRow,
 	return items, nil
 }
 
-const bumpApexCounters = `-- name: BumpApexCounters :exec
-INSERT INTO ct_apex (org_id, program_id, apex, watched_since, san_count, wildcard_count,
-                     dropped, last_san_at, last_wildcard_at)
-SELECT ($1::uuid[])[i], ($2::uuid[])[i], ($3::text[])[i], $4::timestamptz,
-       ($5::bigint[])[i], ($6::bigint[])[i], ($7::bigint[])[i],
-       CASE WHEN ($5::bigint[])[i] > 0 THEN $4::timestamptz END,
-       CASE WHEN ($6::bigint[])[i] > 0 THEN $4::timestamptz END
-  FROM generate_subscripts($3::text[], 1) AS i
-ON CONFLICT (program_id, apex) DO UPDATE
-   SET san_count        = ct_apex.san_count + excluded.san_count,
-       wildcard_count   = ct_apex.wildcard_count + excluded.wildcard_count,
-       dropped          = ct_apex.dropped + excluded.dropped,
-       last_san_at      = GREATEST(ct_apex.last_san_at, excluded.last_san_at),
-       last_wildcard_at = GREATEST(ct_apex.last_wildcard_at, excluded.last_wildcard_at)
+const countCTApex = `-- name: CountCTApex :exec
+UPDATE ct_apex SET
+  names = names + $2::bigint, wildcards = wildcards + $3::bigint,
+  dropped = dropped + $4::bigint,
+  last_name_at = GREATEST(last_name_at, $5::timestamptz),
+  last_wildcard_at = GREATEST(last_wildcard_at, $6::timestamptz)
+WHERE wildcard_id = $1
 `
 
-type BumpApexCountersParams struct {
-	OrgIds     []pgtype.UUID
-	ProgramIds []pgtype.UUID
-	Apexes     []string
-	At         pgtype.Timestamptz
-	Sans       []int64
-	Wildcards  []int64
-	Dropped    []int64
+type CountCTApexParams struct {
+	WildcardID     uuid.UUID  `json:"wildcard_id"`
+	Names          int64      `json:"names"`
+	WildcardCerts  int64      `json:"wildcard_certs"`
+	Dropped        int64      `json:"dropped"`
+	LastNameAt     *time.Time `json:"last_name_at"`
+	LastWildcardAt *time.Time `json:"last_wildcard_at"`
 }
 
-// BumpApexCounters records what the stream delivered under each apex.
-//
-// Parallel arrays, like AddRunTargets: one round trip and no COPY on a table with a
-// policy. A flush covers every tenant, so the organization is a column.
-//
-// The insert creates the row, so watched_since is set when an apex is first seen. The
-// counters only rise, and the two timestamps take the greatest, not the newest, write:
-// flushes are not ordered against each other.
-//
-// @tenant: cross-org
-// @why: one flush covers every programme in the set, which is what makes it one
-//
-//	round trip instead of one per tenant.
-func (q *Queries) BumpApexCounters(ctx context.Context, arg BumpApexCountersParams) error {
-	_, err := q.db.Exec(ctx, bumpApexCounters,
-		arg.OrgIds,
-		arg.ProgramIds,
-		arg.Apexes,
-		arg.At,
-		arg.Sans,
-		arg.Wildcards,
+func (q *Queries) CountCTApex(ctx context.Context, arg CountCTApexParams) error {
+	_, err := q.db.Exec(ctx, countCTApex,
+		arg.WildcardID,
+		arg.Names,
+		arg.WildcardCerts,
+		arg.Dropped,
+		arg.LastNameAt,
+		arg.LastWildcardAt,
+	)
+	return err
+}
+
+const countCTSession = `-- name: CountCTSession :exec
+UPDATE ct_session SET certificates = certificates + $2::bigint, matched = matched + $3::bigint,
+  created = created + $4::bigint, revived = revived + $5::bigint,
+  overflow = overflow + $6::bigint, dropped = dropped + $7::bigint
+WHERE id = $1
+`
+
+type CountCTSessionParams struct {
+	ID           int64 `json:"id"`
+	Certificates int64 `json:"certificates"`
+	Matched      int64 `json:"matched"`
+	Created      int64 `json:"created"`
+	Revived      int64 `json:"revived"`
+	Overflow     int64 `json:"overflow"`
+	Dropped      int64 `json:"dropped"`
+}
+
+func (q *Queries) CountCTSession(ctx context.Context, arg CountCTSessionParams) error {
+	_, err := q.db.Exec(ctx, countCTSession,
+		arg.ID,
+		arg.Certificates,
+		arg.Matched,
+		arg.Created,
+		arg.Revived,
+		arg.Overflow,
 		arg.Dropped,
 	)
 	return err
 }
 
-const feedUptime = `-- name: FeedUptime :one
-SELECT count(*)::bigint AS minutes, coalesce(sum(frames), 0)::bigint AS frames
-  FROM ct_feed_minute
- WHERE minute >= date_trunc('minute', $1::timestamptz)
+const dueFullCT = `-- name: DueFullCT :many
+SELECT key FROM asset_current
+WHERE program_id = $1 AND ct_lane AND kind = 'fqdn' AND next_full_at <= $2::timestamptz
+ORDER BY next_full_at, asset_id
+LIMIT $3
 `
 
-type FeedUptimeParams struct {
-	Since pgtype.Timestamptz
+type DueFullCTParams struct {
+	ProgramID uuid.UUID `json:"program_id"`
+	Now       time.Time `json:"now"`
+	Lim       int32     `json:"lim"`
 }
 
-type FeedUptimeRow struct {
-	Minutes int64
-	Frames  int64
-}
-
-// FeedUptime is how much of a span the feed was alive for. Without it a silent apex and
-// a down feed read alike, and the second is this deployment's problem, not a fact about
-// the logs. Presence is counted, so a missing minute is one where nothing arrived.
-//
-// @tenant: none
-func (q *Queries) FeedUptime(ctx context.Context, arg FeedUptimeParams) (FeedUptimeRow, error) {
-	row := q.db.QueryRow(ctx, feedUptime, arg.Since)
-	var i FeedUptimeRow
-	err := row.Scan(&i.Minutes, &i.Frames)
-	return i, err
-}
-
-const forgetApexesOutsideTheSet = `-- name: ForgetApexesOutsideTheSet :execrows
-DELETE FROM ct_apex
- WHERE NOT EXISTS (
-       SELECT 1
-         FROM generate_subscripts($1::text[], 1) AS i
-        WHERE ($2::uuid[])[i] = ct_apex.program_id
-          AND ($1::text[])[i] = ct_apex.apex)
-`
-
-type ForgetApexesOutsideTheSetParams struct {
-	Apexes     []string
-	ProgramIds []pgtype.UUID
-}
-
-// ForgetApexesOutsideTheSet drops the counters of an apex nobody watches now.
-// watched_since would otherwise span a period of no watching, so an apex removed and
-// put back would read as continuously covered. The counts go too, acceptable like the
-// flush losing a minute: a metric, not the journal.
-//
-// @tenant: cross-org
-// @why: it reconciles the whole table against the whole set, in one statement.
-func (q *Queries) ForgetApexesOutsideTheSet(ctx context.Context, arg ForgetApexesOutsideTheSetParams) (int64, error) {
-	result, err := q.db.Exec(ctx, forgetApexesOutsideTheSet, arg.Apexes, arg.ProgramIds)
+func (q *Queries) DueFullCT(ctx context.Context, arg DueFullCTParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, dueFullCT, arg.ProgramID, arg.Now, arg.Lim)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return result.RowsAffected(), nil
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		items = append(items, key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
-const purgeFeedMinutes = `-- name: PurgeFeedMinutes :execrows
-DELETE FROM ct_feed_minute WHERE minute < $1::timestamptz
+const dueResolveCT = `-- name: DueResolveCT :many
+SELECT key FROM asset_current
+WHERE program_id = $1 AND ct_lane AND kind = 'fqdn' AND next_resolve_at <= $2::timestamptz
+  AND (next_full_at IS NULL OR next_full_at > $2::timestamptz)
+ORDER BY next_resolve_at, asset_id
+LIMIT $3
 `
 
-type PurgeFeedMinutesParams struct {
-	Before pgtype.Timestamptz
+type DueResolveCTParams struct {
+	ProgramID uuid.UUID `json:"program_id"`
+	Now       time.Time `json:"now"`
+	Lim       int32     `json:"lim"`
 }
 
-// PurgeFeedMinutes bounds the feed's own record. A row a minute is half a million a
-// year: small but unbounded, and nothing else in the schema grows forever; coverage
-// never looks back past an apex's watch. A delete, not a partition drop: the table is
-// one column wide.
-//
-// @tenant: none
-func (q *Queries) PurgeFeedMinutes(ctx context.Context, arg PurgeFeedMinutesParams) (int64, error) {
-	result, err := q.db.Exec(ctx, purgeFeedMinutes, arg.Before)
+func (q *Queries) DueResolveCT(ctx context.Context, arg DueResolveCTParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, dueResolveCT, arg.ProgramID, arg.Now, arg.Lim)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return result.RowsAffected(), nil
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		items = append(items, key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
-const recordFeedMinute = `-- name: RecordFeedMinute :exec
-INSERT INTO ct_feed_minute (minute, frames)
-VALUES (date_trunc('minute', $1::timestamptz), $2::bigint)
-ON CONFLICT (minute) DO UPDATE
-   SET frames = ct_feed_minute.frames + excluded.frames
+const endCTSession = `-- name: EndCTSession :exec
+UPDATE ct_session SET disconnected_at = $2::timestamptz, error = $3 WHERE id = $1
 `
 
-type RecordFeedMinuteParams struct {
-	At     pgtype.Timestamptz
-	Frames int64
+type EndCTSessionParams struct {
+	ID    int64     `json:"id"`
+	Now   time.Time `json:"now"`
+	Error *string   `json:"error"`
 }
 
-// RecordFeedMinute says the feed was alive for this minute. Presence, not absence: a
-// dead process writes no minute, so a gap needs nothing to notice it and no
-// reconciliation after a restart.
-//
-// @tenant: none
-func (q *Queries) RecordFeedMinute(ctx context.Context, arg RecordFeedMinuteParams) error {
-	_, err := q.db.Exec(ctx, recordFeedMinute, arg.At, arg.Frames)
+func (q *Queries) EndCTSession(ctx context.Context, arg EndCTSessionParams) error {
+	_, err := q.db.Exec(ctx, endCTSession, arg.ID, arg.Now, arg.Error)
 	return err
 }
 
-const watchApexes = `-- name: WatchApexes :exec
-INSERT INTO ct_apex (org_id, program_id, apex, watched_since)
-SELECT ($1::uuid[])[i], ($2::uuid[])[i], ($3::text[])[i], $4::timestamptz
-  FROM generate_subscripts($3::text[], 1) AS i
-ON CONFLICT (program_id, apex) DO NOTHING
+const endOpenCTSessions = `-- name: EndOpenCTSessions :exec
+UPDATE ct_session SET disconnected_at = $1::timestamptz, error = 'the process stopped' WHERE disconnected_at IS NULL
 `
 
-type WatchApexesParams struct {
-	OrgIds     []pgtype.UUID
-	ProgramIds []pgtype.UUID
-	Apexes     []string
-	At         pgtype.Timestamptz
+func (q *Queries) EndOpenCTSessions(ctx context.Context, now time.Time) error {
+	_, err := q.db.Exec(ctx, endOpenCTSessions, now)
+	return err
 }
 
-// WatchApexes creates a row for every apex in the set, counting nothing. Without it an
-// apex that never produced a SAN has no row, and "watched, delivered nothing" reads like
-// "not watched at all", the difference coverage exists to state.
-//
-// @tenant: cross-org
-// @why: the set spans every tenant, and so does the row it keeps per apex.
-func (q *Queries) WatchApexes(ctx context.Context, arg WatchApexesParams) error {
-	_, err := q.db.Exec(ctx, watchApexes,
-		arg.OrgIds,
-		arg.ProgramIds,
-		arg.Apexes,
-		arg.At,
+const enqueueCandidate = `-- name: EnqueueCandidate :one
+INSERT INTO run (program_id, kind, stage, targets, trigger, queued_at)
+VALUES ($1, 'candidate', $2, $3::text[], 'ct', $4::timestamptz)
+ON CONFLICT (kind) WHERE kind = 'candidate' AND state IN ('queued', 'running') DO NOTHING
+RETURNING id, program_id, kind, stage, wildcard_id, state, trigger, queued_at, started_at, finished_at, deadline, error, report_meta, ingest, targets, runner, external_id
+`
+
+type EnqueueCandidateParams struct {
+	ProgramID uuid.UUID `json:"program_id"`
+	Stage     string    `json:"stage"`
+	Targets   []string  `json:"targets"`
+	Now       time.Time `json:"now"`
+}
+
+func (q *Queries) EnqueueCandidate(ctx context.Context, arg EnqueueCandidateParams) (Run, error) {
+	row := q.db.QueryRow(ctx, enqueueCandidate,
+		arg.ProgramID,
+		arg.Stage,
+		arg.Targets,
+		arg.Now,
 	)
+	var i Run
+	err := row.Scan(
+		&i.ID,
+		&i.ProgramID,
+		&i.Kind,
+		&i.Stage,
+		&i.WildcardID,
+		&i.State,
+		&i.Trigger,
+		&i.QueuedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.Deadline,
+		&i.Error,
+		&i.ReportMeta,
+		&i.Ingest,
+		&i.Targets,
+		&i.Runner,
+		&i.ExternalID,
+	)
+	return i, err
+}
+
+const enterCTLane = `-- name: EnterCTLane :execrows
+UPDATE asset_current SET ct_lane = true, next_resolve_at = $2::timestamptz, backoff_tier = 0
+WHERE asset_id = $1 AND kind = 'fqdn' AND scope_status = 'in_scope'
+`
+
+type EnterCTLaneParams struct {
+	AssetID uuid.UUID `json:"asset_id"`
+	Now     time.Time `json:"now"`
+}
+
+// A host a certificate named, in scope: probed now, in the CT lane.
+func (q *Queries) EnterCTLane(ctx context.Context, arg EnterCTLaneParams) (int64, error) {
+	result, err := q.db.Exec(ctx, enterCTLane, arg.AssetID, arg.Now)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const lastCTSession = `-- name: LastCTSession :one
+SELECT id, connected_at, disconnected_at, error, certificates, matched, created, revived, overflow, dropped FROM ct_session ORDER BY id DESC LIMIT 1
+`
+
+func (q *Queries) LastCTSession(ctx context.Context) (CtSession, error) {
+	row := q.db.QueryRow(ctx, lastCTSession)
+	var i CtSession
+	err := row.Scan(
+		&i.ID,
+		&i.ConnectedAt,
+		&i.DisconnectedAt,
+		&i.Error,
+		&i.Certificates,
+		&i.Matched,
+		&i.Created,
+		&i.Revived,
+		&i.Overflow,
+		&i.Dropped,
+	)
+	return i, err
+}
+
+const leaveCTLane = `-- name: LeaveCTLane :execrows
+UPDATE asset_current SET ct_lane = false
+WHERE program_id = $1 AND ct_lane AND key = ANY($2::text[])
+  AND (lifecycle = 'archived' OR ($3::bool AND lifecycle <> 'candidate'))
+`
+
+type LeaveCTLaneParams struct {
+	ProgramID uuid.UUID `json:"program_id"`
+	Hosts     []string  `json:"hosts"`
+	AfterFull bool      `json:"after_full"`
+}
+
+// After a candidate run: a host leaves the lane once measured by a full, or
+// archived.
+func (q *Queries) LeaveCTLane(ctx context.Context, arg LeaveCTLaneParams) (int64, error) {
+	result, err := q.db.Exec(ctx, leaveCTLane, arg.ProgramID, arg.Hosts, arg.AfterFull)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const nextDueCTProgram = `-- name: NextDueCTProgram :one
+SELECT ac.program_id FROM asset_current ac JOIN program p ON p.id = ac.program_id
+WHERE ac.ct_lane AND p.state = 'active' AND ac.kind = 'fqdn'
+  AND (ac.next_full_at <= $1::timestamptz OR ac.next_resolve_at <= $1::timestamptz)
+ORDER BY LEAST(COALESCE(ac.next_full_at, 'infinity'), COALESCE(ac.next_resolve_at, 'infinity')), ac.asset_id
+LIMIT 1
+`
+
+func (q *Queries) NextDueCTProgram(ctx context.Context, now time.Time) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, nextDueCTProgram, now)
+	var program_id uuid.UUID
+	err := row.Scan(&program_id)
+	return program_id, err
+}
+
+const startCTSession = `-- name: StartCTSession :one
+INSERT INTO ct_session (connected_at) VALUES ($1::timestamptz) RETURNING id
+`
+
+func (q *Queries) StartCTSession(ctx context.Context, now time.Time) (int64, error) {
+	row := q.db.QueryRow(ctx, startCTSession, now)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const unwatchCTApexes = `-- name: UnwatchCTApexes :exec
+DELETE FROM ct_apex WHERE NOT (wildcard_id = ANY($1::uuid[]))
+`
+
+func (q *Queries) UnwatchCTApexes(ctx context.Context, wildcards []uuid.UUID) error {
+	_, err := q.db.Exec(ctx, unwatchCTApexes, wildcards)
+	return err
+}
+
+const watchCTApexes = `-- name: WatchCTApexes :exec
+INSERT INTO ct_apex (wildcard_id, watched_since)
+SELECT unnest($1::uuid[]), $2::timestamptz
+ON CONFLICT (wildcard_id) DO NOTHING
+`
+
+type WatchCTApexesParams struct {
+	Wildcards []uuid.UUID `json:"wildcards"`
+	Now       time.Time   `json:"now"`
+}
+
+// The watched apexes follow the set: new ones start watched now, those that
+// left go with their counts.
+func (q *Queries) WatchCTApexes(ctx context.Context, arg WatchCTApexesParams) error {
+	_, err := q.db.Exec(ctx, watchCTApexes, arg.Wildcards, arg.Now)
 	return err
 }

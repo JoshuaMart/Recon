@@ -1,902 +1,471 @@
 //go:build integration
 
-// Milestone 6's read half: what the compiler produces, measured against a
-// database rather than against a string.
 package search_test
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"log/slog"
-	"sort"
+	"os"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/testcontainers/testcontainers-go"
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/wait"
 
+	"github.com/JoshuaMart/recon/internal/fingerprint"
 	"github.com/JoshuaMart/recon/internal/search"
 	"github.com/JoshuaMart/recon/internal/store"
+	"github.com/JoshuaMart/recon/internal/store/storetest"
 )
 
-type harness struct {
-	pool *pgxpool.Pool
-	url  string
-	org  uuid.UUID
-	// other is the tenant nothing here may ever see.
-	other   uuid.UUID
-	program uuid.UUID
+var now = time.Now().UTC().Truncate(time.Microsecond)
+
+type svc struct {
+	program  string
+	host     string
+	port     int
+	status   int
+	title    string
+	server   string
+	cdn      string
+	favicon  string
+	age      time.Duration
+	state    string
+	triage   string
+	techs    map[string]string // name -> version
+	category map[string]string
+	headers  string
+	shot     bool
+	ips      string
+	cname    string
 }
 
-func newHarness(t *testing.T) *harness {
-	t.Helper()
+type world struct {
+	st       *store.Store
+	programs map[string]uuid.UUID
+}
 
+func (w *world) program(t *testing.T, name, slug string) {
+	t.Helper()
+	var id uuid.UUID
+	if err := w.st.Pool.QueryRow(context.Background(),
+		`INSERT INTO program (origin, platform, slug, name, created_at, updated_at) VALUES ('scopesextractor', 'hackerone', $1, $2, now(), now()) RETURNING id`,
+		slug, name).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	w.programs[slug] = id
+}
+
+func (w *world) add(t *testing.T, s svc) {
+	t.Helper()
 	ctx := context.Background()
-	container, err := tcpostgres.Run(ctx, "postgres:18-alpine",
-		tcpostgres.WithDatabase("recon"),
-		tcpostgres.WithUsername("asm_owner"),
-		tcpostgres.WithPassword("owner-password-for-a-container"),
-		testcontainers.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).WithStartupTimeout(60*time.Second)),
-	)
-	if err != nil {
-		t.Fatalf("start postgres: %v", err)
+	pid := w.programs[s.program]
+	key := fmt.Sprintf("%s:%d/tcp", s.host, s.port)
+	if s.state == "" {
+		s.state = "active"
 	}
-	t.Cleanup(func() { _ = testcontainers.TerminateContainer(container) })
-
-	url, err := container.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		t.Fatalf("connection string: %v", err)
+	first := now.Add(-s.age)
+	var hostID, id uuid.UUID
+	// The host, then the service on it.
+	if err := w.st.Pool.QueryRow(ctx, `INSERT INTO asset (program_id, kind, key, host, discovery_source, scope_status, first_seen, last_seen)
+		VALUES ($1, 'fqdn', $2, $2, 'fastrecon', 'in_scope', $3, $3)
+		ON CONFLICT (program_id, kind, key) DO UPDATE SET last_seen = EXCLUDED.last_seen RETURNING id`, pid, s.host, first).Scan(&hostID); err != nil {
+		t.Fatal(err)
 	}
-
-	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
-	migrator, err := store.NewMigrator(url, quiet)
-	if err != nil {
-		t.Fatalf("migrator: %v", err)
+	if _, err := w.st.Pool.Exec(ctx, `INSERT INTO asset_current (asset_id, program_id, kind, key, host, scope_status, lifecycle, first_seen, last_seen, lifecycle_since, ips, cname)
+		VALUES ($1, $2, 'fqdn', $3, $3, 'in_scope', 'active', $4, $4, $4, $5::inet[], $6::text[]) ON CONFLICT DO NOTHING`,
+		hostID, pid, s.host, first, pgArray(s.ips), pgArray(s.cname)); err != nil {
+		t.Fatal(err)
 	}
-	if err := migrator.Run(ctx, store.Up); err != nil {
-		t.Fatalf("migrate: %v", err)
+	if err := w.st.Pool.QueryRow(ctx, `INSERT INTO asset (program_id, kind, key, host, port, scheme, parent_asset_id, discovery_source, scope_status, first_seen, last_seen)
+		VALUES ($1, 'service', $2, $3, $4, 'https', $5, 'fastrecon', 'in_scope', $6, $6) RETURNING id`, pid, key, s.host, s.port, hostID, first).Scan(&id); err != nil {
+		t.Fatal(err)
 	}
-	_ = migrator.Close()
-
-	pool, err := pgxpool.New(ctx, url)
-	if err != nil {
-		t.Fatalf("pool: %v", err)
+	if _, err := w.st.Pool.Exec(ctx, `INSERT INTO asset_current (asset_id, program_id, kind, key, host, port, scheme, scope_status, lifecycle,
+		  http_state, status_code, title, server, cdn, favicon_hash, headers, first_seen, last_seen, lifecycle_since, ips)
+		VALUES ($1, $2, 'service', $3, $4, $5, 'https', 'in_scope', $6, 'responding', $7, NULLIF($8, ''), NULLIF($9, ''), NULLIF($10, ''),
+		  NULLIF($11, ''), NULLIF($12, '')::jsonb, $13, $13, $13, $14::inet[])`,
+		id, pid, key, s.host, s.port, s.state, s.status, s.title, s.server, s.cdn, s.favicon, s.headers, first, pgArray(s.ips)); err != nil {
+		t.Fatal(err)
 	}
-	t.Cleanup(pool.Close)
-
-	h := &harness{pool: pool, url: url, org: uuid.New(), other: uuid.New(), program: uuid.New()}
-	h.exec(t, `INSERT INTO org (id, name) VALUES ($1, 'tenant'), ($2, 'the other one')`, h.org, h.other)
-	h.exec(t, `INSERT INTO program (id, org_id, name, authorized_from)
-	           VALUES ($1, $2, 'p', now())`, h.program, h.org)
-
-	// Reference data, because the badge rules read it.
-	conn, err := pgx.Connect(ctx, url)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
+	for name, v := range s.techs {
+		cat := s.category[name]
+		if _, err := w.st.Pool.Exec(ctx, `INSERT INTO asset_tech (asset_id, name, category, version_raw, version) VALUES ($1, $2, $3, $4, $5::int[])`,
+			id, name, cat, v, fingerprint.ParseVersion(v)); err != nil {
+			t.Fatal(err)
+		}
 	}
-	defer func() { _ = conn.Close(ctx) }()
-	if _, err := store.Seed(ctx, conn); err != nil {
-		t.Fatalf("seed: %v", err)
+	if s.triage != "" {
+		if _, err := w.st.Pool.Exec(ctx, `INSERT INTO triage (asset_id, state) VALUES ($1, $2)`, id, s.triage); err != nil {
+			t.Fatal(err)
+		}
 	}
-	return h
+	if s.shot {
+		if _, err := w.st.Pool.Exec(ctx, `INSERT INTO screenshot (asset_id, key, thumb_key, phash, bytes, width, height, taken_at)
+			VALUES ($1, $2, $3, 0, 1, 1, 1, now())`, id, id.String()+".jpg", id.String()+"t.jpg"); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
-func (h *harness) exec(t *testing.T, sql string, args ...any) {
+func pgArray(csv string) *string {
+	if csv == "" {
+		return nil
+	}
+	s := "{" + csv + "}"
+	return &s
+}
+
+func setup(t *testing.T) *world {
 	t.Helper()
-
-	if _, err := h.pool.Exec(context.Background(), sql, args...); err != nil {
-		t.Fatalf("exec %q: %v", sql, err)
+	w := &world{st: storetest.New(t), programs: map[string]uuid.UUID{}}
+	w.program(t, "Acme Corp", "acme")
+	w.program(t, "Foo", "foo")
+	day := 24 * time.Hour
+	for _, s := range []svc{
+		{
+			program: "acme", host: "app.acme.com", port: 8443, status: 200, title: "Admin Dashboard", server: "nginx/1.24.0",
+			favicon: "-1293034", age: 2 * day, shot: true, techs: map[string]string{"Nginx": "1.24.0", "PHP": "8.1.2"},
+			category: map[string]string{"Nginx": "Web servers"}, headers: `{"x-powered-by":"PHP/8.1.2"}`, ips: "10.1.2.3",
+		},
+		{
+			program: "acme", host: "www.acme.com", port: 443, status: 200, title: "Sign in", cdn: "cloudflare", age: 3 * day,
+			techs: map[string]string{"Nginx": "1.24.3", "WordPress": "6.1.2"}, cname: "acme.cdn.cloudflare.net",
+		},
+		{
+			program: "acme", host: "dev1.acme.com", port: 8080, status: 403, title: "Forbidden", favicon: "-1293034", age: 5 * day,
+			triage: "ignored", techs: map[string]string{"Nginx": ""},
+		},
+		{program: "acme", host: "dev2.acme.com", port: 8080, status: 401, title: "Login required", favicon: "-1293034", age: 6 * day},
+		{program: "acme", host: "eviltarget.com", port: 443, status: 500, title: "Error", age: 10 * day},
+		{
+			program: "foo", host: "old.foo.io", port: 443, status: 401, favicon: "-1293034", age: 30 * day,
+			techs: map[string]string{"WordPress": "4.9"},
+		},
+		{
+			program: "acme", host: "jenkins.acme.com", port: 8080, status: 200, title: "Dashboard [Jenkins]", age: 8 * day,
+			techs: map[string]string{"Jenkins": "2.401"},
+		},
+		{program: "acme", host: "docker.acme.com", port: 2375, status: 404, age: 1 * day, state: "candidate"},
+		{program: "acme", host: "gone.acme.com", port: 6443, status: 0, age: 40 * day, state: "inactive"},
+		{program: "acme", host: "es.acme.com", port: 9200, status: 200, age: 4 * day},
+		{program: "acme", host: "kibana.acme.com", port: 5601, status: 302, age: 4 * day},
+	} {
+		w.add(t, s)
 	}
+	// The version table, one nginx per version on its own host.
+	for _, v := range []string{"1.2", "1.9", "1.23.9", "1.24", "1.24.9", "1.25", "1.25.0", "1.25.1", "1.30", "2.0"} {
+		w.add(t, svc{
+			program: "foo", host: "nginx-" + strings.ReplaceAll(v, ".", "-") + ".v.test", port: 443, status: 200, age: 90 * day,
+			techs: map[string]string{"Nginx": v},
+		})
+	}
+	for _, v := range []string{"5.0", "6.1.5", "6.2"} {
+		w.add(t, svc{
+			program: "foo", host: "wp-" + strings.ReplaceAll(v, ".", "-") + ".v.test", port: 443, status: 200, age: 90 * day,
+			techs: map[string]string{"WordPress": v},
+		})
+	}
+	for _, v := range []string{"7.4", "8.0.1", "8.1"} {
+		w.add(t, svc{
+			program: "foo", host: "php-" + strings.ReplaceAll(v, ".", "-") + ".v.test", port: 443, status: 200, age: 90 * day,
+			techs: map[string]string{"PHP": v},
+		})
+	}
+	w.add(t, svc{program: "foo", host: "jq.v.test", port: 443, status: 200, age: 90 * day, techs: map[string]string{"jQuery": ""}})
+	return w
 }
 
-// asset writes one row of both tables, which is what the search reads.
-func (h *harness) asset(t *testing.T, org uuid.UUID, key string, columns map[string]any) uuid.UUID {
+func (w *world) keys(t *testing.T, q, view string) []string {
 	t.Helper()
-
-	id := uuid.New()
-	program := h.program
-	if org != h.org {
-		program = uuid.New()
-		h.exec(t, `INSERT INTO program (id, org_id, name, authorized_from) VALUES ($1, $2, 'other', now())`,
-			program, org)
+	var out []string
+	req := search.Request{Query: q, View: view, Limit: 500, Now: now}
+	for {
+		page, err := search.Search(context.Background(), w.st.Pool, req)
+		if err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+		for _, r := range page.Rows {
+			out = append(out, r.Key)
+		}
+		if page.Next == "" {
+			break
+		}
+		req.Cursor = page.Next
 	}
-	kind := "service"
-	if !strings.Contains(key, ":") {
-		kind = "fqdn"
-	}
-	host, _, _ := strings.Cut(key, ":")
-
-	seen := time.Now().UTC()
-	if at, ok := columns["last_seen"].(time.Time); ok {
-		seen = at
-	}
-
-	h.exec(t, `INSERT INTO asset (id, org_id, program_id, kind, key, host, discovery_source,
-	                              discovery_path, scope_status, first_seen, last_seen)
-	           VALUES ($1, $2, $3, $4, $5, $6, 'manual', $7, 'in_scope', $8, $8)`,
-		id, org, program, kind, key, host,
-		[]byte(`[{"step":"typed in"}]`), seen)
-
-	h.exec(t, `INSERT INTO asset_current (
-	        asset_id, org_id, program_id, kind, key, scope_status, host, port, scheme,
-	        lifecycle, status_code, title, technologies, attributes, asn, country,
-	        cdn_provider, is_cdn, change_buckets, buckets_day, first_seen, last_seen)
-	     VALUES ($1, $2, $3, $4, $5, 'in_scope', $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-	             $16, $17, $18, $19, $20, $20)`,
-		id, org, program, kind, key, host,
-		columns["port"], columns["scheme"], value(columns, "lifecycle", "active"),
-		columns["status_code"], columns["title"],
-		value(columns, "technologies", []string{}), value(columns, "attributes", []byte(`{}`)),
-		columns["asn"], columns["country"], columns["cdn_provider"], columns["is_cdn"],
-		value(columns, "change_buckets", []int32{0, 0, 0, 0, 0, 0, 0, 0}),
-		columns["buckets_day"], seen)
-
-	// Counters are maintained on write by ingestion; rows are written directly here,
-	// so the invariant is applied directly: pivot_count is a function of the counted
-	// keys and nothing else.
-	h.exec(t, `INSERT INTO pivot_count AS pc (org_id, pivot_type, pivot_value, count)
-	           SELECT $1, p.pivot_type, p.pivot_value, 1
-	             FROM asset_current c, pivot_values(c.attributes) p
-	            WHERE c.asset_id = $2
-	           ON CONFLICT (org_id, pivot_type, pivot_value) DO UPDATE SET count = pc.count + 1`,
-		org, id)
-	return id
+	slices.Sort(out)
+	return out
 }
 
-func value(columns map[string]any, name string, fallback any) any {
-	if found, ok := columns[name]; ok {
-		return found
-	}
-	return fallback
-}
-
-// scoped runs one query the way a request does: in a transaction carrying the
-// organization, so the policies apply as well as the compiler's clause.
-func (h *harness) scoped(t *testing.T, org uuid.UUID, fn func(tx pgx.Tx)) {
-	t.Helper()
-
-	ctx := context.Background()
-	tx, err := h.pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `SELECT set_config('app.org_id', $1, true)`, org.String()); err != nil {
-		t.Fatalf("scope: %v", err)
-	}
-	fn(tx)
-}
-
-func filter(t *testing.T, raw string) search.Node {
-	t.Helper()
-
-	node, err := search.Parse([]byte(raw))
-	if err != nil {
-		t.Fatalf("parse %s: %v", raw, err)
-	}
-	return node
-}
-
-// inventory is the set every case below reads.
-func (h *harness) inventory(t *testing.T) {
-	t.Helper()
-
-	h.asset(t, h.org, "app.target.test:443/tcp", map[string]any{
-		"port": 443, "scheme": "https", "status_code": 200, "title": "App",
-		"technologies": []string{"nginx", "react"}, "asn": 13335, "country": "FR",
-		"attributes": []byte(`{"favicon_hash":"shared","cookie_names":["SESS_INTERNAL","PHPSESSID"],
-		                       "script_hashes":["bundle"],"external_hosts":["cdn.partner.test"]}`),
-	})
-	h.asset(t, h.org, "api.target.test:443/tcp", map[string]any{
-		"port": 443, "scheme": "https", "status_code": 200, "title": "API",
-		"technologies": []string{"nginx"}, "asn": 13335, "country": "FR",
-		"attributes": []byte(`{"favicon_hash":"shared","cookie_names":["PHPSESSID"]}`),
-	})
-	h.asset(t, h.org, "old.target.test:80/tcp", map[string]any{
-		"port": 80, "scheme": "http", "status_code": 301, "title": "Moved",
-		"technologies": []string{"apache"}, "asn": 16509, "country": "US",
-		"attributes": []byte(`{"favicon_hash":"alone"}`),
-	})
-	h.asset(t, h.org, "evil-target.test:443/tcp", map[string]any{
-		"port": 443, "scheme": "https", "status_code": 200,
-		"technologies": []string{"nginx"},
-	})
-	h.asset(t, h.org, "target.test", map[string]any{"lifecycle": "candidate"})
-
-	// The other tenant, with the same shapes. Nothing below may see these rows, and a
-	// filter naming them could not: the field is not in the registry.
-	h.asset(t, h.other, "app.target.test:443/tcp", map[string]any{
-		"port": 443, "scheme": "https", "status_code": 200,
-		"technologies": []string{"nginx"}, "asn": 13335, "country": "FR",
-		"attributes": []byte(`{"favicon_hash":"shared"}`),
-	})
-}
-
-func TestASuffixReadsTheInventoryUnderOneDomain(t *testing.T) {
-	h := newHarness(t)
-	h.inventory(t)
-
-	h.scoped(t, h.org, func(tx pgx.Tx) {
-		page, err := search.List(context.Background(), tx, h.org, search.Request{
-			Filter: filter(t, `{"op":"suffix","field":"host","value":".target.test"}`),
-		})
-		if err != nil {
-			t.Fatalf("list: %v", err)
-		}
-
-		keys := keysOf(page)
-		// A string suffix, not domain membership: the dot is in the pattern, so
-		// "evil-target.test" does not come back, nor does "target.test" itself.
-		if strings.Contains(strings.Join(keys, ","), "evil-target") {
-			t.Errorf("evil-target.test came back under .target.test: %v", keys)
-		}
-		for _, key := range keys {
-			if key == "target.test" {
-				t.Errorf("the apex came back under its own dotted suffix: %v", keys)
-			}
-		}
-		if len(keys) != 3 {
-			t.Errorf("%d assets under .target.test, want 3: %v", len(keys), keys)
-		}
-	})
-}
-
-// The console's search field against the database: a substring anywhere in the
-// name, inside one tenant. No index answers it, so the answer is measured, not the
-// plan; the term sits mid-key, which a prefix and a suffix cannot ask.
-func TestASubstringOfTheNameSearchesInsideIt(t *testing.T) {
-	h := newHarness(t)
-	h.inventory(t)
-
-	h.scoped(t, h.org, func(tx pgx.Tx) {
-		page, err := search.List(context.Background(), tx, h.org, search.Request{
-			// Upper case, because a person typing into a search field is not
-			// spelling a normalized key.
-			Filter: filter(t, `{"op":"contains","field":"key","value":"PI.TARGET"}`),
-		})
-		if err != nil {
-			t.Fatalf("list: %v", err)
-		}
-
-		keys := keysOf(page)
-		if len(keys) != 1 || keys[0] != "api.target.test:443/tcp" {
-			t.Errorf("keys = %v, want the one asset whose name carries the substring", keys)
-		}
-	})
-
-	// The other tenant holds "app.target.test:443/tcp" too, and a scan (as opposed to
-	// a seek) is where a missing tenant clause would not show as an error.
-	h.scoped(t, h.org, func(tx pgx.Tx) {
-		page, err := search.List(context.Background(), tx, h.org, search.Request{
-			Filter: filter(t, `{"op":"contains","field":"key","value":"app.target"}`),
-		})
-		if err != nil {
-			t.Fatalf("list: %v", err)
-		}
-		if len(keysOf(page)) != 1 {
-			t.Errorf("%d rows for one tenant's app.target.test, want 1", len(keysOf(page)))
-		}
-	})
-}
-
-// What separates a facet from a statistic: the side counters of an ASM interface
-// are aggregations over the current filtered result, recomputed per query. Global
-// counts answer a different question.
-func TestTheFacetsReflectTheFilteredResult(t *testing.T) {
-	h := newHarness(t)
-	h.inventory(t)
-
-	h.scoped(t, h.org, func(tx pgx.Tx) {
-		ctx := context.Background()
-
-		global, err := search.Facets(ctx, tx, h.org, filter(t, `{"op":"and"}`))
-		if err != nil {
-			t.Fatalf("facets: %v", err)
-		}
-		if got := term(global, "port", "443"); got != 3 {
-			t.Errorf("port 443 over the whole inventory = %d, want 3", got)
-		}
-		if got := term(global, "country", "FR"); got != 2 {
-			t.Errorf("FR over the whole inventory = %d, want 2", got)
-		}
-
-		narrowed, err := search.Facets(ctx, tx, h.org,
-			filter(t, `{"op":"suffix","field":"host","value":".target.test"}`))
-		if err != nil {
-			t.Fatalf("facets: %v", err)
-		}
-		if got := term(narrowed, "port", "443"); got != 2 {
-			t.Errorf("port 443 under .target.test = %d, want 2: the facet is not reading the filter", got)
-		}
-		if got := term(narrowed, "technologies", "nginx"); got != 2 {
-			t.Errorf("nginx under .target.test = %d, want 2", got)
-		}
-		// A technology outside the filter must not appear at all, which is the
-		// discriminating half: a global aggregation would carry it.
-		if got := term(narrowed, "technologies", "apache"); got != 1 {
-			t.Errorf("apache under .target.test = %d, want 1", got)
-		}
-	})
-}
-
-// A value below the sidebar's cut is filterable yet was unreachable: "20+" with
-// nothing to click. Twenty-two technologies make the sidebar cut, leaving the rarest
-// unreachable; opening the facet asks the same aggregation over the same set,
-// bounded higher.
-func TestACutFacetOpensOnEveryValue(t *testing.T) {
-	h := newHarness(t)
-	ctx := context.Background()
-
-	// The rarest carried by one asset and the common one by all of them, so the
-	// order is the count and the tail is where the rare value lands.
-	for i := range 22 {
-		tech := []string{"common", fmt.Sprintf("tech%02d", i)}
-		for n := range i + 1 {
-			h.asset(t, h.org, fmt.Sprintf("a%02d-%02d.target.test:443/tcp", i, n),
-				map[string]any{"port": 443, "technologies": tech})
-		}
-	}
-	h.asset(t, h.org, "rare.target.test:443/tcp", map[string]any{
-		"port": 443, "technologies": []string{"common", "swagger"},
-	})
-
-	h.scoped(t, h.org, func(tx pgx.Tx) {
-		sidebar, err := search.Facets(ctx, tx, h.org, filter(t, `{"op":"and"}`))
-		if err != nil {
-			t.Fatalf("facets: %v", err)
-		}
-		if !cut(sidebar, "technologies") {
-			t.Fatal("the technologies facet was not cut, so this test measures nothing")
-		}
-		if term(sidebar, "technologies", "swagger") != 0 {
-			t.Fatal("the rare technology is inside the cap, so this test measures nothing")
-		}
-
-		opened, err := search.FacetValues(ctx, tx, h.org, filter(t, `{"op":"and"}`), "technologies")
-		if err != nil {
-			t.Fatalf("facet values: %v", err)
-		}
-		if got := term(opened, "technologies", "swagger"); got != 1 {
-			t.Errorf("swagger opened = %d, want the one asset carrying it", got)
-		}
-		if len(opened.Facets) != 1 || opened.Facets[0].Field != "technologies" {
-			t.Errorf("opening one facet answered %d of them", len(opened.Facets))
-		}
-		// The counts are the sidebar's counts, because it is the same
-		// aggregation over the same filtered set.
-		if term(opened, "technologies", "common") != term(sidebar, "technologies", "common") {
-			t.Error("the opened facet counts something else than the sidebar does")
-		}
-	})
-
-	// The filter still applies, since a facet is an aggregation over the
-	// filtered result and not over the inventory.
-	h.scoped(t, h.org, func(tx pgx.Tx) {
-		opened, err := search.FacetValues(ctx, tx, h.org,
-			filter(t, `{"op":"contains","field":"key","value":"rare."}`), "technologies")
-		if err != nil {
-			t.Fatalf("facet values: %v", err)
-		}
-		if term(opened, "technologies", "swagger") != 1 || term(opened, "technologies", "tech21") != 0 {
-			t.Error("the opened facet ignored the filter")
-		}
-	})
-
-	// A field that is not a facet is a refusal rather than an expression
-	// reaching the statement.
-	h.scoped(t, h.org, func(tx pgx.Tx) {
-		if _, err := search.FacetValues(ctx, tx, h.org, filter(t, `{"op":"and"}`), "c.key; DROP TABLE asset"); err == nil {
-			t.Error("a field outside the facet table was accepted")
-		}
-	})
-}
-
-// TestOneTenantNeverSeesAnother, without any query naming an organization.
-func TestOneTenantNeverSeesAnother(t *testing.T) {
-	h := newHarness(t)
-	h.inventory(t)
-
-	h.scoped(t, h.other, func(tx pgx.Tx) {
-		page, err := search.List(context.Background(), tx, h.other, search.Request{})
-		if err != nil {
-			t.Fatalf("list: %v", err)
-		}
-		if len(page.Rows) != 1 {
-			t.Errorf("the other tenant reads %d rows, want its own 1", len(page.Rows))
-		}
-	})
-
-	// And the counters are per organization, so a tenant cannot infer another's
-	// inventory size from a number.
-	h.scoped(t, h.org, func(tx pgx.Tx) {
-		page, err := search.List(context.Background(), tx, h.org, search.Request{
-			Filter:  filter(t, `{"op":"eq","field":"favicon_hash","value":"shared"}`),
-			Display: true,
-		})
-		if err != nil {
-			t.Fatalf("list: %v", err)
-		}
-		if len(page.Rows) != 2 {
-			t.Fatalf("%d assets carry the shared favicon, want 2", len(page.Rows))
-		}
-		for _, row := range page.Rows {
-			for _, pivot := range row.Pivots {
-				if pivot.Type == "favicon" && pivot.Count != 2 {
-					t.Errorf("the shared favicon counts %d, want 2: the counter is not per organization",
-						pivot.Count)
-				}
-			}
-		}
-	})
-}
-
-// TestAPivotLeadingOnlyToItselfIsNotBadged, and neither is a universal name.
-func TestAPivotLeadingOnlyToItselfIsNotBadged(t *testing.T) {
-	h := newHarness(t)
-	h.inventory(t)
-
-	h.scoped(t, h.org, func(tx pgx.Tx) {
-		page, err := search.List(context.Background(), tx, h.org, search.Request{
-			Filter:  filter(t, `{"op":"suffix","field":"host","value":".target.test"}`),
-			Display: true,
-		})
-		if err != nil {
-			t.Fatalf("list: %v", err)
-		}
-
-		for _, row := range page.Rows {
-			for _, pivot := range row.Pivots {
-				badged := pivot.Badge != nil && *pivot.Badge
-				switch {
-				case pivot.Value == "alone" && badged:
-					t.Error("a favicon carried by one asset is badged, and it leads only to itself")
-				case pivot.Value == "PHPSESSID" && badged:
-					t.Error("PHPSESSID is badged, and it is noise because it is universal")
-				case pivot.Value == "SESS_INTERNAL" && badged:
-					t.Error("an application cookie on one asset is badged")
-				case pivot.Value == "shared" && !badged:
-					t.Error("a favicon linking two assets is not badged, and that is the case that matters")
-				}
-			}
-		}
-
-		// And the data is all there. The denylist removes a badge, never a
-		// value: the explicit search still works.
-		found, err := search.List(context.Background(), tx, h.org, search.Request{
-			Filter: filter(t, `{"op":"contains","field":"cookie_name","value":"PHPSESSID"}`),
-		})
-		if err != nil {
-			t.Fatalf("list: %v", err)
-		}
-		if len(found.Rows) != 2 {
-			t.Errorf("a search for PHPSESSID returns %d rows, want 2: the denylist removed data", len(found.Rows))
-		}
-	})
-}
-
-// TestTheExportAppliesNoDisplayFilterAndImposesNoCap.
-func TestTheExportAppliesNoDisplayFilterAndImposesNoCap(t *testing.T) {
-	h := newHarness(t)
-	h.inventory(t)
-
-	h.scoped(t, h.org, func(tx pgx.Tx) {
-		ctx := context.Background()
-
-		var out bytes.Buffer
-		written, err := search.Export(ctx, tx, h.org, filter(t, `{"op":"and"}`),
-			search.FormatJSONL, 0, into(&out))
-		if err != nil {
-			t.Fatalf("export: %v", err)
-		}
-		if written != 5 {
-			t.Errorf("%d assets exported, want the whole tenant's 5", written)
-		}
-
-		lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-		if len(lines) != written {
-			t.Fatalf("%d lines for %d assets", len(lines), written)
-		}
-		// A file does not say what it omits, so a display decision in it is invisible. The
-		// export answers the counter and leaves the badge unanswered.
-		if strings.Contains(out.String(), `"badge"`) {
-			t.Error("the export carries a badge decision, which is a display filter inside a file")
-		}
-		if !strings.Contains(out.String(), "PHPSESSID") {
-			t.Error("the export dropped a value the denylist names, which the rule forbids")
-		}
-		// Lossless: attributes and lineage travel with it.
-		var first map[string]any
-		if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
-			t.Fatalf("decode a line: %v", err)
-		}
-		if _, ok := first["attributes"]; !ok {
-			t.Error("the JSONL export has no attributes, and it is the lossless one")
-		}
-		if _, ok := first["lineage"]; !ok {
-			t.Error("the JSONL export has no lineage")
-		}
-
-		// A limit can be asked for; it is never imposed.
-		out.Reset()
-		written, err = search.Export(ctx, tx, h.org, filter(t, `{"op":"and"}`),
-			search.FormatJSONL, 2, into(&out))
-		if err != nil {
-			t.Fatalf("bounded export: %v", err)
-		}
-		if written != 2 {
-			t.Errorf("a limit of 2 wrote %d rows", written)
-		}
-
-		// CSV flattens, and the loss is the one that was named.
-		out.Reset()
-		if _, err := search.Export(ctx, tx, h.org, filter(t, `{"op":"and"}`),
-			search.FormatCSV, 0, into(&out)); err != nil {
-			t.Fatalf("csv export: %v", err)
-		}
-		header, _, _ := strings.Cut(out.String(), "\n")
-		if strings.Contains(header, "attributes") || strings.Contains(header, "lineage") {
-			t.Errorf("the CSV header carries a nested object: %s", header)
-		}
-		if !strings.Contains(header, "volatility") || !strings.Contains(header, "technologies") {
-			t.Errorf("the CSV header is missing what it is supposed to flatten: %s", header)
-		}
-
-		// The URL projection carries only addresses that can actually be opened. A
-		// service has one only after a probe measured its scheme; a name does not.
-		out.Reset()
-		written, err = search.Export(ctx, tx, h.org, filter(t, `{"op":"and"}`),
-			search.FormatURLs, 0, into(&out))
-		if err != nil {
-			t.Fatalf("URL export: %v", err)
-		}
-		urls := strings.Split(strings.TrimSpace(out.String()), "\n")
-		if written != 4 || len(urls) != 4 {
-			t.Fatalf("URL export wrote %d lines, want the 4 measured services: %q", written, out.String())
-		}
-		for _, url := range urls {
-			if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
-				t.Errorf("URL export mixed a non-URL into the measured addresses: %q", url)
-			}
-		}
-		if !strings.Contains(out.String(), "https://app.target.test") {
-			t.Errorf("URL export omitted a measured service: %q", out.String())
-		}
-
-		out.Reset()
-		written, err = search.Export(ctx, tx, h.org, filter(t, `{"op":"and"}`),
-			search.FormatURLs, 2, into(&out))
-		if err != nil {
-			t.Fatalf("bounded URL export: %v", err)
-		}
-		if lines := strings.Split(strings.TrimSpace(out.String()), "\n"); written != 2 || len(lines) != 2 {
-			t.Errorf("bounded URL export wrote %d lines, want 2: %q", written, out.String())
-		}
-	})
-}
-
-// TestThePaginationIsStableAcrossAWalk.
-func TestThePaginationIsStableAcrossAWalk(t *testing.T) {
-	h := newHarness(t)
-
-	// Every row has the same instant, as a batch written in one transaction does.
-	// Without an identity tiebreaker the planner chooses the order and a walk can
-	// repeat or skip a row.
-	at := time.Now().UTC().Truncate(time.Second)
-	for i := range 25 {
-		h.asset(t, h.org, fmt.Sprintf("h%02d.target.test:443/tcp", i),
-			map[string]any{"port": 443, "last_seen": at})
-	}
-
-	h.scoped(t, h.org, func(tx pgx.Tx) {
-		ctx := context.Background()
-		seen := map[string]int{}
-		cursor := search.Cursor{}
-		for pages := 0; pages < 20; pages++ {
-			page, err := search.List(ctx, tx, h.org, search.Request{Limit: 7, Cursor: cursor})
-			if err != nil {
-				t.Fatalf("list: %v", err)
-			}
-			for _, row := range page.Rows {
-				seen[row.Key]++
-			}
-			if page.Next == "" {
-				break
-			}
-			var err2 error
-			if cursor, err2 = search.ParseCursor(page.Next); err2 != nil {
-				t.Fatalf("cursor: %v", err2)
-			}
-		}
-
-		if len(seen) != 25 {
-			t.Errorf("the walk saw %d distinct assets, want 25", len(seen))
-		}
-		for key, times := range seen {
-			if times != 1 {
-				t.Errorf("%s came back %d times in one walk", key, times)
-			}
-		}
-	})
-}
-
-// The export streams, so past the first page a failure cannot become a status.
-// Before it, it still can, and that separates "the database refused" from "my
-// inventory is empty" read off a zero-byte file.
-func TestAnExportThatFailsBeforeItBeginsIsNotAnEmptyFile(t *testing.T) {
-	h := newHarness(t)
-	h.inventory(t)
-
-	h.scoped(t, h.org, func(tx pgx.Tx) {
-		ctx := context.Background()
-
-		// A statement that cannot run: the transaction is left aborted, so the
-		// first page of the walk fails.
-		if _, err := tx.Exec(ctx, `SELECT 1 FROM no_such_table`); err == nil {
-			t.Fatal("the poisoning statement succeeded")
-		}
-
-		var out bytes.Buffer
-		opened := false
-		written, err := search.Export(ctx, tx, h.org, filter(t, `{"op":"and"}`),
-			search.FormatJSONL, 0, func() io.Writer {
-				opened = true
-				return &out
-			})
-		if err == nil {
-			t.Fatal("an export over a broken transaction reported success")
-		}
-		if written != 0 {
-			t.Errorf("%d rows written by a failed export", written)
-		}
-		if opened {
-			t.Error("the export committed to a response before its first page came back, so the " +
-				"caller reads a database failure as an empty inventory")
-		}
-		if out.Len() != 0 {
-			t.Errorf("a failed export wrote %d bytes", out.Len())
-		}
-	})
-}
-
-// into hands the export a writer, which is what a handler does once it has
-// decided the response is going to happen.
-func into(w io.Writer) func() io.Writer {
-	return func() io.Writer { return w }
-}
-
-func keysOf(page search.Page) []string {
-	out := make([]string, 0, len(page.Rows))
-	for _, row := range page.Rows {
-		out = append(out, row.Key)
+func hosts(keys []string) []string {
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		h, _, _ := strings.Cut(k, ":")
+		out = append(out, h)
 	}
 	return out
 }
 
-// cut says whether one facet came back truncated.
-func cut(page search.FacetPage, field string) bool {
-	for _, facet := range page.Facets {
-		if facet.Field == field {
-			return facet.Cut
+// The version table of the search page, row by row.
+func TestVersionTable(t *testing.T) {
+	w := setup(t)
+	nginx := func(vs ...string) []string {
+		var out []string
+		for _, v := range vs {
+			out = append(out, "nginx-"+strings.ReplaceAll(v, ".", "-")+".v.test")
+		}
+		return out
+	}
+	for q, want := range map[string][]string{
+		// The rows of the table on the page, on the hosts that carry one version each.
+		"tech:nginx@1.24 apex:v.test":         nginx("1.24", "1.24.9"),
+		"tech:nginx@1.24.0 apex:v.test":       nil,
+		"tech:nginx@<1.25 apex:v.test":        nginx("1.2", "1.9", "1.23.9", "1.24", "1.24.9"),
+		"tech:nginx@<=1.24 apex:v.test":       nginx("1.2", "1.9", "1.23.9", "1.24", "1.24.9"),
+		"tech:nginx@>1.24 apex:v.test":        nginx("1.25", "1.25.0", "1.25.1", "1.30", "2.0"),
+		"tech:nginx@>=1.24 apex:v.test":       nginx("1.24", "1.24.9", "1.25", "1.25.0", "1.25.1", "1.30", "2.0"),
+		"tech:wordpress@5.0..6.1 apex:v.test": {"wp-5-0.v.test", "wp-6-1-5.v.test"},
+		"tech:php@7,8.0 apex:v.test":          {"php-7-4.v.test", "php-8-0-1.v.test"},
+		"tech:jquery@? apex:v.test":           {"jq.v.test"},
+		"tech:nginx apex:v.test":              nginx("1.2", "1.9", "1.23.9", "1.24", "1.24.9", "1.25", "1.25.0", "1.25.1", "1.30", "2.0"),
+	} {
+		got := hosts(w.keys(t, q, ""))
+		slices.Sort(want)
+		if !slices.Equal(got, want) {
+			t.Errorf("%s\n  got  %v\n  want %v", q, got, want)
 		}
 	}
-	return false
+	// 1.24.0 matches itself, not 1.24 (the row of the table).
+	if got := hosts(w.keys(t, "tech:nginx@1.24.0", "")); !slices.Equal(got, []string{"app.acme.com"}) {
+		t.Errorf("@1.24.0 = %v", got)
+	}
+	// A version is bound to its own technology: PHP 8.1 does not make nginx 8.1.
+	if got := w.keys(t, "tech:nginx@8.1", ""); len(got) != 0 {
+		t.Errorf("@8.1 on nginx matched %v", got)
+	}
 }
 
-func term(page search.FacetPage, field, value string) int {
-	for _, facet := range page.Facets {
-		if facet.Field != field {
+func TestPageExamples(t *testing.T) {
+	w := setup(t)
+	for q, want := range map[string][]string{
+		"tech:nginx@<1.25 status:2xx port:8080,8443 -cdn:cloudflare": {"app.acme.com:8443/tcp"},
+		"tech:wordpress@5.0..6.1 program:acme* first_seen:<7d":       {"www.acme.com:443/tcp"},
+		"(status:401 OR status:403) has:favicon -triage:ignored":     {"dev2.acme.com:8080/tcp", "old.foo.io:443/tcp"},
+		"port:2375,2376,6443,10250 -state:inactive,archived":         {"docker.acme.com:2375/tcp"},
+
+		"server:nginx*":                 {"app.acme.com:8443/tcp"},
+		"title:*admin*":                 {"app.acme.com:8443/tcp"},
+		`title:"Sign in"`:               {"www.acme.com:443/tcp"},
+		"status:>=500":                  {"eviltarget.com:443/tcp"},
+		"status:400..499 program:acme":  {"dev1.acme.com:8080/tcp", "dev2.acme.com:8080/tcp", "docker.acme.com:2375/tcp"},
+		`host:/^dev[0-9]+\./`:           {"dev1.acme.com:8080/tcp", "dev2.acme.com:8080/tcp"},
+		"has:screenshot":                {"app.acme.com:8443/tcp"},
+		"(port:9200 OR port:5601)":      {"es.acme.com:9200/tcp", "kibana.acme.com:5601/tcp"},
+		"status:4xx,5xx program:foo":    {"old.foo.io:443/tcp"},
+		"apex:acme.com port:8443":       {"app.acme.com:8443/tcp"},
+		"apex:target.com":               nil, // eviltarget.com is not under target.com
+		"cname:*.cloudflare.net":        nil, // cname lives on hosts, the services view has none
+		"header.x-powered-by:PHP*":      {"app.acme.com:8443/tcp"},
+		"category:\"Web servers\"":      {"app.acme.com:8443/tcp"},
+		"ip:10.0.0.0/8":                 {"app.acme.com:8443/tcp"},
+		"favicon:-1293034 program:acme": {"app.acme.com:8443/tcp", "dev1.acme.com:8080/tcp", "dev2.acme.com:8080/tcp"},
+		"triage:ignored":                {"dev1.acme.com:8080/tcp"},
+		"tech:jenkins@<2.440":           {"jenkins.acme.com:8080/tcp"},
+		"port:3306,5432,27017,6379,9200 -state:inactive,archived": {"es.acme.com:9200/tcp"},
+		`title:*login*,"*sign in*" first_seen:<7d`:                {"dev2.acme.com:8080/tcp", "www.acme.com:443/tcp"},
+		"first_seen:>7d program:acme":                             {"eviltarget.com:443/tcp", "gone.acme.com:6443/tcp", "jenkins.acme.com:8080/tcp"},
+	} {
+		got := w.keys(t, q, "")
+		slices.Sort(want)
+		if !slices.Equal(got, want) {
+			t.Errorf("%s\n  got  %v\n  want %v", q, got, want)
+		}
+	}
+	// cname is on the host: the hosts and assets views see it.
+	if got := w.keys(t, "cname:*.cloudflare.net", search.ViewAssets); !slices.Equal(got, []string{"www.acme.com"}) {
+		t.Errorf("cname in the assets view = %v", got)
+	}
+	// The hosts view folds matching services into their host.
+	page, err := search.Search(context.Background(), w.st.Pool, search.Request{Query: "port:8080 program:acme", View: search.ViewHosts, Limit: 50, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Rows) != 3 || page.Rows[0].Kind != "fqdn" || len(page.Rows[0].Services) != 1 {
+		t.Errorf("hosts view = %+v", page.Rows)
+	}
+}
+
+// Every query on the search page parses, prints back to itself, compiles and
+// runs: a new example on the page that the language does not accept fails here.
+func TestEveryQueryOnThePageRuns(t *testing.T) {
+	w := setup(t)
+	doc, err := os.ReadFile("../../docs/src/content/docs/architecture/search.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Inline code spans holding field:value, and the lines of the first code block.
+	span := regexp.MustCompile("`([^`\n]*[a-z_]+:[^`\n]*)`")
+	var queries []string
+	for _, m := range span.FindAllStringSubmatch(string(doc), -1) {
+		queries = append(queries, m[1])
+	}
+	block := regexp.MustCompile("(?s)```\n(.*?)```")
+	if b := block.FindStringSubmatch(string(doc)); b != nil {
+		queries = append(queries, strings.Split(strings.TrimSpace(b[1]), "\n")...)
+	}
+	ran := 0
+	for _, q := range queries {
+		// Grammar fragments and field names in prose are not queries.
+		if strings.Contains(q, "=") || strings.HasPrefix(q, "GET ") || strings.Contains(q, "<name>") || strings.Contains(q, "<value>") ||
+			strings.HasPrefix(q, "change:") || q == "has:field" || strings.HasSuffix(q, ":") || strings.HasPrefix(q, "field:") ||
+			strings.HasPrefix(q, "tech:name") {
 			continue
 		}
-		for _, entry := range facet.Terms {
-			if entry.Value == value {
-				return entry.Count
-			}
-		}
-	}
-	return 0
-}
-
-// The boundary demonstrated, not read. The interface queries asset_current; the
-// list, facets and export never touch the journal, as they run over a million rows
-// and on every keystroke. Rereading code is a statement about the reader; revoking
-// the privilege makes the database answer.
-func TestNoQueryTouchesTheJournal(t *testing.T) {
-	h := newHarness(t)
-	h.inventory(t)
-	ctx := context.Background()
-
-	h.exec(t, `ALTER ROLE asm_app WITH LOGIN PASSWORD 'app-password-for-a-container'`)
-	h.exec(t, `REVOKE SELECT ON observation FROM asm_app`)
-	// The privilege comes from ALTER DEFAULT PRIVILEGES, which does not reach the
-	// partitions: revoking on the parent alone leaves every one readable, and a test
-	// stopping there proves nothing.
-	h.exec(t, `DO $$
-	           DECLARE part record;
-	           BEGIN
-	               FOR part IN SELECT c.oid::regclass AS name FROM pg_class c
-	                            JOIN pg_inherits i ON i.inhrelid = c.oid
-	                           WHERE i.inhparent = 'observation'::regclass
-	               LOOP
-	                   EXECUTE format('REVOKE SELECT ON %s FROM asm_app', part.name);
-	               END LOOP;
-	           END $$`)
-
-	url := h.url
-	cfg, err := pgxpool.ParseConfig(url)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	appURL := fmt.Sprintf("postgres://asm_app:%s@%s:%d/%s?sslmode=disable",
-		"app-password-for-a-container", cfg.ConnConfig.Host, cfg.ConnConfig.Port, cfg.ConnConfig.Database)
-	app, err := pgxpool.New(ctx, appURL)
-	if err != nil {
-		t.Fatalf("pool: %v", err)
-	}
-	defer app.Close()
-
-	tx, err := app.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `SELECT set_config('app.org_id', $1, true)`, h.org.String()); err != nil {
-		t.Fatalf("scope: %v", err)
-	}
-
-	// The revocation has to bite, or everything below passes on a privilege
-	// that was never removed.
-	if _, err := tx.Exec(ctx, `SELECT 1 FROM observation LIMIT 1`); err == nil {
-		t.Fatal("the application role still reads the journal, so this test measures nothing")
-	}
-	_ = tx.Rollback(ctx)
-
-	tx, err = app.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `SELECT set_config('app.org_id', $1, true)`, h.org.String()); err != nil {
-		t.Fatalf("scope: %v", err)
-	}
-
-	page, err := search.List(ctx, tx, h.org, search.Request{Display: true})
-	if err != nil {
-		t.Fatalf("the list reads the journal: %v", err)
-	}
-	if len(page.Rows) == 0 {
-		t.Fatal("the list came back empty, so it proves nothing about the journal")
-	}
-	if _, err := search.Facets(ctx, tx, h.org, filter(t, `{"op":"and"}`)); err != nil {
-		t.Errorf("the facets read the journal: %v", err)
-	}
-	var out bytes.Buffer
-	if _, err := search.Export(ctx, tx, h.org, filter(t, `{"op":"and"}`),
-		search.FormatJSONL, 0, into(&out)); err != nil {
-		t.Errorf("the export reads the journal: %v", err)
-	}
-}
-
-// The third state of a nullable boolean, proved against PostgreSQL. is_cdn is null
-// when no pass could look: a timed-out resolution carries no address, CNAME or
-// provider, and writing false would clear the flag on a genuinely fronted asset.
-// Candidates and hand-entered hosts stay null until something reaches them.
-//
-// The middle assertion matters: "everything not fronted" as a negation looks
-// complete but NOT (NULL = true) is NULL, which excludes the row, so unlooked-at
-// assets vanish from an answer claiming to cover all.
-func TestANegationDoesNotReachTheStateOnlyExistsCanAskFor(t *testing.T) {
-	h := newHarness(t)
-
-	h.asset(t, h.org, "fronted.target.test:443/tcp", map[string]any{
-		"port": 443, "scheme": "https", "is_cdn": true, "cdn_provider": "cloudflare",
-	})
-	h.asset(t, h.org, "direct.target.test:443/tcp", map[string]any{
-		"port": 443, "scheme": "https", "is_cdn": false,
-	})
-	// No is_cdn at all, which is the row this test exists for.
-	h.asset(t, h.org, "unlooked.target.test:443/tcp", map[string]any{
-		"port": 443, "scheme": "https",
-	})
-
-	ask := func(t *testing.T, tx pgx.Tx, tree string) []string {
-		t.Helper()
-
-		page, err := search.List(context.Background(), tx, h.org, search.Request{
-			Filter: filter(t, tree),
-		})
+		n, err := search.Parse(q)
 		if err != nil {
-			t.Fatalf("list %s: %v", tree, err)
+			t.Errorf("%q does not parse: %v", q, err)
+			continue
 		}
-		keys := keysOf(page)
-		sort.Strings(keys)
-		return keys
+		if again, err := search.Parse(n.String()); err != nil || again.String() != n.String() {
+			t.Errorf("%q does not print back: %q", q, n.String())
+		}
+		if _, err := search.Search(context.Background(), w.st.Pool, search.Request{Query: q, Limit: 5, Now: now}); err != nil {
+			t.Errorf("%q does not run: %v", q, err)
+			continue
+		}
+		ran++
 	}
-
-	h.scoped(t, h.org, func(tx pgx.Tx) {
-		if got := ask(t, tx, `{"op":"exists","field":"is_cdn","value":false}`); len(got) != 1 ||
-			got[0] != "unlooked.target.test:443/tcp" {
-			t.Errorf("exists false answered %v, want the one asset nobody has looked at", got)
-		}
-
-		// The same question asked the way somebody would write it without this
-		// operator, and it comes back short.
-		negated := ask(t, tx, `{"op":"not","clauses":[{"op":"eq","field":"is_cdn","value":true}]}`)
-		for _, key := range negated {
-			if key == "unlooked.target.test:443/tcp" {
-				t.Fatal("a negation returned the null row, so exists is answering a question that " +
-					"was already expressible and this whole operator is redundant")
-			}
-		}
-		if len(negated) != 1 {
-			t.Errorf("the negation answered %v, want only the asset known not to be fronted", negated)
-		}
-
-		// And the two together are what "not fronted, as far as anybody knows"
-		// actually needs.
-		both := ask(t, tx, `{"op":"or","clauses":[
-			{"op":"eq","field":"is_cdn","value":false},
-			{"op":"exists","field":"is_cdn","value":false}]}`)
-		if len(both) != 2 {
-			t.Errorf("the union answered %v, want the direct asset and the unlooked one", both)
-		}
-
-		if got := ask(t, tx, `{"op":"exists","field":"is_cdn","value":true}`); len(got) != 2 {
-			t.Errorf("exists true answered %v, want the two assets something has looked at", got)
-		}
-	})
+	if ran < 40 {
+		t.Errorf("only %d queries found on the page: the extraction broke", ran)
+	}
 }
 
-// The grouping's consequence, measured against PostgreSQL. SQL binds AND tighter
-// than OR and the tree does not, so a flat nested group lets its OR branch escape
-// every condition. This asks "on port 443, and answering 200 or 301" with an asset
-// satisfying only the OR branch on another port: flat, it comes back and the answer
-// covers the whole tenant; parenthesised, it does not.
-func TestAnOrInsideAnAndDoesNotEscapeIt(t *testing.T) {
-	h := newHarness(t)
-
-	h.asset(t, h.org, "kept.target.test:443/tcp", map[string]any{
-		"port": 443, "scheme": "https", "status_code": 301,
-	})
-	h.asset(t, h.org, "other-port.target.test:8080/tcp", map[string]any{
-		"port": 8080, "scheme": "http", "status_code": 301,
-	})
-	h.asset(t, h.org, "other-status.target.test:443/tcp", map[string]any{
-		"port": 443, "scheme": "https", "status_code": 404,
-	})
-
-	h.scoped(t, h.org, func(tx pgx.Tx) {
-		page, err := search.List(context.Background(), tx, h.org, search.Request{
-			Filter: filter(t, `{"op":"and","clauses":[
-				{"op":"eq","field":"port","value":443},
-				{"op":"or","clauses":[
-					{"op":"eq","field":"status_code","value":200},
-					{"op":"eq","field":"status_code","value":301}]}]}`),
-		})
-		if err != nil {
-			t.Fatalf("list: %v", err)
+func TestRefusalsNameWhatIsWrong(t *testing.T) {
+	w := setup(t)
+	for q, kind := range map[string]string{
+		"techs:nginx":       "unknown_field",
+		"status:abc":        "bad_value",
+		"state:alive":       "bad_value",
+		"title:>5":          "bad_value",
+		"host:/(/":          "bad_value",
+		"has:everything":    "unknown_field",
+		"first_seen:monday": "bad_value",
+		"tech:nginx@latest": "bad_value",
+		"scope:inside":      "bad_value",
+	} {
+		_, err := search.Search(context.Background(), w.st.Pool, search.Request{Query: q, Limit: 5, Now: now})
+		var qe *search.QueryError
+		if !asQueryError(err, &qe) || qe.Kind != kind {
+			t.Errorf("%s: err = %v, want %s", q, err, kind)
 		}
+	}
+	_, err := search.Search(context.Background(), w.st.Pool, search.Request{Query: "techs:nginx", Limit: 5, Now: now})
+	var qe *search.QueryError
+	if asQueryError(err, &qe) && qe.Suggest != "tech" {
+		t.Errorf("suggest = %q, want tech", qe.Suggest)
+	}
+}
 
-		keys := keysOf(page)
-		sort.Strings(keys)
-		for _, key := range keys {
-			if key == "other-port.target.test:8080/tcp" {
-				t.Fatal("an asset on another port came back through the OR branch, so the " +
-					"port condition beside it was not applied and the answer is about the " +
-					"whole tenant")
+func asQueryError(err error, target **search.QueryError) bool {
+	qe, ok := err.(*search.QueryError) //nolint:errorlint // the search package returns it unwrapped
+	if ok {
+		*target = qe
+	}
+	return ok
+}
+
+func TestCursorWalksEverythingOnceAndIsTiedToItsView(t *testing.T) {
+	w := setup(t)
+	all := w.keys(t, "", "")
+	req := search.Request{Limit: 3, Now: now}
+	var walked []string
+	for {
+		page, err := search.Search(context.Background(), w.st.Pool, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range page.Rows {
+			walked = append(walked, r.Key)
+		}
+		if page.Next == "" {
+			break
+		}
+		if _, err := search.Search(context.Background(), w.st.Pool, search.Request{View: search.ViewHosts, Cursor: page.Next, Limit: 3, Now: now}); err != search.ErrBadCursor { //nolint:errorlint // sentinel
+			t.Fatalf("a services cursor in the hosts view: %v", err)
+		}
+		req.Cursor = page.Next
+	}
+	slices.Sort(walked)
+	if !slices.Equal(walked, all) {
+		t.Errorf("paging by 3 walked %d rows, a single page has %d", len(walked), len(all))
+	}
+}
+
+func TestFacets(t *testing.T) {
+	w := setup(t)
+	f, err := search.Facets(context.Background(), w.st.Pool, search.Request{Query: "program:acme", Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	find := func(name, value string) int {
+		for _, c := range f[name] {
+			if c.Value == value {
+				return c.Count
 			}
 		}
-		if len(keys) != 1 || keys[0] != "kept.target.test:443/tcp" {
-			t.Errorf("answered %v, want only the asset satisfying both halves", keys)
+		return -1
+	}
+	if n := find("technologies", "Nginx"); n != 3 {
+		t.Errorf("Nginx facet = %d, want 3", n)
+	}
+	if n := find("status", "4xx"); n != 3 {
+		t.Errorf("4xx facet = %d, want 3", n)
+	}
+	for _, c := range f["technologies"] {
+		if _, err := search.Parse(c.Term); err != nil {
+			t.Errorf("facet term %q does not parse", c.Term)
 		}
-	})
+	}
+}
+
+func TestNegatedKindKeepsTheView(t *testing.T) {
+	w := setup(t)
+	for _, k := range w.keys(t, "-kind:url program:acme", "") {
+		if !strings.Contains(k, "/tcp") {
+			t.Fatalf("-kind:url in the services view returned %q, not a service", k)
+		}
+	}
+}
+
+func TestHostsViewFoldsUnderAddresses(t *testing.T) {
+	w := setup(t)
+	w.add(t, svc{program: "acme", host: "10.0.0.5", port: 8443, status: 200, title: "Appliance", age: time.Hour})
+	if _, err := w.st.Pool.Exec(context.Background(), `UPDATE asset SET kind = 'ip' WHERE key = '10.0.0.5';
+		UPDATE asset_current SET kind = 'ip' WHERE key = '10.0.0.5'`); err != nil {
+		t.Fatal(err)
+	}
+	page, err := search.Search(context.Background(), w.st.Pool, search.Request{Query: "title:Appliance", View: search.ViewHosts, Limit: 10, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Rows) != 1 || page.Rows[0].Key != "10.0.0.5" || len(page.Rows[0].Services) != 1 {
+		t.Errorf("a service on an address host in the hosts view = %+v", page.Rows)
+	}
+}
+
+func TestLightExportSkipsWhatItDoesNotPrint(t *testing.T) {
+	w := setup(t)
+	var full, light []search.Row
+	req := search.Request{Query: "has:screenshot", Now: now}
+	if err := search.Export(context.Background(), w.st.Pool, req, false, func(r search.Row) error { full = append(full, r); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := search.Export(context.Background(), w.st.Pool, req, true, func(r search.Row) error { light = append(light, r); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(full) != 1 || len(light) != 1 || full[0].Thumbnail == nil || light[0].Thumbnail != nil || light[0].URL() != full[0].URL() {
+		t.Errorf("full %+v\nlight %+v", full, light)
+	}
 }

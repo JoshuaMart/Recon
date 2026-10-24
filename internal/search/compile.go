@@ -1,449 +1,423 @@
 package search
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/netip"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/JoshuaMart/recon/internal/fingerprint"
 )
 
-// Compiled is a WHERE fragment and the values it binds.
+// From is what a compiled query selects from. The compiler only emits the
+// WHERE condition over these aliases.
+const From = `asset_current ac
+JOIN program p ON p.id = ac.program_id
+JOIN asset a ON a.id = ac.asset_id
+LEFT JOIN triage tr ON tr.asset_id = ac.asset_id`
+
+// QueryError is a query that parses and asks for something the language does
+// not have.
+type QueryError struct {
+	Kind    string // unknown_field, bad_value
+	Field   string
+	Detail  string
+	Suggest string
+}
+
+func (e *QueryError) Error() string { return e.Detail }
+
+// Compiled is a condition and its bind parameters, numbered from $1.
 type Compiled struct {
-	SQL  string
-	Args []any
+	Where string
+	Args  []any
 }
 
-// builder accumulates the parameters as the tree is walked.
-type builder struct{ args []any }
+// Compile turns a tree into a parameterized condition. A nil tree is TRUE.
+// Every value is a bind parameter: nothing from the query reaches the SQL
+// text but field names, which come from the registry.
+func Compile(n Node, now time.Time) (Compiled, error) { return compile(n, now, false) }
 
-// bind adds a value and returns its placeholder.
-func (b *builder) bind(value any) string {
-	b.args = append(b.args, value)
-	return "$" + strconv.Itoa(len(b.args))
-}
-
-// Compile turns a tree into SQL for one organization. The organization is emitted here,
-// outside the tree, on every compilation including an empty one: a clause the caller can
-// express is one the caller can forget, and this query is not in the static query files, so
-// the tenant guard does not see it. Defence in order of strength: this structural clause
-// (required by a test), then row-level security, which the compiler cannot remove.
-func Compile(org uuid.UUID, node Node) (Compiled, error) {
-	if org == uuid.Nil {
-		return Compiled{}, refuse("a query was compiled with no organization")
+func compile(n Node, now time.Time, feed bool) (Compiled, error) {
+	c := &compiler{now: now, feed: feed}
+	if n == nil {
+		return Compiled{Where: "TRUE"}, nil
 	}
-
-	b := &builder{}
-	tenant := Alias + ".org_id = " + b.bind(org)
-
-	clause, err := b.node(node, 0)
+	w, err := c.node(n)
 	if err != nil {
 		return Compiled{}, err
 	}
-	if clause == "" {
-		return Compiled{SQL: tenant, Args: b.args}, nil
-	}
-	return Compiled{SQL: tenant + " AND (" + clause + ")", Args: b.args}, nil
+	return Compiled{Where: w, Args: c.args}, nil
 }
 
-func (b *builder) node(n Node, depth int) (string, error) {
-	switch n.Op {
-	// The zero value, passed by a caller filtering on nothing. Reaching the leaf
-	// path would refuse the most common request with a message about an empty
-	// operator.
-	case "":
-		if depth > 0 {
-			return "", refuse("a clause with no operator")
-		}
-		return "", nil
+// MentionsKind reports whether a query asks for kinds itself, in which case a
+// view does not narrow it. Only a kind asked for counts: -kind:url in the
+// services view means services without the URLs, not everything else.
+func MentionsKind(n Node) bool { return asksKind(n, true) }
 
-	case OpAnd, OpOr:
-		return b.group(n, strings.ToUpper(n.Op), depth)
+func asksKind(n Node, positive bool) bool {
+	switch v := n.(type) {
+	case And:
+		return asksKind(v.Left, positive) || asksKind(v.Right, positive)
+	case Or:
+		return asksKind(v.Left, positive) || asksKind(v.Right, positive)
+	case Not:
+		return asksKind(v.Node, !positive)
+	case Term:
+		return positive && v.Field == "kind"
+	}
+	return false
+}
 
-	case OpNot:
-		inner, err := b.group(n, "AND", depth)
+type compiler struct {
+	now  time.Time
+	args []any
+	// feed allows change:, which reads the change a feed row is.
+	feed bool
+}
+
+func (c *compiler) arg(v any) string {
+	c.args = append(c.args, v)
+	return "$" + strconv.Itoa(len(c.args))
+}
+
+func (c *compiler) node(n Node) (string, error) {
+	switch v := n.(type) {
+	case And:
+		l, err := c.node(v.Left)
 		if err != nil {
 			return "", err
 		}
-		if inner == "" {
-			// Unreachable while a nested empty group is refused. Kept so relaxing that rule
-			// cannot turn a negation into its opposite: an empty group means "no
-			// constraint", and dropping the NOT would answer the whole inventory instead of
-			// nothing.
-			return "", refuse("a negation with nothing to negate")
-		}
-		return "NOT (" + inner + ")", nil
-
-	default:
-		return b.leaf(n)
-	}
-}
-
-func (b *builder) group(n Node, joiner string, depth int) (string, error) {
-	parts := make([]string, 0, len(n.Clauses))
-	for _, clause := range n.Clauses {
-		compiled, err := b.node(clause, depth+1)
+		r, err := c.node(v.Right)
+		return "(" + l + " AND " + r + ")", err
+	case Or:
+		l, err := c.node(v.Left)
 		if err != nil {
 			return "", err
 		}
-		parts = append(parts, compiled)
-	}
-
-	if len(parts) == 0 {
-		// At the root an empty group is not an error: it is what an interface sends
-		// before any facet is clicked, and the whole tenant is right.
-		//
-		// Elsewhere it is refused, because every reading is a guess. An empty AND is
-		// TRUE and an empty OR is FALSE, so "or(port=443, and())" means everything and
-		// "and(port=443, or())" nothing, while a console that cleared a group's last
-		// facet meant neither. Refusing names the group.
-		if depth > 0 {
-			return "", refuse("a %q group with nothing in it", n.Op)
-		}
-		return "", nil
-	}
-	// Parenthesised, because SQL binds AND tighter than OR and the tree does not.
-	// Flat, "and(a, or(b, c))" is "(a AND b) OR c", and the OR branch escapes every
-	// condition beside it.
-	//
-	// The failure is silent and widens: "port 443, and 200 or 301" returns every
-	// 301 on any port, which looks like a result. It widens within a tenant only,
-	// as Compile wraps the tree before joining the tenant clause.
-	joined := strings.Join(parts, " "+joiner+" ")
-	if len(parts) > 1 {
-		joined = "(" + joined + ")"
-	}
-	return joined, nil
-}
-
-func (b *builder) leaf(n Node) (string, error) {
-	entry := registry[n.Field]
-
-	switch entry.kind {
-	case kindJSONText, kindJSONArray:
-		return b.containment(entry, n)
-	case kindJSONExists:
-		return b.exists(entry, n)
-	case kindTextArray:
-		return b.array(entry, n)
-	case kindInet:
-		return b.address(entry, n)
-	case kindUUID:
-		return b.identifier(entry, n)
-	case kindTimestamp:
-		return b.instant(entry, n)
-	case kindBool:
-		value, ok := n.Value.(bool)
+		r, err := c.node(v.Right)
+		return "(" + l + " OR " + r + ")", err
+	case Not:
+		inner, err := c.node(v.Node)
+		return "NOT " + inner, err
+	case Has:
+		cond, ok := hasFields[v.Field]
 		if !ok {
-			return "", refuse("%q takes true or false", n.Field)
-		}
-		// A nullable boolean has three states, and exists asks about the third ("is
-		// there a value"), as over the attributes object.
-		//
-		// It is also the only way to ask: NOT (NULL = true) is NULL and excludes the
-		// row, so the state and its negation are otherwise unexpressible.
-		if n.Op == OpExists {
-			if value {
-				return entry.expr + " IS NOT NULL", nil
+			names := make([]string, 0, len(hasFields))
+			for h := range hasFields {
+				names = append(names, h)
 			}
-			return entry.expr + " IS NULL", nil
+			return "", &QueryError{Kind: "unknown_field", Field: "has:" + v.Field, Detail: fmt.Sprintf("has: does not know %q", v.Field), Suggest: suggest(v.Field, names)}
 		}
-		return entry.expr + " = " + b.bind(value), nil
-	case kindInt:
-		return b.number(entry, n)
-	default:
-		return b.text(entry, n)
+		return "COALESCE((" + cond + "), false)", nil
+	case Term:
+		cond, err := c.term(v)
+		// A term is false, never unknown, so NOT keeps what has no value.
+		return "COALESCE((" + cond + "), false)", err
 	}
+	return "", fmt.Errorf("search: unknown node %T", n)
 }
 
-// containment is the only shape the JSONB fields compile to. The object is built
-// in Go and bound as one parameter, so a caller's value is never a fragment. It
-// covers scalar and array keys, which the GIN index answers.
-func (b *builder) containment(entry field, n Node) (string, error) {
-	value, ok := n.Value.(string)
-	if !ok || value == "" {
-		return "", refuse("%q takes a non-empty string", n.Field)
+func (c *compiler) term(t Term) (string, error) {
+	if name, ok := strings.CutPrefix(t.Field, "header."); ok && name != "" {
+		return c.anyOf(t, func(v Value) (string, error) {
+			return c.text("ac.headers ->> "+c.arg(strings.ToLower(name)), t.Field, v)
+		})
 	}
-
-	var object map[string]any
-	if entry.kind == kindJSONArray {
-		object = map[string]any{entry.key: []string{value}}
-	} else {
-		object = map[string]any{entry.key: value}
+	if t.Field == changeField.Name {
+		if !c.feed {
+			return "", &QueryError{Kind: "unknown_field", Field: t.Field, Detail: "change: filters the changes feed only"}
+		}
+		return c.enum(changeField, t)
 	}
-	encoded, err := json.Marshal(object)
-	if err != nil {
-		return "", refuse("%q could not be encoded", n.Field)
-	}
-	return Alias + ".attributes @> " + b.bind(encoded) + "::jsonb", nil
-}
-
-func (b *builder) exists(entry field, n Node) (string, error) {
-	present, ok := n.Value.(bool)
+	f, ok := fields[t.Field]
 	if !ok {
-		return "", refuse("%q takes true or false", n.Field)
+		names := make([]string, 0, len(fields))
+		for n := range fields {
+			names = append(names, n)
+		}
+		return "", &QueryError{Kind: "unknown_field", Field: t.Field, Detail: fmt.Sprintf("unknown field %q", t.Field), Suggest: suggest(t.Field, names)}
 	}
-	clause := Alias + ".attributes ? " + b.bind(entry.key)
-	if !present {
-		return "NOT (" + clause + ")", nil
+	if (t.NoVersion || len(t.Versions) > 0) && f.Kind != KTech {
+		return "", c.bad(t.Field, "only tech takes a version")
 	}
-	return clause, nil
+	switch f.Kind {
+	case KText:
+		col := f.column
+		if t.Field == "program" {
+			return c.anyOf(t, func(v Value) (string, error) {
+				a, err := c.text("p.name", t.Field, v)
+				if err != nil {
+					return "", err
+				}
+				b, err := c.text("p.slug", t.Field, v)
+				return "(" + a + " OR " + b + ")", err
+			})
+		}
+		return c.anyOf(t, func(v Value) (string, error) { return c.text(col, t.Field, v) })
+	case KDomain:
+		return c.anyOf(t, func(v Value) (string, error) { return c.domain(f.column, t.Field, v) })
+	case KEnum:
+		return c.enum(f, t)
+	case KNumber, KStatus:
+		return c.anyOf(t, func(v Value) (string, error) { return c.number(f, t.Field, v) })
+	case KIP:
+		return c.anyOf(t, func(v Value) (string, error) { return c.ip(f.column, t.Field, v) })
+	case KArray, KHeader:
+		return c.anyOf(t, func(v Value) (string, error) {
+			m, err := c.text("e", t.Field, v)
+			return "EXISTS (SELECT 1 FROM unnest(" + f.column + ") e WHERE " + m + ")", err
+		})
+	case KDate:
+		return c.anyOf(t, func(v Value) (string, error) { return c.date(f.column, t.Field, v) })
+	case KTech:
+		return c.tech(t)
+	case KCategory:
+		return c.anyOf(t, func(v Value) (string, error) {
+			m, err := c.text("tc.category", t.Field, v)
+			return "EXISTS (SELECT 1 FROM asset_tech tc WHERE tc.asset_id = ac.asset_id AND " + m + ")", err
+		})
+	}
+	return "", fmt.Errorf("search: field %q has no compiler", t.Field)
 }
 
-func (b *builder) array(entry field, n Node) (string, error) {
-	switch n.Op {
-	case OpContains:
-		value, ok := n.Value.(string)
-		if !ok || value == "" {
-			return "", refuse("%q takes a non-empty string", n.Field)
-		}
-		// Containment, not ANY: it is what the GIN index answers.
-		return entry.expr + " @> ARRAY[" + b.bind(value) + "]::text[]", nil
+func (c *compiler) bad(field, format string, a ...any) error {
+	return &QueryError{Kind: "bad_value", Field: field, Detail: field + ": " + fmt.Sprintf(format, a...)}
+}
 
-	case OpIn:
-		values, err := stringList(n)
+// anyOf ORs a term's values.
+func (c *compiler) anyOf(t Term, one func(Value) (string, error)) (string, error) {
+	parts := make([]string, 0, len(t.Values))
+	for _, v := range t.Values {
+		p, err := one(v)
 		if err != nil {
 			return "", err
 		}
-		return entry.expr + " && " + b.bind(values) + "::text[]", nil
-
-	default:
-		return "", refuse("%q does not accept %q", n.Field, n.Op)
+		parts = append(parts, p)
 	}
+	if len(parts) == 1 {
+		return parts[0], nil
+	}
+	return "(" + strings.Join(parts, " OR ") + ")", nil
 }
 
-func (b *builder) address(entry field, n Node) (string, error) {
-	value, ok := n.Value.(string)
-	if !ok {
-		return "", refuse("%q takes an address", n.Field)
-	}
+const maxRegex = 200
 
-	switch n.Op {
-	case OpEq:
-		parsed, err := netip.ParseAddr(value)
-		if err != nil {
-			return "", refuse("%q is not an address", value)
+// text is equality without case, a glob with *, or a regex.
+func (c *compiler) text(col, field string, v Value) (string, error) {
+	switch {
+	case v.Op != "" || v.To != "":
+		return "", c.bad(field, "a text field takes no comparison or range")
+	case v.Regex:
+		if len(v.Lit) > maxRegex {
+			return "", c.bad(field, "a regex longer than %d characters", maxRegex)
 		}
-		return entry.expr + " = " + b.bind(parsed.String()) + "::inet", nil
-
-	case OpInCIDR:
-		prefix, err := netip.ParsePrefix(value)
-		if err != nil {
-			return "", refuse("%q is not a network", value)
+		if _, err := regexp.Compile(v.Lit); err != nil {
+			return "", c.bad(field, "bad regex: %v", err)
 		}
-		return entry.expr + " <<= " + b.bind(prefix.String()) + "::inet", nil
-
-	default:
-		return "", refuse("%q does not accept %q", n.Field, n.Op)
+		return col + " ~* " + c.arg(v.Lit), nil
+	case strings.Contains(v.Lit, "*"):
+		return col + " ILIKE " + c.arg(likeGlob(v.Lit)) + ` ESCAPE '\'`, nil
 	}
+	return "lower(" + col + ") = lower(" + c.arg(v.Lit) + ")", nil
 }
 
-func (b *builder) instant(entry field, n Node) (string, error) {
-	value, ok := n.Value.(string)
-	if !ok {
-		return "", refuse("%q takes an RFC 3339 instant", n.Field)
-	}
-	parsed, err := time.Parse(time.RFC3339, value)
-	if err != nil {
-		return "", refuse("%q is not an RFC 3339 instant", value)
-	}
-
-	operator := "<"
-	if n.Op == OpAfter {
-		operator = ">"
-	}
-	return entry.expr + " " + operator + " " + b.bind(parsed.UTC()), nil
+// likeGlob turns a * glob into a LIKE pattern, escaping LIKE's own wildcards.
+func likeGlob(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`, `*`, `%`)
+	return r.Replace(s)
 }
 
-func (b *builder) number(entry field, n Node) (string, error) {
-	if n.Op == OpIn {
-		values, err := numberList(n)
-		if err != nil {
-			return "", err
-		}
-		return entry.expr + " = ANY(" + b.bind(values) + "::int[])", nil
+func (c *compiler) domain(col, field string, v Value) (string, error) {
+	if v.Op != "" || v.To != "" || v.Regex || strings.Contains(v.Lit, "*") {
+		return "", c.bad(field, "takes a domain, without wildcard")
 	}
-
-	number, err := asInt(n.Value)
-	if err != nil {
-		return "", refuse("%q takes a number, got %v", n.Field, n.Value)
-	}
-	return entry.expr + " " + comparison(n.Op) + " " + b.bind(number), nil
+	d := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(v.Lit)), ".")
+	// Label boundaries: target.com matches a.target.com, never eviltarget.com.
+	return "(" + col + " = " + c.arg(d) + " OR " + col + " LIKE " + c.arg("%."+likeGlob(d)) + ` ESCAPE '\')`, nil
 }
 
-// identifier compiles an equality or membership over a uuid column. The value
-// is checked here and also bound and cast: the cast alone let a malformed id
-// reach PostgreSQL, fail with 22P02 and return a 500 for a hand-edited typo. A
-// refusal names the field.
-func (b *builder) identifier(entry field, n Node) (string, error) {
-	switch n.Op {
-	case OpIn:
-		values, err := stringList(n)
-		if err != nil {
-			return "", err
+var scopeValues = map[string]string{
+	"in": "in_scope", "out": "out_of_scope", "unknown": "unknown",
+	"in_scope": "in_scope", "out_of_scope": "out_of_scope",
+}
+
+func (c *compiler) enum(f Field, t Term) (string, error) {
+	var vals []string
+	for _, v := range t.Values {
+		if v.Op != "" || v.To != "" || v.Regex {
+			return "", c.bad(t.Field, "takes values of %v", f.Values)
 		}
-		for _, value := range values {
-			if _, err := uuid.Parse(value); err != nil {
-				return "", refuse("%q takes identifiers, and %q is not one", n.Field, value)
+		lit := strings.ToLower(v.Lit)
+		if t.Field == "scope" {
+			mapped, ok := scopeValues[lit]
+			if !ok {
+				return "", c.bad(t.Field, "%q is not one of in, out, unknown", v.Lit)
 			}
+			vals = append(vals, mapped)
+			continue
 		}
-		return entry.expr + " = ANY(" + b.bind(values) + "::uuid[])", nil
-	case OpEq:
-		value, ok := n.Value.(string)
-		if !ok || value == "" {
-			return "", refuse("%q takes an identifier", n.Field)
+		if !slices.Contains(f.Values, lit) {
+			return "", c.bad(t.Field, "%q is not one of %v", v.Lit, f.Values)
 		}
-		if _, err := uuid.Parse(value); err != nil {
-			return "", refuse("%q takes an identifier, and %q is not one", n.Field, value)
-		}
-		return entry.expr + " = " + b.bind(value) + "::uuid", nil
-	default:
-		return "", refuse("%q does not take %q", n.Field, n.Op)
+		vals = append(vals, lit)
 	}
+	return f.column + " = ANY(" + c.arg(vals) + "::text[])", nil
 }
 
-func (b *builder) text(entry field, n Node) (string, error) {
-	switch n.Op {
-	case OpIn:
-		values, err := stringList(n)
+func (c *compiler) number(f Field, field string, v Value) (string, error) {
+	if v.Regex {
+		return "", c.bad(field, "a number takes no regex")
+	}
+	if f.Kind == KStatus && v.Op == "" && v.To == "" && len(v.Lit) == 3 && strings.HasSuffix(strings.ToLower(v.Lit), "xx") {
+		d, err := strconv.Atoi(v.Lit[:1])
+		if err != nil || d < 1 || d > 5 {
+			return "", c.bad(field, "%q is not a status class", v.Lit)
+		}
+		return f.column + " BETWEEN " + c.arg(d*100) + " AND " + c.arg(d*100+99), nil
+	}
+	lo, err := strconv.Atoi(v.Lit)
+	if err != nil {
+		return "", c.bad(field, "%q is not a number", v.Lit)
+	}
+	if v.To != "" {
+		hi, err := strconv.Atoi(v.To)
 		if err != nil {
-			return "", err
+			return "", c.bad(field, "%q is not a number", v.To)
 		}
-		return entry.expr + " = ANY(" + b.bind(values) + "::text[])", nil
+		return f.column + " BETWEEN " + c.arg(lo) + " AND " + c.arg(hi), nil
+	}
+	op := v.Op
+	if op == "" {
+		op = "="
+	}
+	return f.column + " " + op + " " + c.arg(lo), nil
+}
 
-	case OpEq:
-		value, ok := n.Value.(string)
+func (c *compiler) ip(col, field string, v Value) (string, error) {
+	if v.Op != "" || v.To != "" || v.Regex {
+		return "", c.bad(field, "takes an address or a network")
+	}
+	p, err := netip.ParsePrefix(v.Lit)
+	if err != nil {
+		a, aerr := netip.ParseAddr(v.Lit)
+		if aerr != nil {
+			return "", c.bad(field, "%q is not an address or a network", v.Lit)
+		}
+		p = netip.PrefixFrom(a.Unmap(), a.Unmap().BitLen())
+	}
+	return "EXISTS (SELECT 1 FROM unnest(" + col + ") i WHERE i <<= " + c.arg(p.Masked().String()) + "::inet)", nil
+}
+
+// age reads 30m, 24h, 7d, 4w.
+func age(s string) (time.Duration, bool) {
+	if len(s) < 2 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s[:len(s)-1])
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	unit := map[byte]time.Duration{'m': time.Minute, 'h': time.Hour, 'd': 24 * time.Hour, 'w': 7 * 24 * time.Hour}[s[len(s)-1]]
+	return time.Duration(n) * unit, unit != 0
+}
+
+func (c *compiler) date(col, field string, v Value) (string, error) {
+	if v.Regex || v.To != "" {
+		return "", c.bad(field, "takes a date or an age, with an optional comparison")
+	}
+	if d, ok := age(v.Lit); ok {
+		// An age is how long ago: <7d is newer than seven days ago.
+		at := c.arg(c.now.Add(-d))
+		switch v.Op {
+		case "", "<":
+			return col + " > " + at, nil
+		case "<=":
+			return col + " >= " + at, nil
+		case ">":
+			return col + " < " + at, nil
+		case ">=":
+			return col + " <= " + at, nil
+		}
+	}
+	t, err := time.Parse(time.DateOnly, v.Lit)
+	if err != nil {
+		if t, err = time.Parse(time.RFC3339, v.Lit); err != nil {
+			return "", c.bad(field, "%q is not a date (2026-10-01) or an age (7d)", v.Lit)
+		}
+	}
+	if v.Op == "" {
+		return "(" + col + " >= " + c.arg(t) + " AND " + col + " < " + c.arg(t.Add(24*time.Hour)) + ")", nil
+	}
+	return col + " " + v.Op + " " + c.arg(t), nil
+}
+
+// tech binds a version to its own technology: the name and the version are
+// tested on the same asset_tech row.
+func (c *compiler) tech(t Term) (string, error) {
+	name, err := c.anyOf(Term{Field: t.Field, Values: t.Values}, func(v Value) (string, error) {
+		return c.text("t.name", t.Field, v)
+	})
+	if err != nil {
+		return "", err
+	}
+	cond := name
+	switch {
+	case t.NoVersion:
+		cond += " AND t.version IS NULL"
+	case len(t.Versions) > 0:
+		parts := make([]string, 0, len(t.Versions))
+		for _, v := range t.Versions {
+			p, err := c.version(v)
+			if err != nil {
+				return "", err
+			}
+			parts = append(parts, p)
+		}
+		cond += " AND (" + strings.Join(parts, " OR ") + ")"
+	}
+	return "EXISTS (SELECT 1 FROM asset_tech t WHERE t.asset_id = ac.asset_id AND " + cond + ")", nil
+}
+
+// bounds is the interval a partial version stands for: 1.24 is [1.24, 1.25).
+func bounds(s string) (lo, hi []int32, ok bool) {
+	lo = fingerprint.ParseVersion(s)
+	if lo == nil {
+		return nil, nil, false
+	}
+	hi = slices.Clone(lo)
+	hi[len(hi)-1]++
+	return lo, hi, true
+}
+
+func (c *compiler) version(v Value) (string, error) {
+	if v.Regex {
+		return "", c.bad("tech", "a version takes no regex")
+	}
+	lo, hi, ok := bounds(v.Lit)
+	if !ok {
+		return "", c.bad("tech", "%q is not a version", v.Lit)
+	}
+	col := "t.version"
+	if v.To != "" {
+		_, hiTo, ok := bounds(v.To)
 		if !ok {
-			return "", refuse("%q takes a string", n.Field)
+			return "", c.bad("tech", "%q is not a version", v.To)
 		}
-		return entry.expr + " = " + b.bind(value), nil
-
-	case OpPrefix:
-		value, ok := n.Value.(string)
-		if !ok || value == "" {
-			return "", refuse("%q takes a non-empty string", n.Field)
-		}
-		return entry.expr + " LIKE " + b.bind(escapeLike(value)+"%"), nil
-
-	case OpSuffix:
-		value, ok := n.Value.(string)
-		if !ok || value == "" {
-			return "", refuse("%q takes a non-empty string", n.Field)
-		}
-		// text_pattern_ops accelerates a prefix, but an ASM query is a suffix (".target.com"), which
-		// LIKE '%.target.com' cannot index; the expression index on reverse(key) turns one into the
-		// other. Escape after reversing: escaping first puts each backslash after the character it
-		// protected, so "_" stays a wildcard and a trailing backslash escapes the appended "%",
-		// silently turning the search into an equality (no test notices without a wildcard value).
-		return "reverse(" + entry.expr + ") LIKE " + b.bind(escapeLike(reverse(value))+"%"), nil
-
-	case OpContains:
-		value, ok := n.Value.(string)
-		if !ok || value == "" {
-			return "", refuse("%q takes a non-empty string", n.Field)
-		}
-		// A leading wildcard, so no index answers it; the registry says so where it
-		// grants the operator. ILIKE because the column holds a normalized name and
-		// "API" asks what "api" does.
-		return entry.expr + " ILIKE " + b.bind("%"+escapeLike(value)+"%"), nil
-
-	default:
-		return "", refuse("%q does not accept %q", n.Field, n.Op)
+		return "(" + col + " >= " + c.arg(lo) + "::int[] AND " + col + " < " + c.arg(hiTo) + "::int[])", nil
 	}
-}
-
-func comparison(op string) string {
-	switch op {
-	case OpGt:
-		return ">"
-	case OpGte:
-		return ">="
-	case OpLt:
-		return "<"
-	case OpLte:
-		return "<="
-	default:
-		return "="
+	switch v.Op {
+	case "<":
+		return col + " < " + c.arg(lo) + "::int[]", nil
+	case "<=":
+		return col + " < " + c.arg(hi) + "::int[]", nil
+	case ">":
+		return col + " >= " + c.arg(hi) + "::int[]", nil
+	case ">=":
+		return col + " >= " + c.arg(lo) + "::int[]", nil
 	}
-}
-
-// escapeLike protects the two wildcards and the escape character itself.
-func escapeLike(value string) string {
-	var out strings.Builder
-	out.Grow(len(value))
-	for _, r := range value {
-		switch r {
-		case '\\', '%', '_':
-			out.WriteByte('\\')
-		}
-		out.WriteRune(r)
-	}
-	return out.String()
-}
-
-// reverse mirrors a string by rune, as PostgreSQL's reverse() works on
-// characters. Reversing bytes would match nothing on any non-ASCII name, such as
-// an internationalized domain.
-func reverse(value string) string {
-	runes := []rune(value)
-	for i, j := 0, len(runes)-1; i < j; i, j = i+1, j-1 {
-		runes[i], runes[j] = runes[j], runes[i]
-	}
-	return string(runes)
-}
-
-func asInt(value any) (int, error) {
-	switch typed := value.(type) {
-	case float64:
-		// Through float64: the tree arrives as JSON, where every number is one.
-		if typed != float64(int(typed)) {
-			return 0, fmt.Errorf("not a whole number")
-		}
-		return int(typed), nil
-	case int:
-		return typed, nil
-	default:
-		return 0, fmt.Errorf("not a number")
-	}
-}
-
-func stringList(n Node) ([]string, error) {
-	items, ok := n.Value.([]any)
-	if !ok || len(items) == 0 {
-		return nil, refuse("%q takes a non-empty list", n.Field)
-	}
-	if len(items) > maxClauses {
-		return nil, refuse("%q was given %d values, and the bound is %d", n.Field, len(items), maxClauses)
-	}
-	out := make([]string, 0, len(items))
-	for _, item := range items {
-		value, ok := item.(string)
-		if !ok {
-			return nil, refuse("%q takes a list of strings", n.Field)
-		}
-		out = append(out, value)
-	}
-	return out, nil
-}
-
-func numberList(n Node) ([]int32, error) {
-	items, ok := n.Value.([]any)
-	if !ok || len(items) == 0 {
-		return nil, refuse("%q takes a non-empty list", n.Field)
-	}
-	if len(items) > maxClauses {
-		return nil, refuse("%q was given %d values, and the bound is %d", n.Field, len(items), maxClauses)
-	}
-	out := make([]int32, 0, len(items))
-	for _, item := range items {
-		number, err := asInt(item)
-		if err != nil {
-			return nil, refuse("%q takes a list of numbers", n.Field)
-		}
-		out = append(out, int32(number)) //nolint:gosec // a port or a status code
-	}
-	return out, nil
+	return "(" + col + " >= " + c.arg(lo) + "::int[] AND " + col + " < " + c.arg(hi) + "::int[])", nil
 }

@@ -1,0 +1,87 @@
+# Every setting, with its default. Pass a copy with: recon serve -config config.yml
+# Any value can be overridden by an environment variable: RECON_ then the path in
+# upper case, with __ between levels (RECON_DATABASE__URL).
+
+public_url: http://localhost:8080
+api_key: ""            # required, at least 32 characters
+
+http:
+  addr: ":8080"
+
+database:
+  url: ""              # required, postgres://user:password@host:5432/recon
+
+log:
+  level: info          # debug, info, warn, error
+  format: json         # json, text
+
+scopes_extractor:
+  url: ""              # empty disables the sync: manual programs only
+  api_key: ""          # its X-API-KEY, required when url is set
+  interval: 1h
+  timeout: 1m
+  max_removed_ratio: 0.5   # a pass archiving more of the active programs is refused
+
+discovery:
+  auto_scan: "off"     # default for programs that set none: off or on_new
+  # Every run scans these, recon and verification alike.
+  ports: [80, 443, 8080, 8443, 8000, 8090, 9000, 9443, 3000, 5000,
+          2375, 2376, 6443, 10250, 15672, 5601, 8983, 9990, 2083, 2087,
+          3306, 5432, 27017, 6379, 9200, 11211, 9042, 2379,
+          3389, 5900, 1080, 3128]
+
+verification:
+  enabled: true        # periodic probing of known hosts
+  batch: 500           # most hosts per run
+  resolve: 24h         # nominal resolve cadence
+  full: 72h            # nominal full cadence: ports and HTTP
+  dormant: 168h        # inactive and unobservable hosts
+  archive_after: 720h  # inactive or unobservable this long leaves the scheduler
+  dead_origins:        # pages a CDN serves when the origin is gone
+    - name: cloudflare origin down
+      statuses: [521, 522, 523, 530]
+      server: cloudflare
+      title: ""
+
+render:
+  url: ""              # the Fingerprinter; empty leaves renders due
+  concurrency: 20      # renders in flight, below its concurrent_scans
+  timeout: 2m          # one scan
+  periodic: 504h       # next render after a successful one (21 d)
+  retry: 6h            # next render after the target did not answer
+
+geoip_dir: /data/geoip   # GeoLite2-ASN.mmdb and GeoLite2-City.mmdb; absent files disable enrichment
+
+screenshots:
+  dir: /data/screenshots
+  quality: 70          # JPEG quality of the stored image and thumbnail
+  keep: 3              # visually distinct screenshots kept per asset
+  disk_threshold: 0.9  # share of the filesystem in use past which a health notification fires
+
+runner:
+  provider: serve      # serve, or scaleway: recon and verification as Serverless Jobs
+  endpoint: https://api.scaleway.com
+  region: ""           # fr-par, nl-ams, pl-waw
+  job_id: ""           # the job definition, created once outside Recon
+  secret_key: ""       # an IAM key allowed to start Serverless Jobs
+  callback_url: ""     # where a job reaches Recon; public_url when empty
+  slots: 4             # jobs in flight at once
+  grace: 30m           # a report token lasts the run's deadline plus this
+  report_timeout: 5m   # the job's wait for Recon to take its report
+
+ct:
+  url: ""              # the certstream websocket; empty leaves CT off
+  max_per_hour: 40     # names a program may gain from CT in an hour, the overflow counted
+  reload: 5m           # how often the apex set is read again
+
+notify:
+  discord_url: ""      # a Discord webhook URL; empty sends nothing there
+  webhook_url: ""      # a generic webhook receiving a JSON body
+  webhook_header: ""   # "Name: value" sent with each webhook call
+  broken_after: 5m     # how long a component fails before it is announced
+
+fastrecon:
+  url: ""              # a `fastrecon serve` instance; empty leaves runs queued
+  api_token: ""        # its FASTRECON_API_TOKEN, required when url is set
+  timeout: 30m         # each run's budget
+  slots: 1             # runs in flight: one per serve instance

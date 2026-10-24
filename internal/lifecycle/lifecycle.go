@@ -1,24 +1,11 @@
-// Package lifecycle decides what an observation says about an asset.
-//
-// Everything here is a pure function over the previous counters and the new
-// observation. It is called from the ingestion transaction because transitions
-// must not lag the write, but it is a separate package so the thresholds can be
-// tested without a database.
+// Package lifecycle holds the state machine and the backoff curves, as pure
+// functions: ingestion calls them in the transaction that writes the
+// observation, and tests call them alone.
 package lifecycle
 
 import "time"
 
-// Layer verdicts: never measured, holding, failing below the threshold, or
-// past it.
-const (
-	LayerUnmeasured = "unmeasured"
-	LayerHealthy    = "healthy"
-	LayerFailing    = "failing"
-	LayerDead       = "dead"
-)
-
-// Asset states. Unobservable is not decided here: it needs a second observer
-// (the fingerprinter).
+// States.
 const (
 	Candidate    = "candidate"
 	Active       = "active"
@@ -28,165 +15,126 @@ const (
 	Archived     = "archived"
 )
 
-// Outcomes describe what was learned about the target: it answered and is
-// there, it answered and is not, or nothing conclusive.
+// Outcomes, as on observations.
 const (
-	OutcomeOK    = "ok"
-	OutcomeFail  = "fail"
-	OutcomeError = "error"
+	OK    = "ok"
+	Fail  = "fail"
+	Error = "error"
 )
 
-// InformativeThreshold is how many qualified failures a death takes. Three is
-// enough because each is qualified (e.g. nxdomain with resolver consensus).
-const InformativeThreshold = 3
+// Thresholds.
+const (
+	// DeadFailures is the run of informative failures that, with DeadFloor
+	// elapsed since the first, makes a layer dead.
+	DeadFailures = 3
+	DeadFloor    = 24 * time.Hour
+	// UnobservableErrors is the run of non informative failures, on every
+	// observer, that makes an asset unobservable.
+	UnobservableErrors = 3
+)
 
-// DeathFloor is the window those failures must span. The backoff curve can
-// deliver three failures within ninety minutes, too short to tell an outage
-// from a disappearance.
-const DeathFloor = 24 * time.Hour
-
-// Counters are one layer's memory. The zero value is a layer never measured,
-// which differs from one that is holding.
-type Counters struct {
-	State string
-	// Informative counts consecutive failures where an observer reached the target
-	// and reported an absence. Only a success resets it: a timeout between two
-	// nxdomains does not mean the name came back.
-	Informative int
-	// NonInformative counts consecutive inconclusive failures. It feeds
-	// unobservable, never a death.
+// Layer is one layer's counters, as in asset_layer.
+type Layer struct {
+	Informative    int
 	NonInformative int
-	// FirstFailureAt is when the current informative run began, to check DeathFloor.
-	FirstFailureAt time.Time
-	LastOKAt       time.Time
-	LastCheckedAt  time.Time
+	FirstFailure   *time.Time
+	LastOK         *time.Time
 }
 
-// Measured reports whether this layer has an opinion. Unprobed layers are
-// ignored when deciding state, not counted as healthy.
-func (c Counters) Measured() bool { return c.State != "" && c.State != LayerUnmeasured }
-
-// Next folds one observation into a layer's counters. The outcome was
-// qualified at ingestion; this never looks at a payload.
-func Next(prev Counters, outcome string, at time.Time) Counters {
-	next := prev
-	next.LastCheckedAt = at
-
+// Apply updates a layer with one outcome. countFailures is false for a recon:
+// an enumeration never counts toward a death, it can only reset.
+func Apply(l Layer, outcome string, now time.Time, countFailures bool) Layer {
 	switch outcome {
-	case OutcomeOK:
-		// One success is the whole recovery rule: the target answered, so the
-		// observer's question is settled too.
-		next.Informative = 0
-		next.NonInformative = 0
-		next.FirstFailureAt = time.Time{}
-		next.LastOKAt = at
-		next.State = LayerHealthy
-
-	case OutcomeFail:
-		next.Informative++
-		// The target itself reported a failure, so the inconclusive run is over.
-		next.NonInformative = 0
-		if next.FirstFailureAt.IsZero() {
-			next.FirstFailureAt = at
+	case OK:
+		return Layer{LastOK: &now}
+	case Fail:
+		if !countFailures {
+			return l
 		}
-		next.State = LayerFailing
-		if next.Informative >= InformativeThreshold &&
-			!at.Before(next.FirstFailureAt.Add(DeathFloor)) {
-			next.State = LayerDead
+		if l.Informative == 0 {
+			l.FirstFailure = &now
 		}
+		l.Informative++
+		l.NonInformative = 0
+	case Error:
+		if !countFailures {
+			return l
+		}
+		l.NonInformative++
+	}
+	return l
+}
 
-	default:
-		// Inconclusive: the state stays put. A timeout must not make an asset look
-		// unstable, since flapping buffers a death that this signal can never justify.
-		next.NonInformative++
-		if next.State == "" {
-			next.State = LayerUnmeasured
+// reading is what one layer says.
+type reading int
+
+const (
+	healthy reading = iota
+	failing
+	dead
+)
+
+func read(l Layer, now time.Time) reading {
+	switch {
+	case l.Informative >= DeadFailures && l.FirstFailure != nil && now.Sub(*l.FirstFailure) >= DeadFloor:
+		return dead
+	case l.Informative > 0:
+		return failing
+	}
+	return healthy
+}
+
+// Observers are the layers that can get a result on each kind: an asset is
+// unobservable only when every one of them tried and got nothing.
+var Observers = map[string][]string{
+	"fqdn":    {"dns"},
+	"service": {"http", "fingerprint"},
+	"url":     {"http", "fingerprint"},
+}
+
+// Verdict is the asset's state from its layers. okNow tells whether a layer
+// answered ok in this pass, which is what revives a candidate or an archived
+// asset. The worst layer with an opinion wins, and the fingerprint layer never
+// moves an asset toward a death.
+func Verdict(kind, current string, layers map[string]Layer, okNow bool, now time.Time) string {
+	switch current {
+	case Candidate, Archived:
+		if !okNow {
+			return current
 		}
 	}
-
-	return next
-}
-
-// Revived reports whether an archived asset comes back on this observation. It reads the
-// observation, never the layer's state: a layer keeps its last conclusive state, so reading
-// it would let a timeout today revive an asset archived months after a success. An archived
-// asset has no due date, so only an enumeration finding it again reaches here; manual entry,
-// the other way back, is an act and bypasses this.
-func Revived(current, outcome string) bool {
-	return current == Archived && outcome == OutcomeOK
-}
-
-// Decide reads the asset's state off its layers and observers.
-//
-// The most severe layer wins, which the CDN case forces: with a dead origin,
-// dns and tcp still succeed at the edge while http reports an origin error.
-// If a success elsewhere restored the asset, the only death signal behind a CDN
-// would be lost. A success on the failing layer resets it, so recovery takes
-// one probe.
-func Decide(current string, scheduled bool, reach Reach, layers ...Counters) string {
-	worst := ""
-	for _, layer := range layers {
-		if !layer.Measured() {
+	worst := healthy
+	for name, l := range layers {
+		if name == "fingerprint" {
 			continue
 		}
-		switch layer.State {
-		case LayerDead:
-			worst = LayerDead
-		case LayerFailing:
-			if worst != LayerDead {
-				worst = LayerFailing
-			}
-		case LayerHealthy:
-			if worst == "" {
-				worst = LayerHealthy
-			}
+		if r := read(l, now); r > worst {
+			worst = r
 		}
 	}
-
-	// Archived leaves the scheduler and returns through Revived, which reads the
-	// observation, not these counters.
-	if current == Archived {
-		return Archived
-	}
-
-	// A candidate has two exits: a success makes it active, its budget archives it. Only
-	// scheduled kinds (hosts) are held here: the budget runs in the rescheduling path, which only
-	// touches hosts, so holding a service would close the one exit that emits its death.
-	//
-	// Failing to find a name never found is expected, not news. Passing it through flapping to
-	// inactive would say a name died when it never existed and take it out of the only state the
-	// budget reads, so it would never be given up on. Unobservable is refused likewise: a
-	// candidate is already there.
-	if current == Candidate && scheduled {
-		if worst == LayerHealthy {
-			return Active
-		}
-		return Candidate
-	}
-
-	// An observed death is not a silence and wins: an edge reporting its origin
-	// gone is an informative failure even if the renderer fails at the same time.
-	if worst == LayerDead {
+	switch worst {
+	case dead:
 		return Inactive
+	case failing:
+		return Flapping
 	}
-
-	// Neither observer gets a result: the asset is unmeasurable, not unstable, so
-	// it skips flapping.
-	if reach.Unobservable() {
+	if unobservable(kind, layers) {
 		return Unobservable
 	}
+	return Active
+}
 
-	switch worst {
-	case LayerFailing:
-		return Flapping
-	case LayerHealthy:
-		return Active
-	default:
-		// Nothing has an opinion: an asset derived from an open port and never probed
-		// is a candidate.
-		if current == "" {
-			return Candidate
-		}
-		return current
+func unobservable(kind string, layers map[string]Layer) bool {
+	observers := Observers[kind]
+	if len(observers) == 0 {
+		return false
 	}
+	for _, o := range observers {
+		// An observer that never ran is not one that fails.
+		l, ok := layers[o]
+		if !ok || l.NonInformative < UnobservableErrors {
+			return false
+		}
+	}
+	return true
 }

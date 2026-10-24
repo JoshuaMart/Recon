@@ -1,8 +1,6 @@
 version: "2"
 sql:
   - engine: postgresql
-    # The goose directory itself, never a parallel schema.sql. Two truths about
-    # the model at the moment it is frozen would be the worst debt available.
     schema: db/migrations
     queries: db/queries
     gen:
@@ -11,9 +9,21 @@ sql:
         out: internal/store/sqlcgen
         sql_package: pgx/v5
         emit_pointers_for_null_types: true
-        emit_empty_slices: true
-        query_parameter_limit: 0
+        emit_json_tags: true
+        json_tags_case_style: snake
         overrides:
-          - db_type: "inet"
-            go_type: "net/netip.Addr"
+          - db_type: timestamptz
+            go_type: time.Time
+          - db_type: timestamptz
             nullable: true
+            go_type:
+              type: time.Time
+              pointer: true
+          - db_type: uuid
+            go_type: github.com/google/uuid.UUID
+          - db_type: uuid
+            nullable: true
+            go_type:
+              import: github.com/google/uuid
+              type: UUID
+              pointer: true

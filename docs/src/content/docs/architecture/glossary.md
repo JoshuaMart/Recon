@@ -2,20 +2,27 @@
 title: Glossary
 description: The project vocabulary.
 sidebar:
-  order: 17
+  order: 15
 ---
 
 | Term | Definition |
 |---|---|
-| **Asset** | The stable, deduplicated identity of a piece of attack surface |
-| **Observation** | A timestamped, immutable finding produced by one producer on one layer |
-| **Layer** | What an observation describes: `dns`, `tcp`, `http` or `fingerprint`. One producer per layer |
-| **Run** | One execution of a scanner over one perimeter, producing one report |
-| **Discovery run** | A run that starts from a domain and asks what exists. Authoritative on presence |
-| **Verification run** | A run over an explicit target list, asking what still answers. Authoritative on absence |
-| **Candidate** | An asset discovered but never confirmed alive |
-| **Unobservable** | An asset no observer gets a result on. Neither alive nor dead |
-| **Facet** | An aggregation computed over a filtered search result |
-| **Pivot** | A shared value (favicon, certificate key, internal script, cookie name) that links assets nothing else connects. It has to discriminate: a value that is everywhere is not a pivot, and neither is one that is nowhere twice |
-| **Promoted column** | A value lifted out of the JSON payload into a typed column, because it is filtered often |
-| **Informative failure** | A failure where an observer reached the target and reported an absence. The only kind that can lead to death |
+| **Program** | One bug bounty program or contract, synced from ScopesExtractor or entered by hand |
+| **Scope rule** | An include or exclude rule on a program, opened and closed, never deleted |
+| **Wildcard** | An apex rule, `*.example.com`, with its own recon history |
+| **Asset** | The stable identity of a host, an address, a service or a declared URL |
+| **Observation** | What one scanner saw on one layer, over a time span. Append only. Only FastRecon and the Fingerprinter write them |
+| **Layer** | `dns`, `tcp`, `http` or `fingerprint`. One producer per layer |
+| **Change** | One recorded event on an asset: created, an observation that differs, a lifecycle or scope move. What the feed shows |
+| **Stage** | How far a FastRecon run goes: `enum`, `resolve`, `ports` or `full`, each including the ones before |
+| **Recon run** | FastRecon enumerating a wildcard. On demand, never periodic |
+| **Verification run** | FastRecon probing an explicit list of known hosts. Periodic |
+| **Render** | One Fingerprinter scan of a service: technologies, headers, screenshot |
+| **Candidate** | An asset known but never confirmed alive |
+| **Unobservable** | An asset nothing gets through to. Neither alive nor dead |
+| **Observer** | What can get a result on an asset: FastRecon for a host, FastRecon's HTTP probe and the Fingerprinter for a web service |
+| **Informative failure** | A failure where the target answered with an absence. The only kind that can lead to death |
+| **Triage** | Your own state on an asset: new, seen, interesting, ignored |
+| **Saved search** | A named query, optionally alerting on new matches |
+| **Facet** | A count over the current search result, clickable into a filter |
+| **Pivot** | A value shared by a few assets that links them: favicon, script, cookie name |

@@ -1,53 +1,41 @@
 version: "2"
 
 linters:
-  default: standard
   enable:
     - bodyclose
-    - depguard
+    - errorlint
     - forbidigo
     - gosec
+    - misspell
+    - noctx
     - rowserrcheck
     - sqlclosecheck
-
+    - unconvert
   settings:
+    errcheck:
+      exclude-functions:
+        - (io.ReadCloser).Close
+        - (*database/sql.DB).Close
     forbidigo:
-      analyze-types: true
       forbid:
-        # Without an automatic constraint, "no value is read from the
-        # environment outside internal/config" holds for about three weeks.
-        - pattern: '^os\.(Getenv|LookupEnv|Environ|Setenv|Unsetenv)$'
-          msg: >-
-            read configuration through internal/config, which is the only place
-            in this repository that touches the environment
-        # Logs are structured and carry a correlation id. A println is a line
-        # nothing can correlate and nothing can filter.
-        - pattern: '^fmt\.Print(f|ln)?$'
-          msg: use the logger, or write to os.Stderr explicitly in a command
-
-    depguard:
-      rules:
-        sql:
-          # The migration runner needs database/sql because goose does. Everything else uses pgx, and a
-          # second driver stack would be a second set of connection settings nobody keeps in step.
-          files:
-            - '!**/internal/store/*.go'
-          deny:
-            - pkg: database/sql
-              desc: use pgx through internal/store
-
+        - pattern: ^os\.(Getenv|LookupEnv|Environ)$
+          msg: read configuration through internal/config
+    gosec:
+      excludes:
+        - G104 # unhandled errors are errcheck's job
   exclusions:
+    generated: strict
     rules:
-      # The one package allowed to read the environment, by definition.
-      - path: 'internal/config/'
+      - path: internal/config/
         linters: [forbidigo]
-      # A command's job is to print to a terminal.
-      - path: 'cmd/'
-        linters: [forbidigo]
-      - path: '_test\.go'
-        linters: [gosec, forbidigo]
+      - path: _test\.go
+        linters: [gosec]
 
 formatters:
   enable:
     - gofumpt
     - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/JoshuaMart/recon

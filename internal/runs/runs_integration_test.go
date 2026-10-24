@@ -1,1042 +1,413 @@
 //go:build integration
 
-// Milestone 2, the half a scheduler answers: the lease, its expiry, and what a
-// refusal has to say.
 package runs_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/testcontainers/testcontainers-go"
-	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/wait"
 
-	"github.com/JoshuaMart/recon/internal/auth"
-	"github.com/JoshuaMart/recon/internal/config"
+	"github.com/JoshuaMart/recon/internal/ingest"
+	"github.com/JoshuaMart/recon/internal/inventory"
 	"github.com/JoshuaMart/recon/internal/runs"
+	"github.com/JoshuaMart/recon/internal/scope"
 	"github.com/JoshuaMart/recon/internal/store"
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
-	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/JoshuaMart/recon/internal/store/storetest"
 )
 
-func pgStamp(t time.Time) pgtype.Timestamptz {
-	return pgtype.Timestamptz{Time: t.UTC(), Valid: true}
+type fakeRunner struct {
+	mu       sync.Mutex
+	reports  [][]byte
+	err      error
+	requests []runs.Request
 }
 
-type harness struct {
-	pool    *pgxpool.Pool
-	queries *sqlcgen.Queries
-	org     uuid.UUID
-	program uuid.UUID
-	clock   *clock
-	sched   *runs.Scheduler
+func (f *fakeRunner) Run(_ context.Context, req runs.Request) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.requests = append(f.requests, req)
+	if f.err != nil {
+		return nil, f.err
+	}
+	r := f.reports[0]
+	if len(f.reports) > 1 {
+		f.reports = f.reports[1:]
+	}
+	return r, nil
 }
 
-type clock struct{ now time.Time }
+type clock struct{ t time.Time }
 
-func (c *clock) Now() time.Time { return c.now }
+func (c *clock) now() time.Time { c.t = c.t.Add(time.Minute); return c.t }
 
-func newHarness(t *testing.T) *harness {
+type fixture struct {
+	st       *store.Store
+	program  sqlcgen.Program
+	wildcard uuid.UUID
+	sched    *runs.Scheduler
+	runner   *fakeRunner
+}
+
+func setup(t *testing.T, reports ...[]byte) *fixture {
 	t.Helper()
-
 	ctx := context.Background()
-	container, err := tcpostgres.Run(ctx, "postgres:18-alpine",
-		tcpostgres.WithDatabase("recon"),
-		tcpostgres.WithUsername("asm_owner"),
-		tcpostgres.WithPassword("owner-password-for-a-container"),
-		testcontainers.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).WithStartupTimeout(60*time.Second)),
-	)
+	st := storetest.New(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	p, err := st.Q.CreateManualProgram(ctx, sqlcgen.CreateManualProgramParams{Name: "Example", Now: now})
 	if err != nil {
-		t.Fatalf("start postgres: %v", err)
-	}
-	t.Cleanup(func() { _ = testcontainers.TerminateContainer(container) })
-
-	url, err := container.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		t.Fatalf("connection string: %v", err)
-	}
-
-	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
-	migrator, err := store.NewMigrator(url, quiet)
-	if err != nil {
-		t.Fatalf("migrator: %v", err)
-	}
-	if err := migrator.Run(ctx, store.Up); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	_ = migrator.Close()
-
-	pool, err := pgxpool.New(ctx, url)
-	if err != nil {
-		t.Fatalf("pool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	signer, err := auth.NewSigner("a-signing-key-long-enough-to-be-one")
-	if err != nil {
-		t.Fatalf("signer: %v", err)
-	}
-
-	c := &clock{now: time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)}
-	cfg := config.Defaults().Verification
-	cfg.PublicURL = "https://recon.example"
-	cfg.BatchSize = 10
-
-	h := &harness{
-		pool:    pool,
-		queries: sqlcgen.New(pool),
-		org:     uuid.New(),
-		program: uuid.New(),
-		clock:   c,
-		sched:   runs.New(signer, cfg, quiet, runs.WithClock(c.Now)),
-	}
-
-	exec(t, pool, `INSERT INTO org (id, name) VALUES ($1, 'tenant')`, h.org)
-	exec(t, pool, `INSERT INTO program (id, org_id, name, authorized_from) VALUES ($1, $2, 'p', $3)`,
-		h.program, h.org, c.now.Add(-time.Hour))
-	return h
-}
-
-func exec(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
-	t.Helper()
-
-	if _, err := pool.Exec(context.Background(), sql, args...); err != nil {
-		t.Fatalf("exec %q: %v", sql, err)
-	}
-}
-
-// due writes hosts that are already past their resolve date.
-func (h *harness) due(t *testing.T, names ...string) {
-	t.Helper()
-
-	for _, name := range names {
-		id := uuid.New()
-		exec(t, h.pool, `INSERT INTO asset
-			(id, org_id, program_id, kind, key, host, discovery_source, scope_status, first_seen, last_seen)
-			VALUES ($1,$2,$3,'fqdn',$4,$4,'manual','in_scope',$5,$5)`,
-			id, h.org, h.program, name, h.clock.now.Add(-time.Hour))
-		exec(t, h.pool, `INSERT INTO asset_current
-			(asset_id, org_id, program_id, kind, key, scope_status, host,
-			 next_resolve_at, next_full_at, first_seen, last_seen)
-			VALUES ($1,$2,$3,'fqdn',$4,'in_scope',$4,$5,$5,$5,$5)`,
-			id, h.org, h.program, name, h.clock.now.Add(-time.Hour))
-	}
-}
-
-// The lease, and the whole of it. Selection skips what a live run already
-// holds, so two runs never scan the same host at the same time.
-func TestTwoConcurrentRunsNeverHoldTheSameHost(t *testing.T) {
-	h := newHarness(t)
-	ctx := context.Background()
-	h.due(t, "one.acme.test", "two.acme.test")
-
-	first, err := h.sched.Verification(ctx, h.queries, h.org, h.program, "resolve")
-	if err != nil {
-		t.Fatalf("first run: %v", err)
-	}
-	if first.TargetCount != 2 {
-		t.Fatalf("the first run froze %d targets", first.TargetCount)
-	}
-
-	// A second run of the same kind is refused outright, and the message has
-	// to name the run somebody has to decide about.
-	_, err = h.sched.Verification(ctx, h.queries, h.org, h.program, "resolve")
-	if err == nil {
-		t.Fatal("a second run was provisioned while one was in flight")
-	}
-	if !strings.Contains(err.Error(), first.RunID.String()) {
-		t.Fatalf("the refusal does not name the run: %v", err)
-	}
-	if !strings.Contains(err.Error(), "nothing has opened it") {
-		t.Fatalf("the refusal does not say whether anything claimed it: %v", err)
-	}
-
-	// The frozen hosts are invisible to a selection: the statement's exclusion, not
-	// the refusal above. The run is moved to another programme rather than disguised
-	// as a discovery (a live enumeration now blocks on its own); this programme then
-	// has no live run, so only the frozen list can hide the hosts.
-	other := uuid.New()
-	exec(t, h.pool, `INSERT INTO program (id, org_id, name, authorized_from) VALUES ($1,$2,'other',$3)`,
-		other, h.org, h.clock.now.Add(-time.Hour))
-	exec(t, h.pool, `UPDATE run SET program_id = $2 WHERE id = $1`, first.RunID, other)
-
-	second, err := h.sched.Verification(ctx, h.queries, h.org, h.program, "resolve")
-	if err != runs.ErrNothingDue {
-		t.Fatalf("a second run selected %v, want nothing due", second)
-	}
-}
-
-// A run that dies takes nothing with it: due dates only move on ingestion, so the
-// next tick selects the same assets again.
-func TestARunKilledMidFlightBlocksNothing(t *testing.T) {
-	h := newHarness(t)
-	ctx := context.Background()
-	h.due(t, "one.acme.test", "two.acme.test")
-
-	first, err := h.sched.Verification(ctx, h.queries, h.org, h.program, "resolve")
-	if err != nil {
-		t.Fatalf("first run: %v", err)
-	}
-
-	// Nothing ever reports. The deadline passes.
-	h.clock.now = h.clock.now.Add(h.deadlineOf(t, first.RunID).Sub(h.clock.now) + time.Minute)
-	expired, err := h.sched.Sweep(ctx, h.queries)
-	if err != nil {
-		t.Fatalf("sweep: %v", err)
-	}
-	if expired != 1 {
-		t.Fatalf("%d runs expired", expired)
-	}
-
-	// The failure is visible rather than repaired, and the targets are free.
-	var state, reason string
-	if err := h.pool.QueryRow(ctx, `SELECT state, error FROM run WHERE id = $1`, first.RunID).
-		Scan(&state, &reason); err != nil {
-		t.Fatalf("read run: %v", err)
-	}
-	if state != "expired" || reason == "" {
-		t.Fatalf("the run is %q with error %q", state, reason)
-	}
-
-	second, err := h.sched.Verification(ctx, h.queries, h.org, h.program, "resolve")
-	if err != nil {
-		t.Fatalf("second run: %v", err)
-	}
-	if second.TargetCount != 2 {
-		t.Fatalf("the next tick selected %d of the 2 hosts the dead run held", second.TargetCount)
-	}
-}
-
-func (h *harness) deadlineOf(t *testing.T, run uuid.UUID) time.Time {
-	t.Helper()
-
-	var deadline time.Time
-	if err := h.pool.QueryRow(context.Background(),
-		`SELECT deadline FROM run WHERE id = $1`, run).Scan(&deadline); err != nil {
-		t.Fatalf("read deadline: %v", err)
-	}
-	return deadline
-}
-
-// An asset due for full does not need a resolve run, and the reverse is not
-// true. The rung a selection asks for is the rung it reads.
-func TestSelectionReadsTheRungItWasAskedFor(t *testing.T) {
-	h := newHarness(t)
-	ctx := context.Background()
-	h.due(t, "both.acme.test")
-	exec(t, h.pool, `UPDATE asset_current SET next_full_at = $1 WHERE key = 'both.acme.test'`,
-		h.clock.now.Add(48*time.Hour))
-
-	full, err := h.sched.Verification(ctx, h.queries, h.org, h.program, "full")
-	if err != runs.ErrNothingDue {
-		t.Fatalf("a host due only for resolve was selected for a full run: %v %v", full, err)
-	}
-
-	resolve, err := h.sched.Verification(ctx, h.queries, h.org, h.program, "resolve")
-	if err != nil {
-		t.Fatalf("resolve run: %v", err)
-	}
-	// The flag takes the scanner's own scope name, the value the run row is
-	// constrained to. Anything else fails on configuration a second after start, which
-	// no test here would catch since both sides live in this repository.
-	if arg(resolve.Args, "--stages") != "resolve" {
-		t.Fatalf("the stages are %q", arg(resolve.Args, "--stages"))
-	}
-}
-
-// Nothing a run holds opens the inventory: two signatures over run, purpose and
-// expiry, and no database credential.
-func TestARunDefinitionCarriesNoInventoryCredential(t *testing.T) {
-	h := newHarness(t)
-	ctx := context.Background()
-	h.due(t, "one.acme.test")
-
-	def, err := h.sched.Verification(ctx, h.queries, h.org, h.program, "full")
-	if err != nil {
-		t.Fatalf("run: %v", err)
-	}
-
-	list := arg(def.Args, "--targets-url")
-	if list != "https://recon.example/runs/"+def.RunID.String()+"/targets" {
-		t.Fatalf("the target list is at %q", list)
-	}
-	// And no credential in the URL: a query-string token is in every access, proxy and
-	// error log, which outlive the run.
-	if strings.Contains(list, "token") || strings.Contains(list, "?") {
-		t.Fatalf("the target list URL carries its credential: %q", list)
-	}
-	if !strings.HasPrefix(arg(def.Args, "--targets-header"), "Authorization: Bearer ") {
-		t.Fatalf("the list credential reads %q", arg(def.Args, "--targets-header"))
-	}
-	if !strings.HasPrefix(arg(def.Args, "--webhook-header"), "Authorization: Bearer ") {
-		t.Fatalf("the report credential reads %q", arg(def.Args, "--webhook-header"))
-	}
-	if arg(def.Args, "--ports") == "" {
-		t.Fatal("the port list is data and it travels in the definition, so discovery and verification scan the same ports")
-	}
-	for _, value := range def.Args {
-		for _, forbidden := range []string{"postgres://", "postgresql://", "password"} {
-			if strings.Contains(strings.ToLower(value), forbidden) {
-				t.Fatalf("an argument carries %q", forbidden)
-			}
-		}
-	}
-	// The two credentials are for different things, and one must not open the
-	// other.
-	token := strings.TrimPrefix(arg(def.Args, "--targets-header"), "Authorization: Bearer ")
-	signer, _ := auth.NewSigner("a-signing-key-long-enough-to-be-one")
-	if _, err := signer.Verify(auth.PurposeReport, token, h.clock.now); err == nil {
-		t.Fatal("a token minted to fetch a target list was accepted to post a report")
-	}
-}
-
-// arg reads a flag's value out of an invocation.
-func arg(args []string, flag string) string {
-	for i, value := range args {
-		if value == flag && i+1 < len(args) {
-			return args[i+1]
-		}
-	}
-	return ""
-}
-
-// The authorization window is checked at provisioning, not only when the report
-// arrives; otherwise an expired programme is provisioned every tick and refused at
-// run open, an execution billed for nothing.
-func TestAnExpiredProgrammeIsNeverProvisioned(t *testing.T) {
-	h := newHarness(t)
-	ctx := context.Background()
-	h.due(t, "one.acme.test")
-	exec(t, h.pool, `UPDATE program SET authorized_to = $1 WHERE id = $2`,
-		h.clock.now.Add(-time.Minute), h.program)
-
-	if _, err := h.sched.Verification(ctx, h.queries, h.org, h.program, "resolve"); err == nil {
-		t.Fatal("a run was provisioned over an expired authorization")
-	} else if !strings.Contains(err.Error(), "expired") {
-		t.Fatalf("the refusal reads %v", err)
-	}
-}
-
-// last_discovery_at is written at creation, not completion: a dying run must not be
-// restarted by the cadence, since the sweeper handles it.
-func TestDiscoveryIsRecordedWhenItIsProvisioned(t *testing.T) {
-	h := newHarness(t)
-	ctx := context.Background()
-
-	if _, err := h.sched.Discovery(ctx, h.queries, h.org, h.program); err != runs.ErrNoPerimeter {
-		t.Fatalf("a programme with no apex was provisioned: %v", err)
-	}
-
-	exec(t, h.pool, `INSERT INTO scope_rule (id, org_id, program_id, kind, matcher, pattern, valid_from)
-		VALUES ($1,$2,$3,'include','apex','acme.test',$4)`,
-		uuid.New(), h.org, h.program, h.clock.now.Add(-time.Hour))
-
-	defs, err := h.sched.Discovery(ctx, h.queries, h.org, h.program)
-	if err != nil {
-		t.Fatalf("discovery: %v", err)
-	}
-	if len(defs) != 1 {
-		t.Fatalf("one apex produced %d runs", len(defs))
-	}
-	def := defs[0]
-	if arg(def.Args, "--stages") != runs.ScopeFull {
-		t.Fatalf("a discovery run walks %q of the ladder", arg(def.Args, "--stages"))
-	}
-	if arg(def.Args, "-d") != "acme.test" {
-		t.Fatalf("the perimeter is %q", arg(def.Args, "-d"))
-	}
-	if def.Apex != "acme.test" {
-		t.Fatalf("the run says it enumerates %q", def.Apex)
-	}
-	// A discovery run gets no targets URL and a domain instead. That is the
-	// whole difference between the two mandates.
-	if arg(def.Args, "--targets-url") != "" {
-		t.Fatal("a discovery run was handed a target list, which is the one thing that makes an absence mean something")
-	}
-
-	var last time.Time
-	if err := h.pool.QueryRow(ctx, `SELECT last_discovery_at FROM program WHERE id = $1`, h.program).
-		Scan(&last); err != nil {
-		t.Fatalf("read last_discovery_at: %v", err)
-	}
-	if !last.Equal(h.clock.now) {
-		t.Fatalf("last_discovery_at is %s, want %s", last, h.clock.now)
-	}
-
-	// And the pass that provisions on a cadence sees the run in flight.
-	programs, err := h.queries.ProgramsDueForDiscovery(ctx, sqlcgen.ProgramsDueForDiscoveryParams{
-		At: pgStamp(h.clock.now.Add(30 * 24 * time.Hour)),
-	})
-	if err != nil {
-		t.Fatalf("read due programmes: %v", err)
-	}
-	if len(programs) != 0 {
-		t.Fatalf("%d programmes were due while a discovery run was in flight", len(programs))
-	}
-}
-
-// The in-flight check is a read then a write, and a transaction cannot see
-// another's uncommitted rows: two overlapping both pass and freeze the same hosts,
-// double scan traffic on someone's perimeter.
-//
-// The overlap is forced, not raced: the second transaction snapshots before the
-// first commits, the exact window a sleep would only sometimes reproduce. Discovery
-// has had a partial unique index since the first migration; verification did not,
-// and this says so.
-func TestTwoOverlappingRunsCannotBothBeCreated(t *testing.T) {
-	h := newHarness(t)
-	ctx := context.Background()
-	h.due(t, "one.acme.test", "two.acme.test")
-
-	first, err := h.pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer func() { _ = first.Rollback(ctx) }()
-
-	second, err := h.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer func() { _ = second.Rollback(ctx) }()
-
-	if _, err := h.sched.Verification(ctx, sqlcgen.New(first), h.org, h.program, "resolve"); err != nil {
-		t.Fatalf("the first run: %v", err)
-	}
-
-	// Taken while the first is still uncommitted, and held.
-	if _, err := second.Exec(ctx, `SELECT count(*) FROM run`); err != nil {
-		t.Fatalf("fix the snapshot: %v", err)
-	}
-	if err := first.Commit(ctx); err != nil {
-		t.Fatalf("commit the first: %v", err)
-	}
-
-	// The second still sees a programme with nothing in flight and hosts
-	// nothing holds. Only the write can stop it.
-	_, err = h.sched.Verification(ctx, sqlcgen.New(second), h.org, h.program, "resolve")
-	if err == nil {
-		t.Fatal("two runs were created over the same hosts, and each of them will scan those hosts")
-	}
-	if !errors.Is(err, runs.ErrRunInFlight) {
-		t.Fatalf("the loser reports %v, and a caller has to be able to tell this from a failure", err)
-	}
-
-	if n := h.count(t, `SELECT count(*) FROM run WHERE program_id = $1 AND state IN ('pending','running')`,
-		h.program); n != 1 {
-		t.Fatalf("%d live runs", n)
-	}
-}
-
-func (h *harness) count(t *testing.T, sql string, args ...any) int {
-	t.Helper()
-
-	var n int
-	if err := h.pool.QueryRow(context.Background(), sql, args...).Scan(&n); err != nil {
-		t.Fatalf("count %q: %v", sql, err)
-	}
-	return n
-}
-
-// A discovery run that never completes is expired and replaced. last_discovery_at
-// is written at creation so the cadence cannot start a second run mid-flight; left
-// after a death it would make the programme wait a whole interval, a thirty-second
-// failure costing a week of coverage.
-func TestADeadDiscoveryRunIsReplacedRatherThanWaitedOut(t *testing.T) {
-	h := newHarness(t)
-	ctx := context.Background()
-	exec(t, h.pool, `INSERT INTO scope_rule (id, org_id, program_id, kind, matcher, pattern, valid_from)
-		VALUES ($1,$2,$3,'include','apex','acme.test',$4)`,
-		uuid.New(), h.org, h.program, h.clock.now.Add(-time.Hour))
-
-	// Through the cadence, where the interval is read; Discovery alone checks what is
-	// in flight, not what the cadence allows.
-	platform := &recorder{id: "run-01"}
-	scheduler := runs.New(h.sched.Signer(), h.sched.Config(), quiet(),
-		runs.WithClock(h.clock.Now), runs.WithPlatform(platform))
-	cadence := runs.NewCadence(h.pool, scheduler, time.Minute, quiet())
-
-	if started, err := cadence.Once(ctx); err != nil || started != 1 {
-		t.Fatalf("the first run: %d started, %v", started, err)
-	}
-
-	var deadline time.Time
-	if err := h.pool.QueryRow(ctx,
-		`SELECT deadline FROM run WHERE program_id = $1`, h.program).Scan(&deadline); err != nil {
-		t.Fatalf("read the deadline: %v", err)
-	}
-
-	// Nothing ever reports. The deadline passes.
-	h.clock.now = deadline.Add(time.Minute)
-	if _, err := h.sched.Sweep(ctx, h.queries); err != nil {
-		t.Fatalf("sweep: %v", err)
-	}
-
-	// Not immediately. A permanently broken runner would otherwise provision
-	// and bill on every tick, which is the failure this delay bounds.
-	if again, err := cadence.Once(ctx); err != nil || again != 0 {
-		t.Fatalf("a replacement went out %d times before the retry delay, %v", again, err)
-	}
-
-	// A whole discovery interval has not passed, and the replacement still
-	// goes out: a run that failed in thirty seconds must not cost a week.
-	h.clock.now = h.clock.now.Add(h.sched.Config().DiscoveryRetry + time.Minute)
-	started, err := cadence.Once(ctx)
-	if err != nil {
-		t.Fatalf("the replacement: %v", err)
-	}
-	if started != 1 {
-		t.Fatalf("%d replacements went out, and the interval is seven days away", started)
-	}
-
-	// The record of the last enumeration survived: cursor and fact share a column, so
-	// clearing it to schedule a retry would say "never enumerated" about an hour ago.
-	var last *time.Time
-	if err := h.pool.QueryRow(ctx,
-		`SELECT last_discovery_at FROM program WHERE id = $1`, h.program).Scan(&last); err != nil {
-		t.Fatalf("read last_discovery_at: %v", err)
-	}
-	if last == nil {
-		t.Fatal("the record of the last discovery was destroyed to schedule a retry")
-	}
-
-	// And a run in flight still bounds the cadence to one at a time, which is
-	// the property clearing the slot must not undo.
-	if again, err := cadence.Once(ctx); err != nil || again != 0 {
-		t.Fatalf("a third tick started %d runs while one was in flight, %v", again, err)
-	}
-}
-
-// The cadence provisions and starts, and it is the platform that says what the
-// execution was called.
-func TestTheCadenceStartsWhatItProvisions(t *testing.T) {
-	h := newHarness(t)
-	ctx := context.Background()
-	exec(t, h.pool, `INSERT INTO scope_rule (id, org_id, program_id, kind, matcher, pattern, valid_from)
-		VALUES ($1,$2,$3,'include','apex','acme.test',$4)`,
-		uuid.New(), h.org, h.program, h.clock.now.Add(-time.Hour))
-	// An exclusion travels with the perimeter, as the second safety net in
-	// front of the network.
-	exec(t, h.pool, `INSERT INTO scope_rule (id, org_id, program_id, kind, matcher, pattern, valid_from)
-		VALUES ($1,$2,$3,'exclude','fqdn','vpn.acme.test',$4)`,
-		uuid.New(), h.org, h.program, h.clock.now.Add(-time.Hour))
-
-	platform := &recorder{id: "run-01"}
-	scheduler := runs.New(h.sched.Signer(), h.sched.Config(), quiet(),
-		runs.WithClock(h.clock.Now), runs.WithPlatform(platform))
-
-	started, err := runs.NewCadence(h.pool, scheduler, time.Minute, quiet()).Once(ctx)
-	if err != nil {
-		t.Fatalf("cadence: %v", err)
-	}
-	if started != 1 {
-		t.Fatalf("%d runs went out", started)
-	}
-	if platform.calls != 1 {
-		t.Fatalf("the platform was called %d times", platform.calls)
-	}
-	if arg(platform.args, "--exclude") != "vpn.acme.test" {
-		t.Fatalf("the exclusions did not travel: %v", platform.args)
-	}
-
-	var external string
-	if err := h.pool.QueryRow(ctx,
-		`SELECT external_id FROM run WHERE program_id = $1 AND kind = 'discovery'`,
-		h.program).Scan(&external); err != nil {
-		t.Fatalf("read the external id: %v", err)
-	}
-	if external != "run-01" {
-		t.Fatalf("the platform's name for the run is %q, and without it its logs are unfindable", external)
-	}
-
-	// A second tick starts nothing: the run is in flight.
-	again, err := runs.NewCadence(h.pool, scheduler, time.Minute, quiet()).Once(ctx)
-	if err != nil {
-		t.Fatalf("cadence: %v", err)
-	}
-	if again != 0 || platform.calls != 1 {
-		t.Fatalf("a second tick started %d runs, %d platform calls", again, platform.calls)
-	}
-}
-
-// A platform that refuses leaves a row the deadline sweeper owns, not nothing.
-func TestAPlatformRefusalLeavesTheSweeperSomethingToOwn(t *testing.T) {
-	h := newHarness(t)
-	ctx := context.Background()
-	exec(t, h.pool, `INSERT INTO scope_rule (id, org_id, program_id, kind, matcher, pattern, valid_from)
-		VALUES ($1,$2,$3,'include','apex','acme.test',$4)`,
-		uuid.New(), h.org, h.program, h.clock.now.Add(-time.Hour))
-
-	platform := &recorder{err: errors.New("quota exceeded")}
-	scheduler := runs.New(h.sched.Signer(), h.sched.Config(), quiet(),
-		runs.WithClock(h.clock.Now), runs.WithPlatform(platform))
-
-	started, err := runs.NewCadence(h.pool, scheduler, time.Minute, quiet()).Once(ctx)
-	if err != nil {
-		t.Fatalf("cadence: %v", err)
-	}
-	if started != 0 {
-		t.Fatalf("%d runs were reported started against a platform that refused", started)
-	}
-
-	var state string
-	if err := h.pool.QueryRow(ctx,
-		`SELECT state FROM run WHERE program_id = $1`, h.program).Scan(&state); err != nil {
-		t.Fatalf("read the run: %v", err)
-	}
-	if state != "pending" {
-		t.Fatalf("the run is %q, and a refusal has to leave the sweeper something to expire", state)
-	}
-}
-
-// recorder stands in for a platform.
-type recorder struct {
-	id    string
-	err   error
-	calls int
-	args  []string
-	// executions is what Status answers, by external id, and stopped is what
-	// Stop was asked to end.
-	executions map[string]runs.Execution
-	stopped    []string
-}
-
-func (r *recorder) Name() string { return "recorder" }
-
-func (r *recorder) Status(_ context.Context, external string) (runs.Execution, error) {
-	return r.executions[external], nil
-}
-
-func (r *recorder) Stop(_ context.Context, external string) error {
-	r.stopped = append(r.stopped, external)
-	return nil
-}
-
-func (r *recorder) Start(_ context.Context, def *runs.Definition) (string, error) {
-	r.calls++
-	r.args = def.Args
-	return r.id, r.err
-}
-
-func quiet() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
-
-// A programme with nothing to enumerate is not due, so not selected and refused
-// every tick: at a one-minute cadence, a warning a minute forever.
-func TestAProgrammeWithNoApexIsNotDue(t *testing.T) {
-	h := newHarness(t)
-	ctx := context.Background()
-
-	platform := &recorder{id: "run-01"}
-	scheduler := runs.New(h.sched.Signer(), h.sched.Config(), quiet(),
-		runs.WithClock(h.clock.Now), runs.WithPlatform(platform))
-	cadence := runs.NewCadence(h.pool, scheduler, time.Minute, quiet())
-
-	if started, err := cadence.Once(ctx); err != nil || started != 0 {
-		t.Fatalf("%d runs went out over a programme with no apex, %v", started, err)
-	}
-	if platform.calls != 0 {
-		t.Fatalf("the platform was called %d times", platform.calls)
-	}
-
-	// And it becomes due the moment it has one.
-	exec(t, h.pool, `INSERT INTO scope_rule (id, org_id, program_id, kind, matcher, pattern, valid_from)
-		VALUES ($1,$2,$3,'include','apex','acme.test',$4)`,
-		uuid.New(), h.org, h.program, h.clock.now.Add(-time.Hour))
-	if started, err := cadence.Once(ctx); err != nil || started != 1 {
-		t.Fatalf("%d runs went out once the perimeter existed, %v", started, err)
-	}
-}
-
-// An exclusion the scanner cannot be given is a real gap in the safety net, and
-// the run says so rather than dropping it.
-func TestAnExclusionThatCannotTravelIsSaidOutLoud(t *testing.T) {
-	h := newHarness(t)
-	ctx := context.Background()
-
-	for _, rule := range []struct{ matcher, pattern string }{
-		{"fqdn", "vpn.acme.test"},
-		{"cidr", "10.0.0.0/8"},
+		t.Fatal(err)
+	}
+	for _, r := range []scope.Rule{
+		{Kind: scope.Include, Matcher: scope.Apex, Pattern: "example.com"},
+		{Kind: scope.Exclude, Matcher: scope.FQDN, Pattern: "admin.example.com"},
+		{Kind: scope.Exclude, Matcher: scope.Apex, Pattern: "dev.example.com"},
 	} {
-		exec(t, h.pool, `INSERT INTO scope_rule (id, org_id, program_id, kind, matcher, pattern, valid_from)
-			VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-			uuid.New(), h.org, h.program, "exclude", rule.matcher, rule.pattern, h.clock.now.Add(-time.Hour))
-	}
-	exec(t, h.pool, `INSERT INTO scope_rule (id, org_id, program_id, kind, matcher, pattern, valid_from)
-		VALUES ($1,$2,$3,'include','apex','acme.test',$4)`,
-		uuid.New(), h.org, h.program, h.clock.now.Add(-time.Hour))
-
-	defs, err := h.sched.Discovery(ctx, h.queries, h.org, h.program)
-	if err != nil {
-		t.Fatalf("discovery: %v", err)
-	}
-	if len(defs) != 1 {
-		t.Fatalf("one apex produced %d runs", len(defs))
-	}
-	def := defs[0]
-
-	if arg(def.Args, "--exclude") != "vpn.acme.test" {
-		t.Fatalf("the name exclusion did not travel: %v", def.Args)
-	}
-	// A range must not travel as a name either: a scanner given "10.0.0.0/8" as a
-	// domain pattern would exclude nothing and say nothing.
-	for _, value := range def.Args {
-		if value == "10.0.0.0/8" {
-			t.Fatal("an address range was handed over as a name pattern")
+		if _, err := scope.OpenRule(ctx, st.Q, p.ID, r, "local", nil, now); err != nil {
+			t.Fatal(err)
 		}
 	}
-}
-
-// The pass on due dates turns a schedule into a run. The selection, frozen list and
-// lease existed but nothing called them: runs went out only on a button press while
-// due dates accumulated and no tick dispatched them.
-func TestTheDuePassStartsAVerificationRun(t *testing.T) {
-	h := newHarness(t)
-	ctx := context.Background()
-	h.due(t, "a.acme.test", "b.acme.test")
-
-	platform := &recorder{id: "run-verify"}
-	scheduler := runs.New(h.sched.Signer(), h.sched.Config(), quiet(),
-		runs.WithClock(h.clock.Now), runs.WithPlatform(platform))
-	pass := runs.NewDuePass(h.pool, scheduler, time.Minute, quiet())
-
-	started, err := pass.Once(ctx)
-	if err != nil {
-		t.Fatalf("due pass: %v", err)
+	ws, err := st.Q.ListWildcards(ctx, sqlcgen.ListWildcardsParams{DefaultAutoScan: "off", ProgramID: &p.ID})
+	if err != nil || len(ws) != 1 {
+		t.Fatalf("wildcards = %v, %v", ws, err)
 	}
-	if started != 1 {
-		t.Fatalf("%d runs went out, want one for the programme", started)
-	}
-	if platform.calls != 1 {
-		t.Errorf("the platform was called %d times, so the run was defined and never started",
-			platform.calls)
-	}
-
-	// One run holding both hosts, not one run per asset. The frozen list is the
-	// whole point: a run per due asset would be one execution billed per name.
-	var kind, scope string
-	var targets int
-	if err := h.pool.QueryRow(ctx, `
-		SELECT r.kind, r.scope, count(t.asset_id)::int
-		  FROM run r LEFT JOIN run_target t ON t.run_id = r.id
-		 WHERE r.program_id = $1 GROUP BY r.kind, r.scope`, h.program).
-		Scan(&kind, &scope, &targets); err != nil {
-		t.Fatalf("read the run: %v", err)
-	}
-	if kind != "verification" {
-		t.Errorf("kind = %s, want verification", kind)
-	}
-	// Full, not resolve: both dates are past and full executes every rung below it.
-	// Resolve would leave ports unswept while reporting the asset checked.
-	if scope != "full" {
-		t.Errorf("scope = %s, want full: it moves both dates and resolve would not", scope)
-	}
-	if targets != 2 {
-		t.Errorf("the run froze %d targets, want both hosts in one list", targets)
-	}
-
-	// The second tick starts nothing, as the first is in flight. A unique index bounds
-	// it, but a pass provisioning into a refusal would warn once a minute.
-	again, err := pass.Once(ctx)
-	if err != nil {
-		t.Fatalf("second pass: %v", err)
-	}
-	if again != 0 {
-		t.Errorf("%d runs went out while one was in flight", again)
-	}
-	if n := h.count(t, `SELECT count(*) FROM run WHERE program_id = $1`, h.program); n != 1 {
-		t.Errorf("run rows = %d, want the one in flight", n)
+	f := &fakeRunner{reports: reports}
+	c := &clock{t: time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)}
+	return &fixture{
+		st: st, program: p, wildcard: ws[0].ID, runner: f,
+		sched: &runs.Scheduler{
+			Store: st, Runner: f, Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			Slots: 1, Timeout: 30 * time.Minute, Ports: []int{80, 443}, Tick: time.Hour, Now: c.now,
+		},
 	}
 }
 
-// A programme nothing may scan is not selected at all. Asserted on the selection,
-// not the run count: create re-checks the window, so counting runs passes with the
-// condition removed from the query. The first guard stops the pass waking an
-// expired programme, walking its due assets and logging a refusal every minute.
-func TestTheDuePassNeverSelectsOutsideTheAuthorization(t *testing.T) {
-	h := newHarness(t)
-	ctx := context.Background()
-	h.due(t, "a.acme.test")
+func readFixture(t *testing.T) []byte {
+	t.Helper()
+	b, err := os.ReadFile("../ingest/testdata/recon.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
 
-	queries := h.queries
-	selected := func() int {
-		rows, err := queries.ProgramsDueForVerification(ctx,
-			sqlcgen.ProgramsDueForVerificationParams{At: pgStamp(h.clock.now)})
+// recon queues a recon, lets the scheduler run it, and returns the finished run.
+func (f *fixture) recon(t *testing.T) sqlcgen.Run {
+	t.Helper()
+	ctx := context.Background()
+	r, queued, reason, err := runs.EnqueueRecon(ctx, f.st.Q, f.wildcard, "user", time.Now().UTC())
+	if err != nil || !queued {
+		t.Fatalf("enqueue: %v %s", err, reason)
+	}
+	if err := f.sched.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		got, err := f.st.Q.GetRun(ctx, r.ID)
 		if err != nil {
-			t.Fatalf("selection: %v", err)
+			t.Fatal(err)
 		}
-		return len(rows)
+		if got.State != "queued" && got.State != "running" {
+			return got
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
+	t.Fatal("run did not finish")
+	return sqlcgen.Run{}
+}
 
-	// The positive control first, so the refusals below are read against a
-	// selection that does return something.
-	if got := selected(); got != 1 {
-		t.Fatalf("an authorized programme with a due asset was selected %d times, want once", got)
+func summary(t *testing.T, r sqlcgen.Run) ingest.Summary {
+	t.Helper()
+	var s ingest.Summary
+	if err := json.Unmarshal(r.Ingest, &s); err != nil {
+		t.Fatalf("ingest summary %q: %v", r.Ingest, err)
 	}
+	return s
+}
 
-	for _, state := range []struct {
-		label string
-		sql   string
-		args  []any
-	}{
-		{
-			"an expired authorization",
-			`UPDATE program SET authorized_to = $2 WHERE id = $1`,
-			[]any{h.program, h.clock.now.Add(-time.Minute)},
-		},
-		{
-			"a suspended programme",
-			`UPDATE program SET authorized_to = NULL, state = 'suspended' WHERE id = $1`,
-			[]any{h.program},
-		},
-		{
-			"an authorization that has not begun",
-			`UPDATE program SET state = 'active', authorized_from = $2 WHERE id = $1`,
-			[]any{h.program, h.clock.now.Add(time.Hour)},
-		},
-	} {
-		exec(t, h.pool, state.sql, state.args...)
-		if got := selected(); got != 0 {
-			t.Errorf("%s was selected %d times", state.label, got)
+func current(t *testing.T, st *store.Store, programID uuid.UUID, kind, key string) sqlcgen.AssetCurrent {
+	t.Helper()
+	assets, err := st.Q.ListProgramAssets(context.Background(), programID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range assets {
+		if a.Kind == kind && a.Key == key {
+			c, err := st.Q.GetAssetCurrent(context.Background(), a.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return c
 		}
 	}
+	t.Fatalf("no %s asset %q", kind, key)
+	return sqlcgen.AssetCurrent{}
+}
 
-	// And the run is refused as well, which is the guard that matters when a
-	// programme expires between the selection and the write.
-	exec(t, h.pool, `UPDATE program SET authorized_from = $2, authorized_to = $3 WHERE id = $1`,
-		h.program, h.clock.now.Add(-time.Hour), h.clock.now.Add(-time.Minute))
-	platform := &recorder{id: "run-never"}
-	scheduler := runs.New(h.sched.Signer(), h.sched.Config(), quiet(),
-		runs.WithClock(h.clock.Now), runs.WithPlatform(platform))
-	if _, err := scheduler.Verification(ctx, queries, h.org, h.program, "full"); err == nil {
-		t.Error("a run was defined on a programme whose authorization has expired")
+func TestReconFillsTheInventory(t *testing.T) {
+	ctx := context.Background()
+	f := setup(t, readFixture(t))
+	r := f.recon(t)
+	if r.State != "succeeded" {
+		t.Fatalf("run = %s: %s", r.State, *r.Error)
 	}
-	if platform.calls != 0 {
-		t.Errorf("the platform was called %d times for a programme nothing may scan", platform.calls)
+
+	req := f.runner.requests[0]
+	if req.Domain != "example.com" || req.Stages != "full" || req.Ports != "80,443" {
+		t.Errorf("request = %+v", req)
+	}
+	if strings.Join(req.Exclude, " ") != "*.dev.example.com admin.example.com dev.example.com" {
+		t.Errorf("exclusions = %v", req.Exclude)
+	}
+
+	s := summary(t, r)
+	if s.OutsidePerimeter != 1 || s.NotReached != 1 || s.ServicesCreated != 3 {
+		t.Errorf("summary = %+v", s)
+	}
+	// fqdn: api, db, old, mx, slow; ip: 3 addresses; services: api:443, api:80, db:5432
+	if s.AssetsCreated != 5 {
+		t.Errorf("hosts created = %d, want 5", s.AssetsCreated)
+	}
+
+	api := current(t, f.st, f.program.ID, "fqdn", "api.example.com")
+	if api.Lifecycle != "active" || api.ScopeStatus != "in_scope" || *api.DnsState != "resolving" || *api.Cdn != "cloudflare" {
+		t.Errorf("api = %+v", api)
+	}
+	if got := current(t, f.st, f.program.ID, "fqdn", "old.example.com"); got.Lifecycle != "candidate" || *got.DnsState != "nxdomain" {
+		t.Errorf("an nxdomain from a recon is a candidate, never dead: %+v", got)
+	}
+	if got := current(t, f.st, f.program.ID, "fqdn", "mx.example.com"); *got.DnsState != "nodata" {
+		t.Errorf("no_answer is nodata: %+v", got)
+	}
+	svc := current(t, f.st, f.program.ID, "service", "api.example.com:443/tcp")
+	if svc.Lifecycle != "active" || *svc.StatusCode != 200 || *svc.FinalUrl != "https://api.example.com/v2" {
+		t.Errorf("api:443 = %+v", svc)
+	}
+	if got := current(t, f.st, f.program.ID, "service", "db.example.com:5432/tcp"); got.Lifecycle != "candidate" {
+		t.Errorf("a port with no HTTP answer is a candidate service: %+v", got)
+	}
+
+	w, err := f.st.Q.GetWildcard(ctx, f.wildcard)
+	if err != nil || w.LastReconAt == nil || w.AssetsFound != 5 {
+		t.Errorf("wildcard = %+v, %v", w, err)
+	}
+
+	// You started it: one message, with the counts and the run's changes.
+	ns, err := f.st.Q.RecentNotifications(ctx)
+	if err != nil || len(ns) != 1 || ns[0].Kind != "recon_finished" ||
+		ns[0].Title != "*.example.com finished: "+strconv.Itoa(s.Hosts)+" hosts, 5 new, 3 new services" ||
+		ns[0].Link == nil || !strings.HasSuffix(*ns[0].Link, "/changes?run="+r.ID.String()) {
+		t.Errorf("notifications = %+v, %v", ns, err)
 	}
 }
 
-// An asset outside the perimeter, archived, or not a name is never a target, and
-// must not wake a programme: it would be selected and find nothing every tick.
-func TestTheDuePassIgnoresWhatIsNotATarget(t *testing.T) {
-	h := newHarness(t)
-	ctx := context.Background()
-
-	// A service with a due date, which is not a target of its own: it is
-	// observed through the host it sits on.
-	id := uuid.New()
-	exec(t, h.pool, `INSERT INTO asset
-		(id, org_id, program_id, kind, key, host, discovery_source, scope_status, first_seen, last_seen)
-		VALUES ($1,$2,$3,'service','a.acme.test:443/tcp','a.acme.test','manual','in_scope',$4,$4)`,
-		id, h.org, h.program, h.clock.now.Add(-time.Hour))
-	exec(t, h.pool, `INSERT INTO asset_current
-		(asset_id, org_id, program_id, kind, key, scope_status, host, port,
-		 next_resolve_at, next_full_at, first_seen, last_seen)
-		VALUES ($1,$2,$3,'service','a.acme.test:443/tcp','in_scope','a.acme.test',443,$4,$4,$4,$4)`,
-		id, h.org, h.program, h.clock.now.Add(-time.Hour))
-
-	// And a name that is out of the perimeter, with a date it should never have
-	// been given.
-	h.due(t, "out.acme.test")
-	exec(t, h.pool, `UPDATE asset_current SET scope_status = 'out_of_scope' WHERE key = 'out.acme.test'`)
-
-	pass := runs.NewDuePass(h.pool, h.sched, time.Minute, quiet())
-	if started, err := pass.Once(ctx); err != nil || started != 0 {
-		t.Errorf("started = %d err = %v, want nothing: neither a service nor an asset "+
-			"outside the perimeter is a target", started, err)
+func TestSecondReconIsDeduplicated(t *testing.T) {
+	fx := readFixture(t)
+	f := setup(t, fx)
+	first := summary(t, f.recon(t))
+	second := summary(t, f.recon(t))
+	if first.ObsWritten == 0 || first.ObsWritten != first.ObsSubmitted {
+		t.Errorf("first run = %+v", first)
+	}
+	if second.ObsSubmitted != first.ObsSubmitted || second.ObsWritten != 0 || second.DedupRate != 1 || second.Changes != 0 {
+		t.Errorf("an identical report must only confirm: %+v", second)
 	}
 }
 
-// No verification while an enumeration walks the same perimeter. The frozen list
-// cannot express it: a discovery run freezes nothing, so selection cannot see its
-// hosts. Its report has not landed, so assets keep their due dates, and a
-// verification a minute in sends a second scanner at hosts the first is on.
-func TestNoVerificationWhileAnEnumerationIsWalkingThePerimeter(t *testing.T) {
-	h := newHarness(t)
-	ctx := context.Background()
-	h.due(t, "a.acme.test", "b.acme.test")
-
-	// A discovery run in flight, which is what the report has not come back
-	// from yet.
-	discovery := uuid.New()
-	exec(t, h.pool, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline, apex)
-		VALUES ($1,$2,$3,'discovery','full','running',$4,'acme.test')`,
-		discovery, h.org, h.program, h.clock.now.Add(time.Hour))
-
-	// The selection does not wake the programme.
-	rows, err := h.queries.ProgramsDueForVerification(ctx,
-		sqlcgen.ProgramsDueForVerificationParams{At: pgStamp(h.clock.now)})
-	if err != nil {
-		t.Fatalf("selection: %v", err)
+func TestVolatileFieldsDoNotDefeatDedup(t *testing.T) {
+	fx := readFixture(t)
+	// Same target, different request: response time, content length, the
+	// order of addresses and SANs, the version of the scanner.
+	noisy := strings.NewReplacer(
+		`"response_time_ms": 251`, `"response_time_ms": 999`,
+		`"content_length": 1533`, `"content_length": 1600`,
+		`["93.184.216.35", "93.184.216.34"]`, `["93.184.216.34", "93.184.216.35"]`,
+		`["www.example.com", "api.example.com"]`, `["api.example.com", "www.example.com"]`,
+		`"version": "1.2.3"`, `"version": "1.3.0"`,
+	).Replace(string(fx))
+	if noisy == string(fx) {
+		t.Fatal("the replacements did not apply")
 	}
-	if len(rows) != 0 {
-		t.Errorf("the programme was selected %d times while an enumeration was in flight", len(rows))
-	}
-
-	// And the definition refuses, which is what covers the console button: it
-	// calls this directly and never goes through the selection.
-	if _, err := h.sched.Verification(ctx, h.queries, h.org, h.program, "full"); !errors.Is(err, runs.ErrRunInFlight) {
-		t.Errorf("err = %v, want a run in flight: a person pressing the button reaches "+
-			"this without passing the selection", err)
-	}
-	if n := h.count(t, `SELECT count(*) FROM run_target`); n != 0 {
-		t.Errorf("%d targets were frozen while an enumeration was walking the perimeter", n)
-	}
-
-	// The positive control: once the enumeration is done the verification goes out on
-	// the next call, costing the length of a run, not a cadence.
-	exec(t, h.pool, `UPDATE run SET state = 'completed', finished_at = $2 WHERE id = $1`,
-		discovery, h.clock.now)
-
-	rows, err = h.queries.ProgramsDueForVerification(ctx,
-		sqlcgen.ProgramsDueForVerificationParams{At: pgStamp(h.clock.now)})
-	if err != nil {
-		t.Fatalf("selection: %v", err)
-	}
-	if len(rows) != 1 {
-		t.Fatalf("the programme was selected %d times once the enumeration finished, want once", len(rows))
-	}
-	if _, err := h.sched.Verification(ctx, h.queries, h.org, h.program, "full"); err != nil {
-		t.Errorf("the verification was refused after the enumeration finished: %v", err)
+	f := setup(t, fx, []byte(noisy))
+	f.recon(t)
+	if s := summary(t, f.recon(t)); s.ObsWritten != 0 {
+		t.Errorf("volatile fields wrote %d observations: %+v", s.ObsWritten, s)
 	}
 }
 
-// One directional, on purpose. Blocking discovery on a live verification would
-// starve it: during a drain a verification is in flight most minutes. Discovery is
-// rare and its cadence a promise, so it wins.
-func TestAnEnumerationIsNotBlockedByAVerification(t *testing.T) {
-	h := newHarness(t)
+func TestChangesAreRecorded(t *testing.T) {
 	ctx := context.Background()
-	exec(t, h.pool, `INSERT INTO scope_rule (id, org_id, program_id, kind, matcher, pattern, valid_from)
-		VALUES ($1,$2,$3,'include','apex','acme.test',$4)`,
-		uuid.New(), h.org, h.program, h.clock.now.Add(-time.Hour))
+	fx := readFixture(t)
+	changed := strings.NewReplacer(
+		// db opens 6379 and closes nothing; api's title changes.
+		`"scan": {"scanned": 32, "open": 1, "refused": 31, "filtered": 0, "unknown": 0},
+     "ports": [{"port": 5432,`,
+		`"scan": {"scanned": 32, "open": 2, "refused": 30, "filtered": 0, "unknown": 0},
+     "ports": [{"port": 6379, "protocol": "tcp", "state": "open", "addresses": ["10.1.2.3"]}, {"port": 5432,`,
+		`"title": "API"`, `"title": "API v3"`,
+		// old comes back to life.
+		`{"host": "old.example.com", "status": "dead", "reason": "nxdomain", "sources": ["crt"]}`,
+		`{"host": "old.example.com", "status": "live", "addresses": ["93.184.216.40"], "sources": ["crt"]}`,
+	).Replace(string(fx))
+	f := setup(t, fx, []byte(changed))
+	f.recon(t)
+	r := f.recon(t)
 
-	verification := uuid.New()
-	exec(t, h.pool, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline)
-		VALUES ($1,$2,$3,'verification','full','running',$4)`,
-		verification, h.org, h.program, h.clock.now.Add(time.Hour))
-
-	programs, err := h.queries.ProgramsDueForDiscovery(ctx, sqlcgen.ProgramsDueForDiscoveryParams{
-		At:    pgStamp(h.clock.now),
-		Retry: pgtype.Interval{Microseconds: time.Hour.Microseconds(), Valid: true},
-	})
+	kinds := map[string]int{}
+	rows, err := f.st.Pool.Query(ctx, "SELECT kind FROM change WHERE run_id = $1", r.ID)
 	if err != nil {
-		t.Fatalf("read due programmes: %v", err)
+		t.Fatal(err)
 	}
-	if len(programs) != 1 {
-		t.Fatalf("the programme was selected %d times for discovery while a verification "+
-			"was in flight, want once: the reverse rule would starve enumeration", len(programs))
-	}
-	if _, err := h.sched.Discovery(ctx, h.queries, h.org, h.program); err != nil {
-		t.Errorf("the enumeration was refused while a verification was in flight: %v", err)
-	}
-}
-
-// A programme with two apexes gets one run each, the case the per-apex shape is
-// for. The scheduler once comma-joined apexes into the single-domain flag; every
-// one-apex programme survived (no separator) and the first two-apex perimeter died
-// before resolving anything on "domain \"a.test,b.test\" is not a valid domain
-// name". So the assertion is that neither run was handed a list, not only that two
-// came back.
-func TestAPerimeterOfTwoApexesIsTwoRuns(t *testing.T) {
-	h := newHarness(t)
-	ctx := context.Background()
-
-	for _, apex := range []string{"acme.test", "other.test"} {
-		exec(t, h.pool, `INSERT INTO scope_rule (id, org_id, program_id, kind, matcher, pattern, valid_from)
-			VALUES ($1,$2,$3,'include','apex',$4,$5)`,
-			uuid.New(), h.org, h.program, apex, h.clock.now.Add(-time.Hour))
-	}
-	exec(t, h.pool, `INSERT INTO scope_rule (id, org_id, program_id, kind, matcher, pattern, valid_from)
-		VALUES ($1,$2,$3,'exclude','fqdn','vpn.acme.test',$4)`,
-		uuid.New(), h.org, h.program, h.clock.now.Add(-time.Hour))
-
-	defs, err := h.sched.Discovery(ctx, h.queries, h.org, h.program)
-	if err != nil {
-		t.Fatalf("discovery: %v", err)
-	}
-	if len(defs) != 2 {
-		t.Fatalf("two apexes produced %d runs", len(defs))
-	}
-
-	seen := map[string]bool{}
-	for _, def := range defs {
-		domain := arg(def.Args, "-d")
-		if strings.ContainsAny(domain, ", ") {
-			t.Errorf("a run was handed %q, which the scanner reads as one domain name "+
-				"and refuses", domain)
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			t.Fatal(err)
 		}
-		if domain != def.Apex {
-			t.Errorf("the run says it enumerates %q and asks the scanner for %q", def.Apex, domain)
-		}
-		// The perimeter's exclusions belong to the programme and not to the
-		// apex being walked, so both runs carry them.
-		if arg(def.Args, "--exclude") != "vpn.acme.test" {
-			t.Errorf("the run over %q was given no exclusion: %v", domain, def.Args)
-		}
-		seen[domain] = true
+		kinds[k]++
 	}
-	if !seen["acme.test"] || !seen["other.test"] {
-		t.Errorf("the two runs cover %v", seen)
+	if rows.Err() != nil {
+		t.Fatal(rows.Err())
 	}
-
-	// Both in flight: the bound is per apex, and the unique index must allow the pair
-	// the old one made impossible.
-	var live int
-	if err := h.pool.QueryRow(ctx,
-		`SELECT count(*) FROM run WHERE program_id = $1 AND kind = 'discovery'
-		   AND state IN ('pending','running')`, h.program).Scan(&live); err != nil {
-		t.Fatalf("count live runs: %v", err)
+	if kinds["port_opened"] != 1 || kinds["http_changed"] != 1 || kinds["lifecycle_changed"] != 1 || kinds["dns_changed"] != 1 {
+		t.Errorf("changes = %v", kinds)
 	}
-	if live != 2 {
-		t.Fatalf("%d discovery runs are live, want the two that were just defined", live)
-	}
-
-	// And nothing is free, so a second call is refused rather than answering
-	// with an empty list a caller would read as success.
-	if _, err := h.sched.Discovery(ctx, h.queries, h.org, h.program); !errors.Is(err, runs.ErrRunInFlight) {
-		t.Fatalf("a third enumeration was provisioned with both apexes in flight: %v", err)
+	if kinds["new_asset"] != 2 { // the 6379 service and old's address
+		t.Errorf("new assets = %d, want 2: %v", kinds["new_asset"], kinds)
 	}
 }
 
-// One failing apex must not cost the other a cycle: the bound is per apex, so the
-// idle enumeration goes out again while its neighbour is still walking.
-func TestAnApexWhoseRunDiedIsProvisionedAgainOnItsOwn(t *testing.T) {
-	h := newHarness(t)
+func TestDegradedRunCannotConcludeAbsence(t *testing.T) {
 	ctx := context.Background()
-
-	for _, apex := range []string{"acme.test", "other.test"} {
-		exec(t, h.pool, `INSERT INTO scope_rule (id, org_id, program_id, kind, matcher, pattern, valid_from)
-			VALUES ($1,$2,$3,'include','apex',$4,$5)`,
-			uuid.New(), h.org, h.program, apex, h.clock.now.Add(-time.Hour))
+	degraded := strings.Replace(string(readFixture(t)), `"degraded": []`, `"degraded": ["resolvers_unvalidated"]`, 1)
+	f := setup(t, []byte(degraded))
+	f.recon(t)
+	var outcome string
+	if err := f.st.Pool.QueryRow(ctx, `SELECT o.outcome FROM observation o JOIN asset a ON a.id = o.asset_id
+		WHERE a.key = 'old.example.com' AND o.layer = 'dns'`).Scan(&outcome); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := h.sched.Discovery(ctx, h.queries, h.org, h.program); err != nil {
-		t.Fatalf("discovery: %v", err)
+	if outcome != "error" {
+		t.Errorf("an nxdomain from a degraded run is %q, want error", outcome)
 	}
+}
 
-	// The one over acme.test dies the way the sweeper would end it.
-	exec(t, h.pool, `UPDATE run SET state = 'expired', finished_at = $1
-	                  WHERE program_id = $2 AND kind = 'discovery' AND apex = 'acme.test'`,
-		h.clock.now, h.program)
-
-	defs, err := h.sched.Discovery(ctx, h.queries, h.org, h.program)
+func TestBusyRunnerRequeues(t *testing.T) {
+	ctx := context.Background()
+	f := setup(t, readFixture(t))
+	f.runner.err = runs.ErrBusy
+	r, _, _, err := runs.EnqueueRecon(ctx, f.st.Q, f.wildcard, "user", time.Now().UTC())
 	if err != nil {
-		t.Fatalf("the freed apex was not provisioned again: %v", err)
+		t.Fatal(err)
 	}
-	if len(defs) != 1 {
-		t.Fatalf("%d runs came back, want the one apex that was free", len(defs))
+	if err := f.sched.Pass(ctx); err != nil {
+		t.Fatal(err)
 	}
-	if defs[0].Apex != "acme.test" {
-		t.Fatalf("the run covers %q, and other.test was still in flight", defs[0].Apex)
+	time.Sleep(200 * time.Millisecond)
+	got, _ := f.st.Q.GetRun(ctx, r.ID)
+	if got.State != "queued" {
+		t.Errorf("a busy runner leaves the run %s, want queued", got.State)
+	}
+	if _, queued, reason, _ := runs.EnqueueRecon(ctx, f.st.Q, f.wildcard, "user", time.Now().UTC()); queued || reason == "" {
+		t.Error("a second recon on the same wildcard must not be queued")
+	}
+}
+
+func TestFailedRunLeavesTheWildcard(t *testing.T) {
+	ctx := context.Background()
+	f := setup(t, readFixture(t))
+	f.runner.err = errors.New("boom")
+	if r := f.recon(t); r.State != "failed" || r.Error == nil {
+		t.Fatalf("run = %s %v", r.State, r.Error)
+	}
+	w, _ := f.st.Q.GetWildcard(ctx, f.wildcard)
+	if w.LastReconAt != nil {
+		t.Error("a failed recon must not move last_recon_at")
+	}
+	ns, err := f.st.Q.RecentNotifications(ctx)
+	if err != nil || len(ns) != 1 || !strings.HasPrefix(ns[0].Title, "*.example.com failed: ") {
+		t.Errorf("a failed recon is announced too: %+v, %v", ns, err)
+	}
+}
+
+func TestRefreshDeclaresAndReclassifies(t *testing.T) {
+	ctx := context.Background()
+	f := setup(t, readFixture(t))
+	f.recon(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+
+	// Excluding api takes the host, its services and nothing else out.
+	if _, err := scope.OpenRule(ctx, f.st.Q, f.program.ID, scope.Rule{Kind: scope.Exclude, Matcher: scope.FQDN, Pattern: "api.example.com"}, "local", nil, now); err != nil {
+		t.Fatal(err)
+	}
+	// An include fqdn under another domain declares the host.
+	if _, err := scope.OpenRule(ctx, f.st.Q, f.program.ID, scope.Rule{Kind: scope.Include, Matcher: scope.FQDN, Pattern: "shop.other.com"}, "local", nil, now); err != nil {
+		t.Fatal(err)
+	}
+	res, err := inventory.Refresh(ctx, f.st.Q, f.program, "off", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Declared != 1 || res.Reclassified != 3 {
+		t.Errorf("refresh = %+v, want 1 declared and api + its 2 services reclassified", res)
+	}
+	if got := current(t, f.st, f.program.ID, "service", "api.example.com:443/tcp"); got.ScopeStatus != "out_of_scope" {
+		t.Errorf("api:443 = %s", got.ScopeStatus)
+	}
+	if got := current(t, f.st, f.program.ID, "fqdn", "shop.other.com"); got.ScopeStatus != "in_scope" || got.Lifecycle != "candidate" {
+		t.Errorf("declared host = %+v", got)
+	}
+}
+
+func TestAutoScanQueuesANewWildcard(t *testing.T) {
+	ctx := context.Background()
+	f := setup(t)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	onNew := "on_new"
+	p, err := f.st.Q.UpdateProgram(ctx, sqlcgen.UpdateProgramParams{ID: f.program.ID, Name: f.program.Name, State: "active", AutoScan: &onNew, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := scope.OpenRule(ctx, f.st.Q, p.ID, scope.Rule{Kind: scope.Include, Matcher: scope.Apex, Pattern: "new.io"}, "local", nil, now); err != nil {
+		t.Fatal(err)
+	}
+	res, err := inventory.Refresh(ctx, f.st.Q, p, "off", now)
+	if err != nil || res.AutoScans != 1 {
+		t.Fatalf("refresh = %+v, %v", res, err)
+	}
+	runsList, _ := f.st.Q.ListRuns(ctx, sqlcgen.ListRunsParams{ProgramID: &p.ID, Lim: 10})
+	if len(runsList) != 1 || runsList[0].Run.Trigger != "auto_scan" || *runsList[0].Apex != "new.io" {
+		t.Errorf("runs = %+v", runsList)
+	}
+}
+
+// A recon cut by a restart ends like any other: failed, and announced.
+func TestRecoverAnnouncesAnInterruptedRecon(t *testing.T) {
+	ctx := context.Background()
+	f := setup(t, readFixture(t))
+	r, queued, reason, err := runs.EnqueueRecon(ctx, f.st.Q, f.wildcard, "user", time.Now().UTC())
+	if err != nil || !queued {
+		t.Fatalf("enqueue: %v %s", err, reason)
+	}
+	if _, err := f.st.Pool.Exec(ctx, `UPDATE run SET state = 'running', started_at = now() WHERE id = $1`, r.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.sched.Recover(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := f.st.Q.GetRun(ctx, r.ID)
+	ns, err := f.st.Q.RecentNotifications(ctx)
+	if got.State != "failed" || err != nil || len(ns) != 1 || ns[0].Title != "*.example.com failed: interrupted by a restart" {
+		t.Fatalf("run %s, notifications %+v %v", got.State, ns, err)
 	}
 }

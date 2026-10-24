@@ -1,225 +1,821 @@
 <script lang="ts">
-	import AssetRow from '$lib/components/AssetRow.svelte';
-	import Facets from '$lib/components/Facets.svelte';
-	import FilterBar from '$lib/components/FilterBar.svelte';
-	import HostGroup from '$lib/components/HostGroup.svelte';
-	import NameSearch from '$lib/components/NameSearch.svelte';
-	import { groupHref, moreHref, nextHref } from '$lib/query';
-	import type { Asset, FlatPage, Group, GroupedPage } from '$lib/types';
-	import type { PageData } from './$types';
+	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
+	import { onMount } from 'svelte';
+	import { api, ApiError, qs } from '#lib/api.ts';
+	import { ago, count, displayKey, label, splitTech } from '#lib/format.ts';
+	import { quote, terms, toggle, without } from '#lib/query.ts';
+	import type { FacetValue, Page, Program, Row, SavedSearch } from '#lib/types.ts';
+	import Shot from '#lib/components/Shot.svelte';
+	import Status from '#lib/components/Status.svelte';
+	import Lifecycle from '#lib/components/Lifecycle.svelte';
+	import More from '#lib/components/More.svelte';
+	import Combobox from '#lib/components/Combobox.svelte';
 
-	const { data }: { data: PageData } = $props();
+	interface Field {
+		name: string;
+		kind: string;
+		doc: string;
+		example: string;
+	}
 
-	/**
-	 * The walk through the list, past the server's first page. The button used to link to the next page,
-	 * replacing the fifty rows and sending the reader to the top; rows accumulate here instead. A
-	 * derived, because that resets it: the server hands back a new `data` for every question, so a new
-	 * answer empties this by construction. Filters stay in the URL and only depth is local.
-	 */
-	let walk = $derived({
-		answer: data,
-		groups: [] as Group[],
-		assets: [] as Asset[],
-		favicons: {} as Record<string, string>,
-		/** Where the walk is. Empty means the list is complete. */
-		cursor: data.nextCursor ?? '',
-		failed: false
-	});
+	const facetOrder: [string, string][] = [
+		['technologies', 'Technologies'],
+		['status', 'Status'],
+		['ports', 'Ports'],
+		['programs', 'Programs'],
+		['triage', 'Triage'],
+		['state', 'Lifecycle'],
+		['cdn', 'CDN']
+	];
+
+	const q = $derived(page.url.searchParams.get('q') ?? '');
+	const view = $derived(page.url.searchParams.get('view') === 'hosts' ? 'hosts' : 'services');
+	const layout = $derived(page.url.searchParams.get('layout') === 'grid' ? 'grid' : 'list');
+
+	let draft = $state('');
+	let rows = $state<Row[]>([]);
+	let next = $state<string | undefined>();
+	let facets = $state<Record<string, FacetValue[]>>({});
+	let error = $state<ApiError | null>(null);
 	let loading = $state(false);
+	let more = $state(false);
+	let saved = $state<SavedSearch[]>([]);
+	let fields = $state<Field[]>([]);
+	let programs = $state<Program[]>([]);
+	// Facets opened past their first values.
+	let expanded = $state<Record<string, boolean>>({});
+	const shown = 5;
+	let saving = $state(false);
+	let saveName = $state('');
+	let saveError = $state('');
+	let input: HTMLInputElement;
+	let ticket = 0;
 
-	const groups = $derived([...data.groups, ...walk.groups]);
-	const assets = $derived([...data.assets, ...walk.assets]);
-	// The page's map and the appended ones. A hash in both carries the same
-	// image, because it is the hash of those bytes.
-	const favicons = $derived({ ...data.favicons, ...walk.favicons });
+	function nav(params: { q?: string; view?: string; layout?: string }) {
+		const p = { q, view, layout, ...params };
+		goto('/' + qs({ q: p.q, view: p.view === 'services' ? '' : p.view, layout: p.layout === 'list' ? '' : p.layout }), {
+			reset: false
+		});
+	}
 
-	/**
-	 * The no-JavaScript fallback link. A cursor, not an offset, and opaque on purpose: it encodes the
-	 * ordering key the server chose. No page number or total, as a count over a filtered set is a
-	 * second full scan, and that budget goes to the facets.
-	 */
-	const next = $derived(walk.cursor ? nextHref(data.filters, walk.cursor, data.grouped) : '');
-
-	const shown = $derived(data.grouped ? groups.length : assets.length);
-
-	async function more(event: MouseEvent) {
-		event.preventDefault();
-		if (loading || !walk.cursor) return;
+	$effect(() => {
+		draft = q;
+		const t = ++ticket;
 		loading = true;
-		try {
-			const response = await fetch(moreHref(data.filters, walk.cursor, data.grouped), {
-				headers: { accept: 'application/json' }
+		error = null;
+		const query = qs({ q, view });
+		Promise.all([api.get<Page>('/api/search' + query), api.get<{ facets: Record<string, FacetValue[]> }>('/api/search/facets' + query)])
+			.then(([res, f]) => {
+				if (t !== ticket) return;
+				rows = res.rows;
+				next = res.next;
+				facets = f.facets;
+			})
+			.catch((e) => {
+				if (t !== ticket) return;
+				error = e instanceof ApiError ? e : new ApiError(0, { detail: String(e) });
+				rows = [];
+				next = undefined;
+				facets = {};
+			})
+			.finally(() => {
+				if (t === ticket) loading = false;
 			});
-			if (!response.ok) throw new Error('the console answered ' + response.status);
-			const page: GroupedPage & FlatPage = await response.json();
-			// What is on screen already: the walk is a keyset over a moving inventory, so a row whose last_seen
-			// went backwards sorts below a cursor it was handed under and comes back. The list is keyed by host
-			// and asset, so a repeat is a duplicate key, crashing the whole page, not one wrong row.
-			const shownHosts = new Set(groups.map((group) => group.host));
-			const shownAssets = new Set(assets.map((asset) => asset.asset_id));
-			walk = {
-				...walk,
-				groups: [...walk.groups, ...(page.groups ?? []).filter((group) => !shownHosts.has(group.host))],
-				assets: [...walk.assets, ...(page.assets ?? []).filter((asset) => !shownAssets.has(asset.asset_id))],
-				favicons: { ...walk.favicons, ...(page.favicons ?? {}) },
-				// The server hands out the next one or nothing, and nothing is the
-				// end of the walk rather than an error.
-				cursor: page.next_cursor ?? '',
-				failed: false
-			};
-		} catch {
-			// Said rather than swallowed, and the cursor is kept: what failed is
-			// one request, so the same click is worth making again.
-			walk = { ...walk, failed: true };
+	});
+
+	async function loadMore() {
+		if (!next || more) return;
+		more = true;
+		const t = ticket;
+		try {
+			const res = await api.get<Page>('/api/search' + qs({ q, view, cursor: next }));
+			// A page of the previous query is dropped.
+			if (t !== ticket) return;
+			rows = [...rows, ...res.rows];
+			next = res.next;
 		} finally {
-			loading = false;
+			more = false;
 		}
 	}
+
+	async function loadSaved() {
+		saved = (await api.get<{ saved_searches: SavedSearch[] }>('/api/saved-searches')).saved_searches;
+	}
+
+	onMount(() => {
+		loadSaved();
+		api.get<{ fields: Field[] }>('/api/search/fields').then((r) => (fields = r.fields));
+		api.get<{ programs: Program[] }>('/api/programs').then((r) => (programs = r.programs));
+		const onKey = (e: KeyboardEvent) => {
+			const t = e.target as HTMLElement;
+			if (e.key === '/' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName)) {
+				e.preventDefault();
+				input?.focus();
+				input?.select();
+			}
+		};
+		window.addEventListener('keydown', onKey);
+		return () => window.removeEventListener('keydown', onKey);
+	});
+
+	function submit(e: SubmitEvent) {
+		e.preventDefault();
+		nav({ q: draft.trim() });
+	}
+
+	async function save(e: SubmitEvent) {
+		e.preventDefault();
+		saveError = '';
+		try {
+			await api.post('/api/saved-searches', { name: saveName, query: q, view });
+			saving = false;
+			saveName = '';
+			await loadSaved();
+		} catch (err) {
+			saveError = err instanceof ApiError ? err.message : String(err);
+		}
+	}
+
+	const chips = $derived(terms(q));
+	const programTerm = (name: string) => 'program:' + quote(name);
+	// Every program, not only the 20 the facet counts: the count is shown
+	// when this query has one.
+	const programOptions = $derived.by(() => {
+		const counts = new Map((facets.programs ?? []).map((f) => [f.value, f.count]));
+		return programs
+			.filter((p) => p.state !== 'archived' || counts.has(p.name))
+			.map((p) => ({ value: p.name, label: p.name, hint: counts.has(p.name) ? count(counts.get(p.name)!) : undefined }))
+			.sort((a, b) => (counts.get(b.value) ?? -1) - (counts.get(a.value) ?? -1) || a.label.localeCompare(b.label));
+	});
+	const pickedPrograms = $derived(chips.filter((t) => t.startsWith('program:')));
+	const active = $derived(new Set(chips));
+	const exportURL = (format: string) => '/api/search/export' + qs({ q, view, format });
+	const savedMatch = $derived(saved.find((s) => s.query === q && s.view === view));
+	const errSuggest = $derived(error?.body.suggest && error.body.field ? q.replaceAll(error.body.field + ':', error.body.suggest + ':') : '');
+
+	const key = (r: Row) => displayKey(r.kind, r.key);
 </script>
 
-<svelte:head><title>Search · recon</title></svelte:head>
+<svelte:head><title>{q ? q + ' · ' : ''}Search · Recon</title></svelte:head>
 
-<div class="work">
-	<aside class="side">
-		<!-- The one filter that is typed, not chosen, and it sits with the others: it produces the same `f`
-		as a facet click, and the toolbar chip is how it is undone. -->
-		<NameSearch filters={data.filters} grouped={data.grouped} />
-
-		<Facets facets={data.facets} filters={data.filters} {favicons} operators={data.operators} grouped={data.grouped} />
-	</aside>
-
-	<main class="results">
-		<!-- The names, so a chip reads `program is jomar.ovh` and not an unverifiable identifier. The load
-		function resolves them only when a programme filter is present, keeping other searches free. -->
-		<FilterBar filters={data.filters} programNames={data.programNames} grouped={data.grouped} />
-
-		<!-- The fold: the host is the list and the flat one the exception, so the toggle names both shapes
-		and neither is a stateful mode. Links, because the shape lives in the URL: shareable, and the back
-		button means something. -->
-		<div class="mode">
-			<a class="toggle" class:on={data.grouped} href={groupHref(data.filters, true)}>by host</a>
-			<a class="toggle" class:on={!data.grouped} href={groupHref(data.filters, false)}>every asset</a>
+<div class="page search">
+	<section aria-label="Query" class="query-area">
+		<div class="query-row">
+			<form class="query" onsubmit={submit} role="search">
+				<label for="q" class="sr-only">Query</label>
+				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"
+					><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" stroke-linecap="round" /></svg
+				>
+				<input
+					id="q"
+					bind:this={input}
+					bind:value={draft}
+					spellcheck="false"
+					autocomplete="off"
+					autocapitalize="off"
+					placeholder="tech:nginx@<1.25 status:2xx -cdn:*"
+				/>
+				<kbd aria-hidden="true">/</kbd>
+			</form>
+			<div class="actions">
+				{#if saved.length}
+					<label class="sr-only" for="saved">Saved searches</label>
+					<select
+						id="saved"
+						class="select"
+						value={savedMatch?.id ?? ''}
+						onchange={(e) => {
+							const s = saved.find((x) => x.id === e.currentTarget.value);
+							if (s) nav({ q: s.query, view: s.view });
+						}}
+					>
+						<option value="">Saved searches</option>
+						{#each saved as s (s.id)}<option value={s.id}>{s.name}</option>{/each}
+					</select>
+				{/if}
+				<button class="btn" type="button" onclick={() => (saving = !saving)} disabled={!!savedMatch} aria-expanded={saving}>
+					{savedMatch ? 'Saved' : 'Save search'}
+				</button>
+				<details class="menu">
+					<summary class="btn">Export</summary>
+					<div class="menu-list">
+						<a href={exportURL('urls')} download="urls.txt">URLs</a>
+						<a href={exportURL('hosts')} download="hosts.txt">Hosts</a>
+						<a href={exportURL('csv')} download="results.csv">CSV</a>
+						<a href={exportURL('json')} download="results.ndjson">JSON lines</a>
+					</div>
+				</details>
+			</div>
 		</div>
 
-		{#if data.grouped}
-			{#each groups as group (group.host)}
-				<HostGroup {group} filters={data.filters} enriched={data.enriched} {favicons} />
-			{/each}
-		{:else if assets.length}
-			<!-- One panel, not a card each, with the grouped list's row component and the host written back
-			in: a second row would be a second place for what a line has to say. -->
-			<section class="flat">
-				{#each assets as asset (asset.asset_id)}
-					<AssetRow {asset} filters={data.filters} withHost grouped={false} />
-				{/each}
-			</section>
+		{#if saving}
+			<form class="save" onsubmit={save}>
+				<label for="save-name">Name</label>
+				<input id="save-name" class="input" bind:value={saveName} required {@attach (el) => el.focus()} />
+				<button class="btn btn-primary" type="submit" disabled={!saveName.trim()}>Save</button>
+				<button class="btn" type="button" onclick={() => (saving = false)}>Cancel</button>
+				{#if saveError}<span class="error">{saveError}</span>{/if}
+			</form>
 		{/if}
 
-		{#if shown === 0}
-			<p class="empty">
-				Nothing matches these filters. The inventory keeps assets it has decided are out of scope, so an empty result is
-				a statement about the filters and not about the perimeter.
-			</p>
-		{/if}
-
-		{#if next}
-			<div class="next">
-				<!-- An anchor, not a button: without JavaScript it is still the next page, and the handler turns
-				the same click into rows added under those already read. -->
-				<a class="btn" class:busy={loading} href={next} onclick={more} aria-busy={loading}>
-					{loading ? 'Loading…' : 'Load more'}
-				</a>
-				{#if walk.failed}
-					<span class="failed">That page did not come back. Clicking again asks for the same one.</span>
-				{/if}
+		<div class="query-meta">
+			{#if chips.length}
+				<ul aria-label="Terms" class="terms">
+					{#each chips as t, i (t + i)}
+						<li>
+							<span>{t}</span>
+							<button type="button" class="chip-x" aria-label="Remove {t}" onclick={() => nav({ q: without(q, i) })}>
+								<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"
+									><path d="M6 6l12 12M18 6 6 18" /></svg
+								>
+							</button>
+						</li>
+					{/each}
+				</ul>
+			{:else}
+				<p class="muted hint">Every service, newest first. Press <kbd>/</kbd> to search.</p>
+			{/if}
+			<div class="controls">
+				<p class="num count" aria-live="polite">
+					{#if loading}Searching…{:else if !error}<strong>{count(rows.length)}{next ? '+' : ''}</strong> {view}{/if}
+				</p>
+				<div role="group" aria-label="View" class="seg-group">
+					<button class="seg" type="button" aria-pressed={view === 'services'} onclick={() => nav({ view: 'services' })}>Services</button>
+					<button class="seg" type="button" aria-pressed={view === 'hosts'} onclick={() => nav({ view: 'hosts' })}>Hosts</button>
+				</div>
+				<div role="group" aria-label="Layout" class="seg-group">
+					<button class="seg" type="button" aria-pressed={layout === 'list'} aria-label="List" onclick={() => nav({ layout: 'list' })}>
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"
+							><path d="M4 6h16M4 12h16M4 18h16" /></svg
+						>
+					</button>
+					<button class="seg" type="button" aria-pressed={layout === 'grid'} aria-label="Screenshot grid" onclick={() => nav({ layout: 'grid' })}>
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"
+							><rect x="4" y="4" width="7" height="7" rx="1" /><rect x="13" y="4" width="7" height="7" rx="1" /><rect x="4" y="13" width="7" height="7" rx="1" /><rect
+								x="13"
+								y="13"
+								width="7"
+								height="7"
+								rx="1"
+							/></svg
+						>
+					</button>
+				</div>
 			</div>
+		</div>
+
+		{#if fields.length}
+			<details class="fields">
+				<summary>Fields</summary>
+				<div class="field-grid">
+					{#each fields as f (f.name)}
+						<button type="button" class="field" onclick={() => { draft = (draft ? draft + ' ' : '') + f.name + ':'; input.focus(); }}>
+							<span class="mono">{f.name}</span>
+							<span class="muted">{f.doc}</span>
+						</button>
+					{/each}
+				</div>
+			</details>
 		{/if}
-	</main>
+	</section>
+
+	{#if error}
+		<div class="error" role="alert">
+			{error.message}
+			{#if errSuggest}
+				· <a href={'/' + qs({ q: errSuggest, view: view === 'services' ? '' : view })}>Did you mean <span class="mono">{error.body.suggest}</span>?</a>
+			{/if}
+		</div>
+	{/if}
+
+	<div class="body">
+		<aside aria-label="Facets" class="facets">
+			{#each facetOrder as [k, title] (k)}
+				{#if k === 'programs'}
+					{#if programs.length}
+						<section>
+							<h2 class="label">{title}</h2>
+							<Combobox
+								id="facet-program"
+								label="Filter by program"
+								placeholder="Filter by program"
+								options={programOptions}
+								full
+								onpick={(o) => {
+									const t = programTerm(o.value);
+									if (!active.has(t)) nav({ q: toggle(q, t) });
+								}}
+							/>
+							{#each pickedPrograms as t (t)}
+								<button class="facet" type="button" aria-pressed="true" onclick={() => nav({ q: toggle(q, t) })} aria-label="Remove {t}">
+									<span class="v">{t.slice('program:'.length).replace(/^"|"$/g, '')}</span>
+									<span class="c" aria-hidden="true">×</span>
+								</button>
+							{/each}
+						</section>
+					{/if}
+				{:else if facets[k]?.length}
+					{@const all = facets[k]}
+					{@const open = expanded[k]}
+					<section>
+						<h2 class="label">{title}</h2>
+						{#each all as v, i (v.term)}
+							{#if open || i < shown || active.has(v.term)}
+								<button class="facet" type="button" aria-pressed={active.has(v.term)} onclick={() => nav({ q: toggle(q, v.term) })}>
+									<span class="v">{label(v.value)}</span>
+									<span class="num c">{count(v.count)}</span>
+								</button>
+							{/if}
+						{/each}
+						{#if all.length > shown}
+							<button class="facet-more" type="button" aria-expanded={!!open} onclick={() => (expanded[k] = !open)}>
+								{open ? 'Show less' : `Show ${all.length - shown} more`}
+							</button>
+						{/if}
+					</section>
+				{/if}
+			{/each}
+		</aside>
+
+		<section aria-label="Results" class="results" class:dim={loading}>
+			{#if !loading && !error && rows.length === 0}
+				<p class="empty">Nothing matches. Remove a term, or check the hosts view.</p>
+			{/if}
+			{#if layout === 'list'}
+				{#each rows as r (r.asset_id)}
+					<a class="row" href="/assets/{r.asset_id}">
+						<Shot thumb={r.thumbnail} />
+						<div class="row-main">
+							<div class="row-top">
+								<span class="mono key">{key(r)}</span>
+								<Status code={r.status_code} />
+								{#if r.triage === 'new'}<span class="new"><span class="dot" aria-hidden="true"></span>New</span>{/if}
+								{#if r.triage === 'interesting'}<span class="badge info">Interesting</span>{/if}
+								{#if r.lifecycle !== 'active'}<Lifecycle state={r.lifecycle} />{/if}
+							</div>
+							{#if r.title}<p class="title">{r.title}</p>{/if}
+							{#if r.final_url}<p class="mono final">→ {r.final_url}</p>{/if}
+							{#if r.services?.length}
+								<p class="mono final">{r.services.length} service{r.services.length === 1 ? '' : 's'}: {r.services.slice(0, 6).join(' · ')}</p>
+							{/if}
+							{#if r.technologies.length}
+								<ul class="techs" aria-label="Technologies">
+									{#each r.technologies as t (t)}
+										{@const tv = splitTech(t)}
+										<li class="chip">{tv.name}{#if tv.version}<span class="ver">{tv.version}</span>{/if}</li>
+									{/each}
+								</ul>
+							{/if}
+							<p class="meta">
+								<span>{r.program}</span>
+								{#if r.cdn || r.waf}<span>{[r.cdn, r.waf].filter(Boolean).join(' · ')}</span>{/if}
+								{#if r.server}<span class="mono">{r.server}</span>{/if}
+								<span>first seen {ago(r.first_seen)}</span>
+							</p>
+						</div>
+					</a>
+				{/each}
+			{:else}
+				<div class="grid">
+					{#each rows as r (r.asset_id)}
+						<a class="card" href="/assets/{r.asset_id}">
+							<Shot thumb={r.thumbnail} width={320} />
+							<div class="card-body">
+								<div class="row-top">
+									<span class="mono key small">{key(r)}</span>
+									<Status code={r.status_code} />
+								</div>
+								<p class="title small">{r.title ?? ''}</p>
+							</div>
+						</a>
+					{/each}
+				</div>
+			{/if}
+			{#if next && !loading}<More onmore={loadMore} busy={more} />{/if}
+		</section>
+	</div>
 </div>
 
 <style>
-	.work {
-		display: grid;
-		grid-template-columns: 232px 1fr;
-		flex: 1;
-		min-height: 0;
-	}
-
-	/* The sidebar is the search and the facets, which is why the border and the
-	   column live here rather than on the facet list. */
-	.side {
-		border-right: 1px solid var(--border);
-		min-width: 0;
-		padding: 16px 14px 40px 18px;
-	}
-
-	.results {
-		padding: 14px 18px 60px;
-		min-width: 0;
-	}
-
-	/* Two links, not a segmented control: the shape is a URL, not component state. Sized down, a
-	preference, with the rows under it being what someone came to read. */
-	.mode {
-		display: flex;
-		gap: 2px;
-		margin: -4px 0 10px;
-	}
-
-	.toggle {
-		font-size: 11.5px;
-		color: var(--ink-3);
-		text-decoration: none;
-		padding: 2px 8px;
-		border-radius: 999px;
-	}
-
-	.toggle:hover {
-		color: var(--ink);
-	}
-
-	.toggle.on {
-		background: var(--signal-bg);
-		color: var(--ink);
-		font-weight: 500;
-	}
-
-	.flat {
-		background: var(--card);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-card);
-		box-shadow: var(--card-shadow);
-		overflow: hidden;
-	}
-
-	.flat :global(.row:first-child) {
-		border-top: 0;
-	}
-
-	.empty {
-		background: var(--card);
-		border: 1px dashed var(--border);
-		border-radius: var(--radius-card);
-		padding: 18px;
-		color: var(--ink-3);
-		font-size: 12.5px;
-		margin: 0;
-	}
-
-	.next {
+	.query-area {
 		display: flex;
 		flex-direction: column;
+		gap: 12px;
+	}
+	.query-row {
+		display: flex;
+		gap: 12px;
+		flex-wrap: wrap;
 		align-items: center;
+	}
+	.query {
+		flex: 999 1 520px;
+		min-width: 0;
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		height: 44px;
+		padding: 0 12px;
+		border-radius: 10px;
+		background: var(--raised);
+		border: 1px solid oklch(0.34 0.008 260);
+		color: var(--faint);
+	}
+	.query:focus-within {
+		border-color: var(--accent);
+	}
+	.query input {
+		flex: 1 1 auto;
+		min-width: 0;
+		height: 100%;
+		border: 0;
+		outline: 0;
+		background: transparent;
+		color: var(--text-strong);
+		font-family: var(--mono);
+		font-size: 14px;
+	}
+	.query input::placeholder {
+		color: var(--faint);
+	}
+	kbd {
+		font-family: var(--mono);
+		font-size: 11px;
+		color: var(--faint);
+		border: 1px solid oklch(0.34 0.008 260);
+		border-radius: 4px;
+		padding: 1px 5px;
+	}
+	.actions {
+		display: flex;
+		gap: 8px;
+		flex-wrap: wrap;
+		align-items: center;
+	}
+	.menu {
+		position: relative;
+	}
+	.menu summary {
+		list-style: none;
+	}
+	.menu summary::-webkit-details-marker {
+		display: none;
+	}
+	.menu-list {
+		position: absolute;
+		right: 0;
+		top: calc(100% + 6px);
+		z-index: 10;
+		min-width: 160px;
+		padding: 4px;
+		border-radius: 10px;
+		background: var(--raised);
+		box-shadow: var(--shadow);
+		display: flex;
+		flex-direction: column;
+	}
+	.menu-list a {
+		padding: 8px 10px;
+		border-radius: 6px;
+		color: var(--text);
+		text-decoration: none;
+		font-size: 13px;
+	}
+	.save {
+		display: flex;
+		gap: 8px;
+		align-items: center;
+		flex-wrap: wrap;
+	}
+	.save label {
+		font-size: 13px;
+		color: var(--muted);
+	}
+	.query-meta {
+		display: flex;
+		gap: 12px;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: space-between;
+	}
+	.terms {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
 		gap: 6px;
-		padding-top: 10px;
+		flex-wrap: wrap;
 	}
-
-	.btn.busy {
-		color: var(--ink-3);
+	.terms li {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		height: 26px;
+		padding: 0 4px 0 10px;
+		border-radius: 999px;
+		background: oklch(0.22 0.007 260);
+		box-shadow: var(--ring);
+		font-family: var(--mono);
+		font-size: 12px;
+		color: oklch(0.88 0.008 260);
 	}
-
-	.failed {
-		font-size: 11.5px;
-		color: var(--code-5xx);
+	.chip-x {
+		width: 20px;
+		height: 20px;
+		border-radius: 999px;
+		border: 0;
+		background: transparent;
+		color: var(--faint);
+		display: grid;
+		place-items: center;
+		cursor: pointer;
+		padding: 0;
+	}
+	.hint {
+		margin: 0;
+		font-size: 13px;
+	}
+	.controls {
+		display: flex;
+		gap: 12px;
+		align-items: center;
+		flex-wrap: wrap;
+	}
+	.count {
+		margin: 0;
+		font-size: 13px;
+		color: var(--muted);
+	}
+	.count strong {
+		color: var(--text-strong);
+		font-weight: 600;
+	}
+	.fields summary {
+		font-size: 12px;
+		color: var(--faint);
+		cursor: pointer;
+		width: max-content;
+	}
+	.field-grid {
+		margin-top: 8px;
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+		gap: 2px 12px;
+	}
+	.field {
+		font: inherit;
+		font-size: 12px;
+		text-align: start;
+		display: flex;
+		gap: 8px;
+		padding: 4px 6px;
+		border: 0;
+		border-radius: 6px;
+		background: transparent;
+		color: var(--text-body);
+		cursor: pointer;
+		min-width: 0;
+	}
+	.field .muted {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.body {
+		display: flex;
+		gap: 32px;
+		flex-wrap: wrap;
+		align-items: flex-start;
+	}
+	.facets {
+		flex: 1 1 220px;
+		max-width: 260px;
+		display: flex;
+		flex-direction: column;
+		gap: 24px;
+	}
+	.facets section {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+	.facets h2 {
+		margin: 0 0 4px 8px;
+	}
+	.facet {
+		font: inherit;
+		font-size: 13px;
+		display: flex;
+		justify-content: space-between;
+		gap: 12px;
+		height: 30px;
+		padding: 0 8px;
+		border-radius: 6px;
+		border: 0;
+		background: transparent;
+		color: var(--text-body);
+		cursor: pointer;
+		text-align: start;
+		align-items: center;
+	}
+	.facet-more {
+		font: inherit;
+		font-size: 12px;
+		text-align: start;
+		height: 26px;
+		padding: 0 8px;
+		border: 0;
+		border-radius: 6px;
+		background: transparent;
+		color: var(--accent-text);
+		cursor: pointer;
+		width: max-content;
+	}
+	.facets :global(.combo) {
+		margin-bottom: 4px;
+	}
+	.facet[aria-pressed='true'] {
+		background: oklch(0.26 0.04 162);
+		color: var(--text-strong);
+	}
+	.facet .v {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.facet .c {
+		font-size: 12px;
+		color: var(--faint);
+	}
+	.results {
+		flex: 999 1 560px;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+	.results.dim {
+		opacity: 0.6;
+	}
+	.row {
+		display: flex;
+		gap: 16px;
+		padding: 12px;
+		border-radius: 10px;
+		text-decoration: none;
+		color: inherit;
+	}
+	.row-main {
+		flex: 1 1 auto;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+	.row-top {
+		display: flex;
+		gap: 10px;
+		align-items: center;
+		flex-wrap: wrap;
+	}
+	.key {
+		font-size: 14px;
+		font-weight: 500;
+		color: var(--text-strong);
+		overflow-wrap: anywhere;
+	}
+	.key.small {
+		font-size: 12px;
+	}
+	.new {
+		display: inline-flex;
+		align-items: center;
+		gap: 5px;
+		font-size: 12px;
+		font-weight: 500;
+		color: var(--info-text);
+	}
+	.title {
+		margin: 0;
+		font-size: 14px;
+		color: var(--text-body);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.title.small {
+		font-size: 12px;
+		min-height: 18px;
+	}
+	.final {
+		margin: 0;
+		font-size: 12px;
+		color: var(--faint);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.techs {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		gap: 6px;
+		flex-wrap: wrap;
+	}
+	.ver {
+		color: var(--faint);
+		margin-left: 2px;
+	}
+	.meta {
+		margin: 0;
+		display: flex;
+		gap: 4px 14px;
+		flex-wrap: wrap;
+		font-size: 12px;
+		color: var(--faint);
+	}
+	.grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+		gap: 16px;
+	}
+	.card {
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		text-decoration: none;
+		color: inherit;
+		border-radius: 10px;
+		padding: 8px;
+		min-width: 0;
+	}
+	.card :global(img),
+	.card :global(.none) {
+		width: 100% !important;
+		height: auto !important;
+		aspect-ratio: 16 / 10;
+	}
+	.card-body {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+		padding: 0 4px 4px;
+		min-width: 0;
+	}
+	@media (hover: hover) {
+		.row:hover,
+		.card:hover {
+			background: var(--surface);
+		}
+		.facet:hover,
+		.field:hover,
+		.menu-list a:hover {
+			background: var(--control);
+		}
+		.chip-x:hover {
+			color: var(--text-strong);
+			background: var(--pressed);
+		}
+	}
+	/* A wide screen keeps the query and the facets in view: facets and
+	   results each scroll on their own. */
+	@media (min-width: 721px) {
+		.search {
+			height: 100%;
+			padding-bottom: 0;
+		}
+		.query-area,
+		.search > .error {
+			flex: none;
+		}
+		.body {
+			flex: 1 1 auto;
+			min-height: 0;
+			flex-wrap: nowrap;
+			align-items: stretch;
+		}
+		.facets,
+		.results {
+			min-height: 0;
+			overflow-y: auto;
+			overscroll-behavior: contain;
+			padding-bottom: 32px;
+		}
+		.facets {
+			flex: 0 0 240px;
+			scrollbar-width: thin;
+		}
+	}
+	@media (max-width: 720px) {
+		.row :global(img),
+		.row :global(.none) {
+			display: none;
+		}
+		.facets {
+			max-width: none;
+			order: 2;
+		}
 	}
 </style>

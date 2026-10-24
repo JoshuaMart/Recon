@@ -1,38 +1,30 @@
-# One build, several entrypoints. Each target is a distroless image carrying a
-# single static binary, so a compromised process finds no shell to use.
+# Built from the repository root: docker build -f deploy/compose/Dockerfile .
+FROM node:24-alpine AS web
+WORKDIR /web
+RUN corepack enable
+COPY web/package.json web/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY web/ ./
+RUN pnpm build
 
-FROM golang:1.26-alpine AS builder
-WORKDIR /build
-
-# Cached separately from the source, so editing code does not re-download the
-# module graph.
+FROM golang:1.26-alpine AS build
+WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
-
 COPY . .
+# The interface the binary embeds.
+COPY --from=web /web/build/ internal/ui/dist/
 ARG VERSION=dev
 RUN CGO_ENABLED=0 go build -trimpath \
-      -ldflags="-s -w -X main.version=${VERSION}" \
-      -o /out/controlplane ./cmd/controlplane && \
-    CGO_ENABLED=0 go build -trimpath \
-      -ldflags="-s -w -X main.version=${VERSION}" \
-      -o /out/migrate ./cmd/migrate && \
-    CGO_ENABLED=0 go build -trimpath \
-      -ldflags="-s -w -X main.version=${VERSION}" \
-      -o /out/recon ./cmd/recon
+	-ldflags "-s -w -X github.com/JoshuaMart/recon/internal/version.Version=${VERSION}" \
+	-o /out/recon ./cmd/recon
+# The screenshot directory, owned by the runtime user: a named volume mounted
+# there takes this ownership on first use.
+RUN mkdir -p /out/data/screenshots
 
-FROM gcr.io/distroless/static-debian12:nonroot AS controlplane
-COPY --from=builder /out/controlplane /controlplane
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/recon /recon
+COPY --from=build --chown=65532:65532 /out/data /data
 EXPOSE 8080
-ENTRYPOINT ["/controlplane"]
-
-FROM gcr.io/distroless/static-debian12:nonroot AS migrate
-COPY --from=builder /out/migrate /migrate
-ENTRYPOINT ["/migrate"]
-
-# The operational command line. It holds the owner credential, so it is neither the control
-# plane nor a route: an endpoint creating an organization could not be authenticated, with no
-# tenant yet to attach the caller to.
-FROM gcr.io/distroless/static-debian12:nonroot AS recon
-COPY --from=builder /out/recon /recon
 ENTRYPOINT ["/recon"]
+CMD ["serve"]

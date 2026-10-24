@@ -1,9 +1,9 @@
-// Command recon is the operational command line. It holds the owner credential,
-// which is why it is not the control plane or a route: everything here is something
-// a person does to a deployment.
+// Command recon is the whole platform in one binary.
 //
-// The migrator stays its own binary: a failed migration must be readable alone, and
-// the deployment gates the application on it rather than on a remembered ordering.
+//	recon serve   [-config file]        migrate, then serve the API
+//	recon migrate [-config file] up|down|status
+//	recon version
+//	recon healthcheck [-url url]       the container probe
 package main
 
 import (
@@ -11,106 +11,384 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
+	"sync"
 	"syscall"
+	"time"
 
-	"github.com/jackc/pgx/v5"
-
-	"github.com/JoshuaMart/recon/internal/bootstrap"
+	"github.com/JoshuaMart/recon/internal/api"
 	"github.com/JoshuaMart/recon/internal/config"
+	"github.com/JoshuaMart/recon/internal/ct"
+	"github.com/JoshuaMart/recon/internal/enrich"
+	"github.com/JoshuaMart/recon/internal/fingerprint"
+	"github.com/JoshuaMart/recon/internal/ingest"
+	"github.com/JoshuaMart/recon/internal/inventory"
+	"github.com/JoshuaMart/recon/internal/lifecycle"
+	"github.com/JoshuaMart/recon/internal/notify"
+	"github.com/JoshuaMart/recon/internal/render"
+	"github.com/JoshuaMart/recon/internal/runs"
+	"github.com/JoshuaMart/recon/internal/scope"
+	"github.com/JoshuaMart/recon/internal/store"
+	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
+	"github.com/JoshuaMart/recon/internal/ui"
+	"github.com/JoshuaMart/recon/internal/version"
 )
 
+const usage = `usage:
+  recon serve   [-config file]
+  recon migrate [-config file] up|down|status
+  recon version
+  recon healthcheck [-url url]`
+
 func main() {
-	if err := run(); err != nil {
-		fmt.Fprintf(os.Stderr, "recon: %v\n", err)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	err := run(ctx, os.Args[1:], os.Stdout)
+	stop()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "recon:", err)
 		os.Exit(1)
 	}
 }
 
-func usage() error {
-	return errors.New("usage: recon bootstrap --org NAME --email ADDRESS [--token]")
-}
-
-func run() error {
-	if len(os.Args) < 2 {
-		return usage()
+func run(ctx context.Context, args []string, out io.Writer) error {
+	if len(args) == 0 {
+		return errors.New(usage)
 	}
-
-	switch os.Args[1] {
-	case "bootstrap":
-		return runBootstrap(os.Args[2:])
+	cmd, args := args[0], args[1:]
+	switch cmd {
+	case "version":
+		_, err := fmt.Fprintln(out, version.Version)
+		return err
+	case "healthcheck":
+		return healthcheck(ctx, args)
+	case "serve", "migrate":
 	default:
-		return usage()
+		return fmt.Errorf("unknown command %q\n%s", cmd, usage)
 	}
+
+	fset := flag.NewFlagSet(cmd, flag.ContinueOnError)
+	configPath := fset.String("config", "", "YAML config file")
+	if err := fset.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return err
+	}
+	log := newLogger(cfg.Log, out)
+
+	st, err := store.Open(ctx, cfg.Database.URL)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	if cmd == "migrate" {
+		return migrate(ctx, log, st, fset.Args())
+	}
+	return serve(ctx, log, cfg, st)
 }
 
-func runBootstrap(args []string) error {
-	flags := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
-	org := flags.String("org", "", "name of the organization to create")
-	email := flags.String("email", "", "email address of its first member")
-	tokenName := flags.String("token-name", "bootstrap", "label of the token in api_token")
-	// On an existing account this is the only reason to run again: the first secret was
-	// printed once and never stored.
-	mint := flags.Bool("token", false, "mint another token for an account that already exists")
-	if err := flags.Parse(args); err != nil {
+// healthcheck is the container probe: the runtime image has no shell or curl.
+func healthcheck(ctx context.Context, args []string) error {
+	fset := flag.NewFlagSet("healthcheck", flag.ContinueOnError)
+	url := fset.String("url", "http://localhost:8080/api/health", "health endpoint")
+	if err := fset.Parse(args); err != nil {
 		return err
 	}
-
-	// The owner's configuration, the migrator's. Asking for the application role would
-	// put the command back on the path this design keeps it off, and the same
-	// validation refuses a process holding both credentials.
-	cfg, err := config.Load(config.RoleMigrate, config.Options{})
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, *url, nil)
 	if err != nil {
 		return err
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	// One connection, not a pool: this runs once and commits once.
-	conn, err := pgx.Connect(ctx, cfg.Database.MigrationURL)
+	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("connect: %w", err)
-	}
-	defer func() { _ = conn.Close(context.Background()) }()
-
-	result, err := bootstrap.Run(ctx, conn, bootstrap.Request{
-		Org:       *org,
-		Email:     *email,
-		TokenName: *tokenName,
-		MintToken: *mint,
-	})
-	if err != nil {
-		if errors.Is(err, bootstrap.ErrNoOrg) || errors.Is(err, bootstrap.ErrNoEmail) {
-			flags.Usage()
-		}
 		return err
 	}
-
-	report(result)
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return fmt.Errorf("health: %s", res.Status)
+	}
 	return nil
 }
 
-// report says what happened, not what was asked for.
-func report(result bootstrap.Result) {
-	if result.OrgCreated {
-		fmt.Printf("organization created  %s\n", result.OrgID)
-	} else {
-		fmt.Printf("organization found    %s\n", result.OrgID)
+// maintain keeps the monthly partitions two months ahead, daily.
+func maintain(ctx context.Context, log *slog.Logger, st *store.Store) {
+	t := time.NewTicker(24 * time.Hour)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := st.EnsurePartitions(ctx, time.Now()); err != nil {
+				log.ErrorContext(ctx, "partition maintenance", "err", err)
+			}
+		}
 	}
-	if result.UserCreated {
-		fmt.Printf("user created          %s\n", result.UserID)
-	} else {
-		fmt.Printf("user found            %s\n", result.UserID)
+}
+
+func newLogger(c config.Log, out io.Writer) *slog.Logger {
+	var level slog.Level
+	_ = level.UnmarshalText([]byte(c.Level))
+	opts := &slog.HandlerOptions{Level: level}
+	if c.Format == "text" {
+		return slog.New(slog.NewTextHandler(out, opts))
+	}
+	return slog.New(slog.NewJSONHandler(out, opts))
+}
+
+func migrate(ctx context.Context, log *slog.Logger, st *store.Store, args []string) error {
+	if len(args) != 1 {
+		return errors.New(usage)
+	}
+	p, sqlDB, err := st.Migrator()
+	if err != nil {
+		return err
+	}
+	defer sqlDB.Close()
+
+	switch args[0] {
+	case "up":
+		_, err = p.Up(ctx)
+	case "down":
+		_, err = p.Down(ctx)
+	case "status":
+		statuses, serr := p.Status(ctx)
+		if serr != nil {
+			return serr
+		}
+		for _, s := range statuses {
+			log.InfoContext(ctx, "migration", "version", s.Source.Version, "path", s.Source.Path, "state", s.State)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown migrate action %q\n%s", args[0], usage)
+	}
+	if err != nil {
+		return err
+	}
+	v, err := p.GetDBVersion(ctx)
+	if err != nil {
+		return err
+	}
+	log.InfoContext(ctx, "migrated", "action", args[0], "version", v)
+	return nil
+}
+
+func serve(ctx context.Context, log *slog.Logger, cfg config.Config, st *store.Store) error {
+	v, err := st.MigrateUp(ctx)
+	if err != nil {
+		return err
+	}
+	log.InfoContext(ctx, "database ready", "schema_version", v)
+
+	auth, err := api.NewAuth(cfg.APIKey, cfg.PublicURL)
+	if err != nil {
+		return err
+	}
+	deps := api.Deps{
+		Log: log, DB: st, Store: st, Auth: auth, DefaultAutoScan: cfg.Discovery.AutoScan,
+		Verification: cfg.Verification.Enabled, Settings: cfg.Public(), UI: ui.Embedded(),
 	}
 
-	if result.Token == "" {
-		fmt.Println("\nNo token minted. Pass -token to add one.")
-		return
+	vc := cfg.Verification
+	cad := lifecycle.DefaultCadences
+	cad.Resolve, cad.Full, cad.Dormant = vc.Resolve, vc.Full, vc.Dormant
+	sigs := make([]ingest.Signature, 0, len(vc.DeadOrigins))
+	for _, d := range vc.DeadOrigins {
+		sigs = append(sigs, ingest.Signature{Name: d.Name, Statuses: d.Statuses, Server: d.Server, Title: d.Title})
 	}
-	// Printed once, as only its hash is stored. Saying so costs a line and saves a
-	// conversation.
-	fmt.Printf("\ntoken, shown once, only its hash is stored:\n\n    %s\n\n", result.Token)
-	fmt.Println("Paste it into the console. Revoke it by setting api_token.revoked_at.")
+	geo, err := enrich.Open(cfg.GeoIPDir)
+	if err != nil {
+		return fmt.Errorf("geoip: %w", err)
+	}
+	if geo == nil {
+		log.InfoContext(ctx, "no GeoLite2 files: ASN and country stay empty", "dir", cfg.GeoIPDir)
+	}
+	defer geo.Close()
+	evaluator := &notify.Evaluator{
+		Pool: st.Pool, Q: st.Q, Log: log, Now: time.Now, PublicURL: cfg.PublicURL,
+		Every: 15 * time.Minute, Settle: 10 * time.Second,
+	}
+	deps.Evaluate = evaluator.Kick
+	sched := &runs.Scheduler{
+		GeoIP: geo, PublicURL: cfg.PublicURL, OnIngested: evaluator.Kick,
+		Store: st, Log: log, Slots: cfg.FastRecon.Slots, Timeout: cfg.FastRecon.Timeout,
+		Ports: cfg.Discovery.Ports, Tick: 5 * time.Second, Now: time.Now,
+		Verification: vc.Enabled, Batch: vc.Batch, ArchiveAfter: vc.ArchiveAfter, Cadences: &cad, Signatures: sigs,
+	}
+	if !vc.Enabled {
+		log.InfoContext(ctx, "verification disabled: known hosts are not probed")
+	}
+	if f := cfg.FastRecon; f.URL != "" {
+		sched.Runner = runs.NewServe(f.URL, f.APIToken, f.Timeout)
+	} else {
+		log.InfoContext(ctx, "no fastrecon.url: runs stay queued")
+	}
+	// The routes a job calls are always served: a job started before a
+	// switch back to serve still delivers. Its tokens only need the API key.
+	tokens := runs.NewTokens(cfg.APIKey)
+	sched.Tokens, deps.RunJobs, deps.RunTokens = tokens, sched, tokens
+	if rc := cfg.Runner; rc.JobID != "" && rc.SecretKey != "" {
+		jobs := &runs.Scaleway{
+			Endpoint: rc.Endpoint, Region: rc.Region, JobID: rc.JobID, Secret: rc.SecretKey,
+			HTTP: &http.Client{Timeout: 30 * time.Second},
+		}
+		// Followed whatever the provider, so a job is seen to its end.
+		sched.Jobs, sched.JobSlots = jobs, rc.Slots
+		sched.CallbackURL, sched.Grace, sched.ReportTimeout = cfg.CallbackBase(), rc.Grace, rc.ReportTimeout
+		if rc.Provider == "scaleway" {
+			sched.StartJobs = true
+			// Read once: a misconfigured definition is said at boot, not by a
+			// first run that dies.
+			if err := jobs.Check(ctx, cfg.FastRecon.Timeout); err != nil {
+				log.ErrorContext(ctx, "the Scaleway job definition is not usable as is", "err", err)
+			}
+			log.InfoContext(ctx, "recon and verification run as Scaleway jobs", "job", rc.JobID, "callback", cfg.CallbackBase())
+		}
+	}
+	if err := sched.Recover(ctx); err != nil {
+		return err
+	}
+
+	// The loops share one context and are waited for before the pool closes:
+	// a loop still writing when it closes would lose what it was doing.
+	loopsCtx, stopLoops := context.WithCancel(ctx)
+	var loops sync.WaitGroup
+	defer func() {
+		stopLoops()
+		loops.Wait()
+	}()
+	spawn := func(f func(context.Context)) {
+		loops.Add(1)
+		go func() {
+			defer loops.Done()
+			f(loopsCtx)
+		}()
+	}
+	spawn(sched.Loop)
+	if rc := cfg.Render; rc.URL != "" {
+		storage := fingerprint.Dir{Root: cfg.Screenshots.Dir}
+		disp := &render.Dispatcher{
+			Writer: &render.Writer{
+				Store: st, Storage: storage, Now: time.Now,
+				Settings: render.Settings{
+					Periodic: rc.Periodic, Retry: rc.Retry, Quality: cfg.Screenshots.Quality,
+					Keep: cfg.Screenshots.Keep, Jitter: render.DefaultSettings.Jitter,
+				},
+			},
+			Scanner: fingerprint.NewClient(rc.URL, rc.Timeout), Log: log, Max: rc.Concurrency, Tick: 2 * time.Second,
+			OnWritten: evaluator.Kick,
+		}
+		deps.Storage, deps.Render = storage, disp.Status
+		spawn(disp.Loop)
+	} else {
+		log.InfoContext(ctx, "no render.url: renders stay due")
+	}
+	spawn(func(ctx context.Context) { maintain(ctx, log, st) })
+	spawn(evaluator.Loop)
+	var channels []notify.Channel
+	if n := cfg.Notify; n.DiscordURL != "" {
+		channels = append(channels, notify.Discord{URL: n.DiscordURL})
+	}
+	if n := cfg.Notify; n.WebhookURL != "" {
+		channels = append(channels, notify.Webhook{URL: n.WebhookURL, Header: n.WebhookHeader})
+	}
+	if len(channels) == 0 {
+		log.InfoContext(ctx, "no notification channel: notifications are listed on the settings page only")
+	}
+	for _, c := range channels {
+		deps.Channels = append(deps.Channels, c.Name())
+	}
+	spawn((&notify.Sender{Q: st.Q, Channels: channels, Log: log, Now: time.Now, Tick: 15 * time.Second}).Loop)
+	var checks []notify.Check
+	if f := cfg.FastRecon; f.URL != "" {
+		checks = append(checks, notify.HTTPCheck("FastRecon", strings.TrimRight(f.URL, "/")+"/healthz"))
+	}
+	if deps.Render != nil {
+		// Screenshots are only written with a renderer: without one their
+		// directory may not even exist.
+		checks = append(checks, notify.DiskCheck("screenshot disk", cfg.Screenshots.Dir, cfg.Screenshots.DiskThreshold))
+		render := deps.Render
+		checks = append(checks, notify.Check{Component: "Fingerprinter", Probe: func(context.Context) (bool, string) {
+			if render().Healthy {
+				return true, ""
+			}
+			return false, "unreachable"
+		}})
+	}
+	if cfg.ScopesExtractor.URL != "" {
+		checks = append(checks, notify.SyncCheck(st.Q))
+	}
+	if c := cfg.CT; c.URL != "" {
+		stream := &ct.Stream{Store: st, URL: c.URL, Log: log, Now: time.Now, MaxPerHour: c.MaxPerHour, Reload: c.Reload}
+		spawn(stream.Loop)
+		deps.CT = stream.Connected
+		checks = append(checks, notify.Check{Component: "CT feed", Probe: func(context.Context) (bool, string) {
+			if stream.Connected() {
+				return true, ""
+			}
+			return false, "disconnected"
+		}})
+	} else {
+		log.InfoContext(ctx, "no ct.url: Certificate Transparency is off")
+	}
+	spawn((&notify.Watcher{
+		Pool: st.Pool, Q: st.Q, Log: log, Now: time.Now, Checks: checks,
+		BrokenAfter: cfg.Notify.BrokenAfter, Tick: time.Minute,
+	}).Loop)
+	// Off the startup path: the API answers while the inventory catches up.
+	spawn(func(ctx context.Context) {
+		r, err := inventory.RefreshAll(ctx, st.Pool, st.Q, time.Now().UTC().Truncate(time.Microsecond))
+		switch {
+		case err != nil && ctx.Err() == nil:
+			log.ErrorContext(ctx, "inventory refresh", "err", err)
+		case r.Declared+r.Reclassified > 0:
+			log.InfoContext(ctx, "inventory caught up with the rules", "declared", r.Declared, "reclassified", r.Reclassified)
+		}
+	})
+
+	if se := cfg.ScopesExtractor; se.URL != "" {
+		syncer := &scope.Syncer{
+			Store: st, Source: scope.NewClient(se.URL, se.APIKey, se.Timeout), Log: log,
+			MaxRemovedRatio: se.MaxRemovedRatio, Now: time.Now,
+			Refresh: func(ctx context.Context, q *sqlcgen.Queries, p sqlcgen.Program, now time.Time) error {
+				_, err := inventory.Refresh(ctx, q, p, cfg.Discovery.AutoScan, now)
+				return err
+			},
+			Reschedule: inventory.SyncSchedule,
+		}
+		deps.Sync = syncer
+		spawn(func(ctx context.Context) { syncer.Loop(ctx, se.Interval) })
+	} else {
+		log.InfoContext(ctx, "scope sync disabled: no scopes_extractor.url, manual programs only")
+	}
+
+	srv := &http.Server{
+		Addr:              cfg.HTTP.Addr,
+		Handler:           api.Handler(deps),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	errc := make(chan error, 1)
+	go func() {
+		log.InfoContext(ctx, "listening", "addr", cfg.HTTP.Addr, "version", version.Version)
+		errc <- srv.ListenAndServe()
+	}()
+
+	select {
+	case err := <-errc:
+		return err
+	case <-ctx.Done():
+	}
+	log.Info("shutting down")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return srv.Shutdown(shutdownCtx)
 }

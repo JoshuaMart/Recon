@@ -1,33 +1,25 @@
-# The local stack. It should come up in under sixty seconds on a clean machine, so images are
-# pinned to a minor tag and data lives in named volumes (a bind mount for the data directory is
-# ruinously slow on macOS).
+# The whole stack. From the repository root: make up
 #
-# From the repository root:
-#   make up
-#
-# Deliberately absent: a scanner. FastRecon is a one-shot job, an image a run starts with its
-# perimeter supplied as overrides on the start call, so there is nothing for it to listen to.
+# FastRecon is not a service here: a runner starts it per run.
 
 name: recon
 
 networks:
-  # The inventory and everything allowed to reach it.
+  # The database and what may reach it. No internet access.
   control:
-  # The rendering service and its browser, nothing else. A headless browser running
-  # target-controlled JavaScript beside the database is an SSRF engine next to the inventory, so
-  # the split is the point.
+    internal: true
+  # The renderer, its browsers and the CT feed: internet access, no route to the database.
   scan:
 
 volumes:
   pgdata:
+  screenshots:
 
-# The browser, three times over, differing by name only: control_urls in fingerprinter.yml
-# makes them a pool, and the scan network they are alone on makes them safe.
 x-chrome: &chrome
   networks: [scan]
   image: chromedp/headless-shell:latest
   init: true
-  shm_size: '1g'
+  shm_size: 1g
   command:
     - --remote-allow-origins=*
     - --disable-dev-shm-usage
@@ -37,9 +29,8 @@ x-chrome: &chrome
     - --disable-extensions
     - --disable-sync
     - --no-first-run
-    - --metrics-recording-only
   logging:
-    driver: "none"
+    driver: none
   healthcheck:
     test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/9222' 2>/dev/null"]
     interval: 3s
@@ -48,313 +39,101 @@ x-chrome: &chrome
     start_period: 5s
   restart: unless-stopped
 
+x-pg-env: &pg-env
+  PGHOST: postgres
+  PGUSER: recon
+  PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+  PGDATABASE: recon
+
 services:
   postgres:
     networks: [control]
     image: postgres:18-alpine
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-asm_owner}
+      POSTGRES_USER: recon
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
-      POSTGRES_DB: ${POSTGRES_DB:-recon}
-    command:
-      # Continuous archiving, on from the first start. Enabling it later needs a restart and a fresh
-      # base backup, which gets postponed until the day it is needed.
-      - postgres
-      - -c
-      - archive_mode=off
-      - -c
-      - archive_command=test ! -f /archive/wal/%f && cp %p /archive/wal/%f
-      - -c
-      - wal_level=replica
-      # A cold restore needs the WAL that follows the base backup, and the
-      # default keeps too little to survive a slow one.
-      - -c
-      - max_wal_size=1GB
-    # Bound to loopback. Published without a host it listens on every interface, an open
-    # PostgreSQL port on a shared network.
-    ports:
-      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+      POSTGRES_DB: recon
     volumes:
-      # Mounted at /var/lib/postgresql, not its data subdirectory: the official image recommends
-      # this from 18 on so a later pg_upgrade --link avoids a mount point boundary.
       - pgdata:/var/lib/postgresql
-      # The archive destination is configuration (13.3). A path here, a bucket
-      # in production, and the restore is exercised against whichever it is.
-      - ${BACKUP_ARCHIVE_DIR:-../../var/archive}:/archive
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-asm_owner} -d ${POSTGRES_DB:-recon}"]
+      test: ["CMD", "pg_isready", "-U", "recon", "-d", "recon"]
       interval: 2s
       timeout: 3s
-      retries: 15
-      start_period: 3s
+      retries: 30
+    restart: unless-stopped
 
-  # The archive directory must exist and be writable by postgres before the first
-  # archive_command fires, or every WAL segment fails to ship with only a log line to show it.
-  archive-init:
-    networks: [control]
-    image: postgres:18-alpine
-    user: root
-    entrypoint: ["sh", "-c"]
-    command: ["mkdir -p /archive/wal /archive/base && chown -R postgres:postgres /archive"]
-    volumes:
-      - ${BACKUP_ARCHIVE_DIR:-../../var/archive}:/archive
-    restart: "no"
-
-  # A service of its own, not a control-plane step, so a failed migration is readable and the
-  # application is gated on it by the deployment, not a remembered ordering.
-  migrate:
-    networks: [control]
+  recon:
+    networks: [control, scan]
     build:
       context: ../..
       dockerfile: deploy/compose/Dockerfile
-      target: migrate
-    command: ["up"]
+      args:
+        VERSION: ${RECON_VERSION:-dev}
     environment:
-      RECON_LOG__FORMAT: text
-      RECON_DATABASE__MIGRATION_URL: >-
-        postgres://${POSTGRES_USER:-asm_owner}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-recon}?sslmode=disable
+      RECON_API_KEY: ${RECON_API_KEY:?set RECON_API_KEY in .env}
+      RECON_PUBLIC_URL: ${RECON_PUBLIC_URL:-http://localhost:8080}
+      RECON_DATABASE__URL: postgres://recon:${POSTGRES_PASSWORD}@postgres:5432/recon?sslmode=disable
+      RECON_LOG__LEVEL: ${RECON_LOG_LEVEL:-info}
+      RECON_SCOPES_EXTRACTOR__URL: ${SCOPES_EXTRACTOR_URL:-}
+      RECON_SCOPES_EXTRACTOR__API_KEY: ${SCOPES_EXTRACTOR_API_KEY:-}
+      RECON_DISCOVERY__AUTO_SCAN: ${AUTO_SCAN:-off}
+      RECON_FASTRECON__URL: http://fastrecon:8080
+      RECON_FASTRECON__API_TOKEN: ${FASTRECON_API_TOKEN:?set FASTRECON_API_TOKEN in .env}
+      RECON_FASTRECON__TIMEOUT: ${FASTRECON_TIMEOUT:-30m}
+      # Off unless asked: on, every in-scope host of every active program is probed.
+      RECON_VERIFICATION__ENABLED: ${VERIFICATION_ENABLED:-false}
+      RECON_RENDER__URL: http://fingerprinter:3001
+      # Unset: the stack's feed. Set empty: CT off.
+      RECON_CT__URL: ${CT_URL-ws://certstream:8080/}
+      # Where recon and verification run: serve, or scaleway with its job.
+      RECON_RUNNER__PROVIDER: ${RUNNER_PROVIDER:-serve}
+      RECON_RUNNER__REGION: ${RUNNER_REGION:-}
+      RECON_RUNNER__JOB_ID: ${RUNNER_JOB_ID:-}
+      RECON_RUNNER__SECRET_KEY: ${RUNNER_SECRET_KEY:-}
+      RECON_RUNNER__CALLBACK_URL: ${RUNNER_CALLBACK_URL:-}
+      # Notification channels, all optional: without one, notifications are
+      # only listed on the settings page.
+      RECON_NOTIFY__DISCORD_URL: ${DISCORD_WEBHOOK_URL:-}
+      RECON_NOTIFY__WEBHOOK_URL: ${WEBHOOK_URL:-}
+      RECON_NOTIFY__WEBHOOK_HEADER: ${WEBHOOK_HEADER:-}
+    volumes:
+      - screenshots:/data/screenshots
+      - ../../var/geoip:/data/geoip:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:${RECON_PORT:-8080}:8080"
     depends_on:
       postgres:
         condition: service_healthy
-    restart: "no"
-
-  # The migration creates the roles NOLOGIN with their privileges and stops. LOGIN and a secret
-  # are the deployment's job, so no password lives in a migration file.
-  db-app-role:
-    networks: [control]
-    image: postgres:18-alpine
-    entrypoint: ["sh", "-c"]
-    # Through stdin, not -c: psql does not interpolate variables in -c. Passwords go in as psql
-    # variables so they never reach a command line ps could show. Two roles, two passwords: what
-    # separates them is what row-level security lets them see, and one shared credential would
-    # reduce that to a comment.
-    #
-    # The semicolons are needed: a newline does not end a statement for psql, so without them the
-    # second ALTER continues the first and the whole thing is a syntax error.
-    command:
-      - >-
-        printf '%s;\n%s;\n'
-        "ALTER ROLE asm_app WITH LOGIN PASSWORD :'pw'"
-        "ALTER ROLE asm_sys WITH LOGIN PASSWORD :'syspw'"
-        | psql -v ON_ERROR_STOP=1 -v pw="$$APP_PASSWORD" -v syspw="$$SYSTEM_PASSWORD"
-    environment:
-      PGHOST: postgres
-      PGUSER: ${POSTGRES_USER:-asm_owner}
-      PGPASSWORD: ${POSTGRES_PASSWORD}
-      PGDATABASE: ${POSTGRES_DB:-recon}
-      APP_PASSWORD: ${APP_PASSWORD:?set APP_PASSWORD in .env}
-      SYSTEM_PASSWORD: ${SYSTEM_PASSWORD:?set SYSTEM_PASSWORD in .env}
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-    restart: "no"
-
-  # Reference data, reapplied on every deployment, not a one-off migration: the denylist grows
-  # with new frameworks and edges. It runs as the owner, as the application role cannot write it.
-  seed:
-    networks: [control]
-    build:
-      context: ../..
-      dockerfile: deploy/compose/Dockerfile
-      target: migrate
-    command: ["seed"]
-    environment:
-      RECON_LOG__FORMAT: text
-      RECON_DATABASE__MIGRATION_URL: >-
-        postgres://${POSTGRES_USER:-asm_owner}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-recon}?sslmode=disable
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-    restart: "no"
-
-  # The operational command line, run rather than served. Behind a profile so `make up` does
-  # not start it: a container exiting at once mid-stack reads as a crash.
-  #
-  # It holds the owner credential, which is why it is not a route.
-  recon:
-    profiles: [tools]
-    networks: [control]
-    build:
-      context: ../..
-      dockerfile: deploy/compose/Dockerfile
-      target: recon
-    environment:
-      RECON_LOG__FORMAT: text
-      RECON_DATABASE__MIGRATION_URL: >-
-        postgres://${POSTGRES_USER:-asm_owner}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-recon}?sslmode=disable
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-    restart: "no"
-
-  controlplane:
-    networks: [control]
-    # The control plane calls the rendering service and the service never calls back. A bridge
-    # cannot express that: joining `scan` would let the browser side resolve `postgres` and
-    # `controlplane`, which the split exists to prevent. So the call goes through the host gateway
-    # to the port the renderer publishes on loopback, the path verify-isolation.sh names.
-    #
-    # In production the two are a plain URL and a firewall rule, and this line disappears with the
-    # bridge.
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    build:
-      context: ../..
-      dockerfile: deploy/compose/Dockerfile
-      target: controlplane
-    environment:
-      RECON_ENV: dev
-      RECON_LOG__FORMAT: text
-      RECON_HTTP__ADDR: ":8080"
-      # asm_app, never the owner. RECON_DATABASE__MIGRATION_URL is absent on purpose and the
-      # configuration refuses to start if it appears: role separation buys nothing if whoever gets
-      # execution here finds the owner credentials beside the application ones.
-      RECON_DATABASE__URL: >-
-        postgres://asm_app:${APP_PASSWORD}@postgres:5432/${POSTGRES_DB:-recon}?sslmode=disable
-      # The second pool. The loops serving every tenant in a tick use the role allowed past
-      # row-level security and say so by holding this credential, not by omitting a filter. Both are
-      # required: with one, those loops read zero rows and look healthy.
-      RECON_DATABASE__SYSTEM_URL: >-
-        postgres://asm_sys:${SYSTEM_PASSWORD}@postgres:5432/${POSTGRES_DB:-recon}?sslmode=disable
-      # What makes a run's credentials unforgeable. There is nothing to store
-      # and nothing to revoke because everything rests on this.
-      RECON_SECURITY__SIGNING_KEY: ${SIGNING_KEY:?set SIGNING_KEY in .env}
-      # Optional. A deployment without a database is normal, and the console is told which it is
-      # rather than guessing from data that looks the same either way.
-      RECON_ENRICH__CITY_DATABASE: ${GEOIP_CITY_DATABASE:-}
-      RECON_ENRICH__ASN_DATABASE: ${GEOIP_ASN_DATABASE:-}
-      # Where a run comes back to. Not derivable from the listen address (the scanner runs
-      # elsewhere); a definition naming nowhere would show as a scanner unable to fetch its targets,
-      # not a missing setting.
-      RECON_VERIFICATION__PUBLIC_URL: ${PUBLIC_URL:-http://controlplane:8080}
-      RECON_RENDER__URL: ${RENDER_URL:-http://host.docker.internal:3001}
-      # The CT aggregator, reached the same way: it sits on the scan network, so the call goes
-      # through the host gateway, not by service name. Empty turns the matcher off, a normal
-      # deployment.
-      RECON_CT__URL: ${CT_URL:-ws://host.docker.internal:3002/}
-      # How a run is started. Empty is the development shape: the definition is
-      # rendered and a person runs the image with it.
-      RECON_RUNNER__PROVIDER: ${RUNNER_PROVIDER:-none}
-      RECON_RUNNER__REGION: ${RUNNER_REGION:-fr-par}
-      RECON_RUNNER__JOB_ID: ${RUNNER_JOB_ID:-}
-      RECON_RUNNER__SECRET_KEY: ${RUNNER_SECRET_KEY:-}
-      RECON_NOTIFY__WEBHOOK_URL: ${NOTIFY_WEBHOOK_URL:-}
-      RECON_NOTIFY__MIN_PRIORITY: ${NOTIFY_MIN_PRIORITY:-low}
-      # The tunables, passed through by name, not mapped with a default. `RECON_X: ${X:-}` delivers
-      # an unset variable as an empty string, and an empty duration is a decode error stopping the
-      # process; `RECON_X: ${X:-72h}` keeps the default in two places, drifting. With no value, an
-      # unset variable is absent from the container and the default in internal/config applies, the
-      # one place it is written. What each does is in .env.example, beside the value.
-      RECON_VERIFICATION__RESOLVE:
-      RECON_VERIFICATION__FULL:
-      RECON_VERIFICATION__FINGERPRINT:
-      RECON_VERIFICATION__RENDER_SOLE:
-      RECON_VERIFICATION__RENDER_RECOVERY:
-      RECON_VERIFICATION__RENDER_BLIND:
-      RECON_VERIFICATION__INACTIVE:
-      RECON_VERIFICATION__JITTER:
-      RECON_VERIFICATION__FULL_FLOOR:
-      RECON_VERIFICATION__BATCH_SIZE:
-      RECON_VERIFICATION__SWEEP_INTERVAL:
-      RECON_VERIFICATION__TIMEOUT:
-      RECON_VERIFICATION__REPORT_TIMEOUT:
-      RECON_VERIFICATION__DISCOVERY_RETRY:
-      RECON_VERIFICATION__PORTS:
-      RECON_CT__INTERVAL:
-      RECON_CT__CEILING:
-      RECON_CT__WINDOW:
-      RECON_CT__CACHE_TTL:
-      RECON_CT__CACHE_SIZE:
-      RECON_RENDER__INTERVAL:
-      RECON_RENDER__BATCH:
-      RECON_RENDER__CONCURRENCY:
-      RECON_RENDER__COST:
-      RECON_RENDER__TIMEOUT:
-      RECON_NOTIFY__INTERVAL:
-      RECON_EXTERNAL__INTERVAL:
-      RECON_MAINTENANCE__INTERVAL:
-    volumes:
-      - ${GEOIP_DIR:-../../var/geoip}:/geoip:ro
-    ports:
-      # Loopback by default. A deployment whose scanner runs off-host must bind wider, a decision and
-      # not a setting: the report and target-list credentials are bearer tokens, so on plain HTTP they
-      # travel in the clear for the run's life.
-      - "${CONTROLPLANE_BIND:-127.0.0.1}:${CONTROLPLANE_PORT:-8080}:8080"
-    depends_on:
-      db-app-role:
-        condition: service_completed_successfully
-      seed:
-        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "/controlplane", "-health"]
+      test: ["CMD", "/recon", "healthcheck"]
       interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 2s
+      timeout: 5s
+      retries: 12
     restart: unless-stopped
 
-  # The console. On the control network, nowhere near the rendering one: it is the only other
-  # process talking to the control plane, and it holds a credential where the renderer holds none.
-  #
-  # It holds no database credential either, the decision behind the whole component. It reaches
-  # the control plane over HTTP with the organization's token like any API client, so a bug here
-  # cannot become a write to the inventory.
-  console:
+  backup:
     networks: [control]
-    build:
-      context: ../..
-      dockerfile: web/Dockerfile
+    image: postgres:18-alpine
+    entrypoint: ["/backup.sh"]
+    command: ["loop"]
     environment:
-      # Where the proxy sends everything. The browser never calls this address: every request goes
-      # through the console's own server, which adds the Authorization header.
-      RECON_API_URL: http://controlplane:8080
-      # Required outside development; the process refuses to start without it. The node adapter
-      # compares a POST's Origin header against the origin it believes it serves and infers it
-      # badly otherwise, rejecting legitimate POSTs (the login screen included) at the first form,
-      # not at startup.
-      ORIGIN: ${CONSOLE_ORIGIN:-http://localhost:3000}
-      # Development, because that is what this file is. Production sets NODE_ENV
-      # and the check above becomes the one that matters.
-      PORT: "3000"
-    ports:
-      - "${CONSOLE_BIND:-127.0.0.1}:${CONSOLE_PORT:-3000}:3000"
+      <<: *pg-env
+      BACKUP_HOUR: ${BACKUP_HOUR:-3}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+    volumes:
+      - ./backup.sh:/backup.sh:ro
+      - ../../var/backups:/backups
     depends_on:
-      controlplane:
+      postgres:
         condition: service_healthy
     restart: unless-stopped
 
-  # The browsers the rendering service drives over CDP, three. The pool is the one in
-  # fingerprinter.yml, not a preference: control_urls lists them by name, so a container added
-  # here and not there is never used, and the reverse is a pool dialling an unresolvable name.
-  #
-  # The one place the local stack pays for production's shape: three Chrome containers are most
-  # of the sixty-second budget on a cold image. The alternative was a local pool unlike the
-  # deployed one and a concurrency setting nobody exercises until production.
-  chrome-1:
-    <<: *chrome
-  chrome-2:
-    <<: *chrome
-  chrome-3:
-    <<: *chrome
+  chrome-1: *chrome
+  chrome-2: *chrome
+  chrome-3: *chrome
 
-  # The CT feed. An aggregator following the public logs and serving a websocket, deployed as an
-  # image like FastRecon; the matcher walking the apex set is a loop in the control plane, not a
-  # second service.
-  #
-  # On the scan network, for a weaker reason than the browser's and with the same shape: it parses
-  # X.509 anyone can get logged, so its input is others', and it has no business reaching the
-  # database. The control plane dials it and it never dials back.
-  certstream:
-    networks: [scan]
-    image: ghcr.io/d-rickyy-b/certstream-server-go:v1.9.0
-    volumes:
-      - ./certstream.yml:/app/config/config.yaml:ro
-    ports:
-      - "127.0.0.1:${CERTSTREAM_PORT:-3002}:8080"
-    restart: unless-stopped
-
-  # Renders pages controlled by a target, so it sits alone with its browser and
-  # holds no credential of any kind. Everything it needs arrives in the request.
   fingerprinter:
     networks: [scan]
     image: ghcr.io/joshuamart/fingerprinter:latest
@@ -363,6 +142,35 @@ services:
     ports:
       - "127.0.0.1:${FINGERPRINTER_PORT:-3001}:3001"
     depends_on:
-      chrome-1:
-        condition: service_healthy
+      chrome-1: {condition: service_healthy}
+      chrome-2: {condition: service_healthy}
+      chrome-3: {condition: service_healthy}
+    restart: unless-stopped
+
+  # One run at a time per instance: Recon's slots follow the instance count.
+  fastrecon:
+    networks: [scan]
+    image: ${FASTRECON_IMAGE:-ghcr.io/joshuamart/fastrecon:main}
+    command: ["serve"]
+    environment:
+      FASTRECON_API_TOKEN: ${FASTRECON_API_TOKEN:?set FASTRECON_API_TOKEN in .env}
+      FASTRECON_ENVIRONMENT: compose
+      # Source keys, all optional: a keyed source without one reports skipped_no_key.
+      CHAOS_API_KEY: ${CHAOS_API_KEY:-}
+      SECURITYTRAILS_API_KEY: ${SECURITYTRAILS_API_KEY:-}
+      C99_API_KEY: ${C99_API_KEY:-}
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/fastrecon", "version"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  certstream:
+    networks: [scan]
+    image: ghcr.io/d-rickyy-b/certstream-server-go:v1.9.0
+    volumes:
+      - ./certstream.yml:/app/config/config.yaml:ro
+    ports:
+      - "127.0.0.1:${CERTSTREAM_PORT:-3002}:8080"
     restart: unless-stopped

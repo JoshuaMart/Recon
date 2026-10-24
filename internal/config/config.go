@@ -1,682 +1,452 @@
-// Package config is the only place in this repository that reads the
-// environment, enforced by the linter. Everything else receives a *Config.
-//
-// Merge order: defaults in code, a YAML file, then RECON_ environment
-// variables. An option's env name is its path uppercased with "." as "__", so
-// database.migration_url is RECON_DATABASE__MIGRATION_URL. Two underscores
-// nest; one stays part of a key.
+// Package config loads the typed configuration: defaults in code, then a YAML
+// file, then RECON_* environment variables. It is the only package that reads
+// the environment.
 package config
 
 import (
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 
-	"github.com/go-viper/mapstructure/v2"
 	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/providers/env/v2"
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/providers/structs"
 	"github.com/knadh/koanf/v2"
-
-	"github.com/JoshuaMart/recon/internal/notify"
 )
 
-// Role is which binary is asking. It decides what a configuration must carry
-// and must not: database credential separation is checked here rather than left
-// to the next compose file.
-type Role string
+// EnvPrefix prefixes every environment override. A double underscore nests:
+// RECON_DATABASE__URL sets database.url.
+const EnvPrefix = "RECON_"
 
-const (
-	// RoleControlPlane serves the API and runs the background loops.
-	RoleControlPlane Role = "controlplane"
-	// RoleMigrate applies and rolls back migrations, as the owner.
-	RoleMigrate Role = "migrate"
-)
-
-// MinSigningKeyLength mirrors what the signer enforces, so a bad key fails at
-// startup and not on the first authenticated run.
-const MinSigningKeyLength = 32
-
-// Runners a deployment can start runs with.
-const (
-	// RunnerNone renders the definition and starts nothing.
-	RunnerNone = "none"
-	// RunnerScaleway starts a serverless job definition.
-	RunnerScaleway = "scaleway"
-)
-
-// Environments the configuration accepts. Several options are refused outside
-// dev, so an unknown value must fail instead of defaulting to the permissive side.
-const (
-	EnvDev     = "dev"
-	EnvStaging = "staging"
-	EnvProd    = "prod"
-)
-
-// Config is the whole configuration, typed and validated once at startup.
+// Config is the whole configuration. Sections are added by the phase that
+// needs them.
 type Config struct {
-	Env      string   `koanf:"env"`
-	Log      Log      `koanf:"log"`
-	HTTP     HTTP     `koanf:"http"`
-	Database Database `koanf:"database"`
-	Enrich   Enrich   `koanf:"enrich"`
-	Security Security `koanf:"security"`
-
-	Maintenance  Maintenance  `koanf:"maintenance"`
-	External     External     `koanf:"external"`
-	Verification Verification `koanf:"verification"`
-	Render       Render       `koanf:"render"`
-	Runner       Runner       `koanf:"runner"`
-	Notify       Notify       `koanf:"notify"`
-	CT           CT           `koanf:"ct"`
+	// PublicURL is how runs and the browser reach Recon.
+	PublicURL       string          `koanf:"public_url"`
+	APIKey          string          `koanf:"api_key" secret:"true"`
+	HTTP            HTTP            `koanf:"http"`
+	Database        Database        `koanf:"database"`
+	Log             Log             `koanf:"log"`
+	ScopesExtractor ScopesExtractor `koanf:"scopes_extractor"`
+	Discovery       Discovery       `koanf:"discovery"`
+	FastRecon       FastRecon       `koanf:"fastrecon"`
+	Verification    Verification    `koanf:"verification"`
+	Render          Render          `koanf:"render"`
+	Screenshots     Screenshots     `koanf:"screenshots"`
+	Notify          Notify          `koanf:"notify"`
+	CT              CT              `koanf:"ct"`
+	Runner          Runner          `koanf:"runner"`
+	// GeoIPDir holds GeoLite2-ASN.mmdb and GeoLite2-City.mmdb. Without them,
+	// ASN and country stay empty.
+	GeoIPDir string `koanf:"geoip_dir"`
 }
 
-// CT is the Certificate Transparency feed and its matcher. The feed is
-// certstream-server-go, deployed as an image; this process only dials it, so
-// the only address here is the aggregator's.
-type CT struct {
-	// URL is the aggregator's websocket. Empty turns the matcher off, a normal
-	// deployment: periodic enumeration still walks every perimeter.
-	URL string `koanf:"url"`
-	// Interval reloads the apex set and flushes the counters. It also sets the
-	// granularity of the feed's presence record, coarser than its table above a minute.
-	Interval time.Duration `koanf:"interval"`
-	// Ceiling is how many candidates one programme may create per Window.
-	//
-	// It bounds a mistake: an apex rule pointing at someone else's shared
-	// infrastructure is one typo away, and a public feed would decide the size of an
-	// inventory. What was held back is logged when the window rolls, since a silent
-	// cap reads as a small answer.
-	Ceiling int           `koanf:"ceiling"`
-	Window  time.Duration `koanf:"window"`
-	// CacheTTL and CacheSize bound short-term deduplication. It is a cost control;
-	// correctness is the database's unique constraint, so both may err either way.
-	CacheTTL  time.Duration `koanf:"cache_ttl"`
-	CacheSize int           `koanf:"cache_size"`
-}
-
-// Notify is where alerts go and how often they leave. One generic webhook:
-// Discord and Slack are a payload template, not connectors.
-type Notify struct {
-	// WebhookURL is the configured channel. Empty is a deliberate setup, not an
-	// outage: events are marked delivered and counted, so "computed and sent
-	// nowhere" stays visible.
-	WebhookURL string `koanf:"webhook_url"`
-	// Template renders the body. Empty takes the default, accepted by Discord and Slack.
-	Template string `koanf:"template"`
-	// MinPriority is the floor the configured channel wants.
-	MinPriority string `koanf:"min_priority"`
-	// Interval is how often the queue is drained, which is what "immediate" means:
-	// a takeover waits at most one tick.
-	Interval time.Duration `koanf:"interval"`
-	Batch    int           `koanf:"batch"`
-	Timeout  time.Duration `koanf:"timeout"`
-	// UnobservableAlert is the share of a programme's inventory that makes a mass
-	// tip an event.
-	UnobservableAlert float64 `koanf:"unobservable_alert"`
-}
-
-// Runner is how a run definition is started.
-//
-// The control plane starts, it never updates: the update call replaces the
-// whole environment map, wiping the source API keys the definition carries
-// without any error. Only the start call is made, with per-run overrides.
-type Runner struct {
-	// Provider is "none" or "scaleway". None renders the definition and starts
-	// nothing: the development shape, where a person runs the image with what the
-	// console shows. It is production minus the call, so the local path is not a
-	// second way of starting a run.
-	Provider string `koanf:"provider"`
-	Region   string `koanf:"region"`
-	// JobID names the definition to start; it is deployed once, out of band.
-	JobID string `koanf:"job_id"`
-	// SecretKey is the only credential, scoped to starting this definition. It sits
-	// in the process holding the inventory, so its narrowness bounds the damage of
-	// a compromise.
-	SecretKey string `koanf:"secret_key"`
-	// Endpoint is the API base, so tests do not call a cloud.
-	Endpoint string        `koanf:"endpoint"`
-	Timeout  time.Duration `koanf:"timeout"`
-}
-
-// Render is the browser side of verification. It is separate from verification
-// because a probe takes milliseconds while a render takes seconds and hundreds
-// of megabytes, so they cannot share a batch size or cadence.
+// Render is the Fingerprinter and the render cadences. An empty URL leaves
+// renders due.
 type Render struct {
-	// URL is where the rendering service listens. Empty turns the loop off: assets
-	// keep their due dates and nothing pretends to have looked.
-	URL     string        `koanf:"url"`
-	Timeout time.Duration `koanf:"timeout"`
-	// Interval is how often the pass runs.
-	Interval time.Duration `koanf:"interval"`
-	Batch    int           `koanf:"batch"`
-	// Concurrency is set above where the budget binds, so the throttle is the
-	// programme's published rate limit rather than an uncalibrated number.
-	Concurrency int `koanf:"concurrency"`
-	// Cost is what one render is charged against a programme's rate limit. A
-	// browser fetches the page and everything it pulls, so billing it as one request
-	// would make the costliest operation the cheapest.
-	Cost int `koanf:"cost"`
-	// UnobservableAlert is the share of a programme's inventory that turns a mass
-	// tip into an alert; a mass tip is about the observer, not the targets.
-	UnobservableAlert float64 `koanf:"unobservable_alert"`
-	// ReplanSpread is how long a forced refresh after a service update is spread
-	// over. It restores baselines without a mass alert, which an hour would be.
-	ReplanSpread time.Duration `koanf:"replan_spread"`
-}
-
-// Verification is the loop that keeps the inventory honest and the shape of its
-// runs. Cadences are configuration because the stage ladder is the cost knob: a
-// resolve is one resolver round trip, a full is a hundred connections per host.
-type Verification struct {
-	Resolve     time.Duration `koanf:"resolve"`
-	Full        time.Duration `koanf:"full"`
-	Fingerprint time.Duration `koanf:"fingerprint"`
-	Inactive    time.Duration `koanf:"inactive"`
-	Jitter      time.Duration `koanf:"jitter"`
-	// RenderSole, RenderRecovery and RenderBlind are the cadences of the three
-	// non-nominal regimes: who is still detecting, and whether a render is a
-	// measurement or a recovery attempt.
-	RenderSole     time.Duration `koanf:"render_sole"`
-	RenderRecovery time.Duration `koanf:"render_recovery"`
-	RenderBlind    time.Duration `koanf:"render_blind"`
-	// FullFloor is the fastest a failing asset's port sweep may run. A backoff curve
-	// is written for the cheap rung; unchanged on the expensive one it becomes a flood.
-	FullFloor time.Duration `koanf:"full_floor"`
-	// BatchSize is how many hosts one run freezes. A due date decides eligibility,
-	// this decides what goes out.
-	BatchSize int `koanf:"batch_size"`
-	// Timeout is a run's own budget and must expire before the platform's, which
-	// sits on a job definition Recon does not control. A run killed from outside
-	// delivers nothing; one that runs out of its own time delivers a truncated report.
-	Timeout time.Duration `koanf:"timeout"`
-	// CandidateTimeout is a candidate run's budget, much shorter since it does one
-	// rung over a short list. The deadline is how long the lane's slot is held.
-	CandidateTimeout time.Duration `koanf:"candidate_timeout"`
-	// Grace is how long past the deadline a report is still ingested. The data is
-	// valid; the run may have been re-dispatched.
-	Grace time.Duration `koanf:"grace"`
-	// ReportTimeout is how long the scanner waits for Recon to answer a report and
-	// how long Recon gives itself to write one. FastRecon's thirty second default
-	// is shorter than a large discovery report takes: the scanner hung up, the
-	// write rolled back, and retries repeated the same work.
-	ReportTimeout time.Duration `koanf:"report_timeout"`
-	// SweepInterval is how often runs past their deadline are expired; an
-	// unexpired run holds its targets forever.
-	SweepInterval time.Duration `koanf:"sweep_interval"`
-	// DiscoveryRetry is how long after an empty discovery run a replacement may be
-	// provisioned. Far shorter than the discovery interval, so a thirty-second
-	// failure does not cost a week, and far longer than the tick, so a permanently
-	// broken runner is not provisioned and billed every tick.
-	DiscoveryRetry time.Duration `koanf:"discovery_retry"`
-	// Ports is the curated list, as data. It travels in the run definition so
-	// discovery and verification scan the same ports; a second list on the scanner
-	// could diverge without any error.
-	Ports string `koanf:"ports"`
-	// PublicURL is the base a run reaches this control plane on. It cannot be
-	// derived from the listen address: the scanner runs elsewhere.
-	PublicURL string `koanf:"public_url"`
-}
-
-// Security holds the one secret the control plane signs with. Run credentials
-// are HMACs over run, purpose and expiry, so nothing is stored or revoked. All
-// of it rests on this key, hence a short one is refused: a guessable key lets
-// anyone mint a token for any run.
-type Security struct {
-	SigningKey string `koanf:"signing_key"`
-}
-
-// Maintenance is the housekeeping tick. It has no enable flag: a partition job
-// that can be turned off is an ingestion outage three months later.
-type Maintenance struct {
-	Interval time.Duration `koanf:"interval"`
-}
-
-// Log controls what the process writes to stderr. Everything is structured and
-// carries a correlation id; adding that later touches every write path.
-type Log struct {
-	Level  string `koanf:"level"`
-	Format string `koanf:"format"`
-}
-
-// HTTP is the control plane's listener.
-type HTTP struct {
-	Addr            string        `koanf:"addr"`
-	ReadTimeout     time.Duration `koanf:"read_timeout"`
-	ShutdownTimeout time.Duration `koanf:"shutdown_timeout"`
-}
-
-// Database holds one connection string per role, as separate variables: the
-// role is chosen when a pool is opened, not case by case in the code.
-type Database struct {
-	// URL is asm_app: the control plane's requests, under row-level security.
 	URL string `koanf:"url"`
-	// SystemURL is asm_sys: the background loops serving every tenant in one tick,
-	// and the two lookups turning a credential into an organization. Required on the
-	// control plane, since under row-level security a loop on the application role
-	// reads zero rows instead of failing.
-	SystemURL string `koanf:"system_url"`
-	// MigrationURL is asm_owner. It must never be in the control plane's
-	// environment, or role separation buys nothing.
-	MigrationURL string `koanf:"migration_url"`
-
-	MaxConns int32 `koanf:"max_conns"`
-	// SystemMaxConns bounds the second pool separately. Sharing one setting would
-	// make a deployment tuned for N backends quietly open 2N, which on a managed
-	// instance with a hard max_connections breaks the next service. It is much
-	// smaller because the work is: a few timed loops against a request-serving pool.
-	SystemMaxConns int32         `koanf:"system_max_conns"`
-	ConnectTimeout time.Duration `koanf:"connect_timeout"`
+	// Concurrency is the most renders in flight, below the Fingerprinter's own
+	// concurrent_scans: a 429 halves it, successes bring it back.
+	Concurrency int           `koanf:"concurrency"`
+	Timeout     time.Duration `koanf:"timeout"`  // one scan, the service's budget plus a margin
+	Periodic    time.Duration `koanf:"periodic"` // next render after a successful one
+	Retry       time.Duration `koanf:"retry"`    // next render after the target did not answer
 }
 
-// External is the sweep asking whether someone else's domain is still
-// registered.
-//
-// A DNS lookup is allowed outside a scan authorization: the guardrails protect
-// interaction with a third party's infrastructure, and a public resolver query
-// reaches neither the domain nor its servers. An interval of zero turns the
-// loop off for deployments that want no outbound queries.
-type External struct {
+// Screenshots is where and how screenshots are kept.
+type Screenshots struct {
+	Dir     string `koanf:"dir"`
+	Quality int    `koanf:"quality"` // JPEG quality, 1 to 100
+	Keep    int    `koanf:"keep"`    // distinct screenshots kept per asset
+	// DiskThreshold is the share of the screenshot filesystem in use past
+	// which a health notification fires.
+	DiskThreshold float64 `koanf:"disk_threshold"`
+}
+
+// Runner is where recon and verification runs go. serve keeps them on
+// fastrecon serve; scaleway starts a Serverless Job per run. CT candidates
+// always stay on serve.
+type Runner struct {
+	Provider  string `koanf:"provider"` // serve or scaleway
+	Endpoint  string `koanf:"endpoint"` // the Scaleway API
+	Region    string `koanf:"region"`
+	JobID     string `koanf:"job_id"` // the job definition, created once outside Recon
+	SecretKey string `koanf:"secret_key" secret:"true"`
+	// CallbackURL is where a job reaches Recon; public_url when empty.
+	CallbackURL string `koanf:"callback_url"`
+	Slots       int    `koanf:"slots"` // jobs in flight at once
+	// Grace is how long past its deadline a run's report token stays valid.
+	Grace time.Duration `koanf:"grace"`
+	// ReportTimeout is the job's wait for Recon to take its report.
+	ReportTimeout time.Duration `koanf:"report_timeout"`
+}
+
+// validate checks the runner. The Scaleway settings go together whenever one
+// is set: with serve in effect they still follow the jobs started before.
+func (r Runner) validate(callback string) []error {
+	var errs []error
+	if r.Provider != "serve" && r.Provider != "scaleway" {
+		errs = append(errs, fmt.Errorf("runner.provider %q is not serve or scaleway", r.Provider))
+	}
+	if r.Provider != "scaleway" && r.JobID == "" && r.SecretKey == "" {
+		return errs
+	}
+	if r.Region == "" || r.JobID == "" || r.SecretKey == "" {
+		errs = append(errs, errors.New("runner: region, job_id and secret_key go together, and scaleway needs them"))
+	}
+	if u, err := url.Parse(r.Endpoint); err != nil || u.Scheme != "https" || u.Host == "" {
+		errs = append(errs, fmt.Errorf("runner.endpoint %q must be an absolute https URL", r.Endpoint))
+	}
+	// The run tokens travel with every call: never in clear across a network,
+	// only to this machine.
+	u, err := url.Parse(callback)
+	secure := err == nil && u.Host != "" && (u.Scheme == "https" || (u.Scheme == "http" && loopback(u.Hostname())))
+	if !secure {
+		errs = append(errs, fmt.Errorf("the callback %q must be an https URL (http only to localhost)", callback))
+	}
+	if r.Slots < 1 || r.Grace < time.Minute || r.ReportTimeout < 30*time.Second {
+		errs = append(errs, errors.New("runner: slots at least 1, grace at least 1m, report_timeout at least 30s"))
+	}
+	return errs
+}
+
+func loopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// CallbackBase is where a job reaches Recon.
+func (c Config) CallbackBase() string {
+	if c.Runner.CallbackURL != "" {
+		return strings.TrimRight(c.Runner.CallbackURL, "/")
+	}
+	return strings.TrimRight(c.PublicURL, "/")
+}
+
+// CT is the Certificate Transparency feed. An empty URL leaves it off.
+type CT struct {
+	URL string `koanf:"url"` // the certstream websocket
+	// MaxPerHour is how many names a program may gain from CT in an hour;
+	// the overflow is counted, not created.
+	MaxPerHour int           `koanf:"max_per_hour"`
+	Reload     time.Duration `koanf:"reload"` // how often the apex set is read again
+}
+
+// Notify holds the channels notifications go to. With none, they are kept and
+// listed on the settings page only.
+type Notify struct {
+	DiscordURL    string `koanf:"discord_url" secret:"true"`
+	WebhookURL    string `koanf:"webhook_url" secret:"true"`    // such URLs commonly hold their token
+	WebhookHeader string `koanf:"webhook_header" secret:"true"` // "Name: value", sent with each webhook call
+	// BrokenAfter is how long a component fails before it is announced.
+	BrokenAfter time.Duration `koanf:"broken_after"`
+}
+
+// Verification is the periodic probing of known hosts.
+type Verification struct {
+	Enabled bool `koanf:"enabled"`
+	// Batch is the most hosts one run carries.
+	Batch   int           `koanf:"batch"`
+	Resolve time.Duration `koanf:"resolve"` // nominal resolve cadence
+	Full    time.Duration `koanf:"full"`    // nominal full cadence
+	Dormant time.Duration `koanf:"dormant"` // cadence of inactive and unobservable hosts
+	// ArchiveAfter is how long an inactive or unobservable asset waits before
+	// it leaves the scheduler.
+	ArchiveAfter time.Duration `koanf:"archive_after"`
+	// DeadOrigins are the pages a CDN serves when the origin is gone.
+	DeadOrigins []DeadOrigin `koanf:"dead_origins"`
+}
+
+// DeadOrigin is one dead-origin signature. Empty fields match anything.
+type DeadOrigin struct {
+	Name     string `koanf:"name"`
+	Statuses []int  `koanf:"statuses"`
+	Server   string `koanf:"server"`
+	Title    string `koanf:"title"`
+}
+
+// FastRecon is the `fastrecon serve` instance runs are sent to. An empty URL
+// leaves runs queued.
+type FastRecon struct {
+	URL      string `koanf:"url"`
+	APIToken string `koanf:"api_token" secret:"true"`
+	// Timeout is the run's own budget, sent with every request.
+	Timeout time.Duration `koanf:"timeout"`
+	// Slots is how many runs may be in flight: one per serve instance.
+	Slots int `koanf:"slots"`
+}
+
+// ScopesExtractor is the scope sync. An empty URL disables it, leaving manual
+// programs only.
+type ScopesExtractor struct {
+	URL      string        `koanf:"url"`
+	APIKey   string        `koanf:"api_key" secret:"true"`
 	Interval time.Duration `koanf:"interval"`
 	Timeout  time.Duration `koanf:"timeout"`
-	Batch    int           `koanf:"batch"`
+	// MaxRemovedRatio is the share of active synced programs one pass may
+	// archive before the pass is refused as suspicious.
+	MaxRemovedRatio float64 `koanf:"max_removed_ratio"`
 }
 
-// Enrich points at the Geo-IP databases. Both paths are optional, but the
-// difference must be visible: the console cannot tell "not configured" from
-// "configured, no match", as both leave an asset without an operator.
-type Enrich struct {
-	CityDatabase string `koanf:"city_database"`
-	ASNDatabase  string `koanf:"asn_database"`
+// Discovery holds the recon settings.
+type Discovery struct {
+	// AutoScan is the default for programs that do not set their own: off or on_new.
+	AutoScan string `koanf:"auto_scan"`
+	// Ports is the port list every run scans, recon and verification alike.
+	Ports []int `koanf:"ports"`
 }
 
-// Defaults are the values a deployment inherits when it says nothing. They live
-// in code so an empty environment still works.
+// DefaultPorts are the ports that can carry a finding: web entry points, admin
+// consoles, stores, remote access.
+var DefaultPorts = []int{
+	80, 443, 8080, 8443, 8000, 8090, 9000, 9443, 3000, 5000,
+	2375, 2376, 6443, 10250, 15672, 5601, 8983, 9990, 2083, 2087,
+	3306, 5432, 27017, 6379, 9200, 11211, 9042, 2379,
+	3389, 5900, 1080, 3128,
+}
+
+// HTTP is the listener.
+type HTTP struct {
+	Addr string `koanf:"addr"`
+}
+
+// Database is the PostgreSQL connection.
+type Database struct {
+	URL string `koanf:"url" secret:"true"` // holds the password
+}
+
+// Log is the logger output.
+type Log struct {
+	Level  string `koanf:"level"`  // debug, info, warn, error
+	Format string `koanf:"format"` // json, text
+}
+
+// Defaults is the configuration before any file or variable.
 func Defaults() Config {
 	return Config{
-		Env: EnvDev,
-		Log: Log{Level: "info", Format: "json"},
-		HTTP: HTTP{
-			Addr:            ":8080",
-			ReadTimeout:     10 * time.Second,
-			ShutdownTimeout: 15 * time.Second,
+		PublicURL: "http://localhost:8080",
+		HTTP:      HTTP{Addr: ":8080"},
+		Log:       Log{Level: "info", Format: "json"},
+		ScopesExtractor: ScopesExtractor{
+			Interval: time.Hour, Timeout: time.Minute, MaxRemovedRatio: 0.5,
 		},
-		Database: Database{
-			MaxConns:       10,
-			SystemMaxConns: 4,
-			ConnectTimeout: 5 * time.Second,
-		},
-		Maintenance: Maintenance{Interval: time.Hour},
-		// Six hours: an expiring domain is a step that stays, so a tighter cadence buys
-		// latency on a fact that does not move at the cost of queries against every
-		// referenced third party.
-		External: External{Interval: 6 * time.Hour, Timeout: 5 * time.Second, Batch: 5000},
-		Notify: Notify{
-			MinPriority:       "low",
-			Interval:          30 * time.Second,
-			Batch:             200,
-			Timeout:           10 * time.Second,
-			UnobservableAlert: 0.10,
-		},
-		Runner: Runner{
-			Provider: RunnerNone,
-			Region:   "fr-par",
-			Endpoint: "https://api.scaleway.com",
-			Timeout:  30 * time.Second,
-		},
-		CT: CT{
-			Interval:  time.Minute,
-			Ceiling:   500,
-			Window:    time.Hour,
-			CacheTTL:  10 * time.Minute,
-			CacheSize: 50_000,
-		},
+		Discovery: Discovery{AutoScan: "off", Ports: DefaultPorts},
+		FastRecon: FastRecon{Timeout: 30 * time.Minute, Slots: 1},
 		Render: Render{
-			Timeout:           2 * time.Minute,
-			Interval:          time.Minute,
-			Batch:             200,
-			Concurrency:       8,
-			Cost:              30,
-			UnobservableAlert: 0.2,
-			ReplanSpread:      3 * 24 * time.Hour,
+			Concurrency: 20, Timeout: 2 * time.Minute, Periodic: 21 * 24 * time.Hour, Retry: 6 * time.Hour,
 		},
+		Screenshots: Screenshots{Dir: "/data/screenshots", Quality: 70, Keep: 3, DiskThreshold: 0.9},
+		Notify:      Notify{BrokenAfter: 5 * time.Minute},
+		CT:          CT{MaxPerHour: 40, Reload: 5 * time.Minute},
+		Runner: Runner{
+			Provider: "serve", Endpoint: "https://api.scaleway.com", Slots: 4,
+			Grace: 30 * time.Minute, ReportTimeout: 5 * time.Minute,
+		},
+		GeoIPDir: "/data/geoip",
 		Verification: Verification{
-			Resolve:          24 * time.Hour,
-			Full:             72 * time.Hour,
-			Fingerprint:      21 * 24 * time.Hour,
-			RenderSole:       7 * 24 * time.Hour,
-			RenderRecovery:   30 * 24 * time.Hour,
-			RenderBlind:      7 * 24 * time.Hour,
-			Inactive:         7 * 24 * time.Hour,
-			Jitter:           15 * time.Minute,
-			FullFloor:        6 * time.Hour,
-			BatchSize:        500,
-			Timeout:          30 * time.Minute,
-			CandidateTimeout: 5 * time.Minute,
-			Grace:            10 * time.Minute,
-			ReportTimeout:    10 * time.Minute,
-			SweepInterval:    time.Minute,
-			DiscoveryRetry:   time.Hour,
-			// Not nmap's top 100, which ranks by how often a port is open across the
-			// internet and so leads with mail and printing. A port earns its place if it
-			// can carry a finding.
-			Ports: "80,443,8080,8443,8000,8090,9000,9443,3000,5000," +
-				"2375,2376,6443,10250,15672,5601,8983,9990,2083,2087," +
-				"3306,5432,27017,6379,9200,11211,9042,2379," +
-				"3389,5900,1080,3128",
+			Enabled: true, Batch: 500, Resolve: 24 * time.Hour, Full: 72 * time.Hour,
+			Dormant: 7 * 24 * time.Hour, ArchiveAfter: 30 * 24 * time.Hour,
+			DeadOrigins: []DeadOrigin{{Name: "cloudflare origin down", Statuses: []int{521, 522, 523, 530}, Server: "cloudflare"}},
 		},
 	}
 }
 
-// Options adjust where a configuration is read from. The zero value reads the
-// process environment and the file RECON_CONFIG names, as every binary does.
-type Options struct {
-	// File is an optional YAML path, overriding RECON_CONFIG. Missing is not an
-	// error: environment-only deployments are normal.
-	File string
-	// Environ overrides the source of environment variables, so tests never touch
-	// the process environment and can run in parallel.
-	Environ func() []string
+// Load merges the defaults, the file at path when it is not empty, and the
+// environment, then validates the result.
+func Load(path string) (Config, error) {
+	return load(path, os.Environ())
 }
 
-// configVar names the file to read. It is not a structure option: a
-// configuration cannot say where it is loaded from.
-const configVar = prefix + "CONFIG"
-
-func (o Options) environ() []string {
-	if o.Environ != nil {
-		return o.Environ()
-	}
-	return os.Environ()
-}
-
-func (o Options) path() string {
-	if o.File != "" {
-		return o.File
-	}
-	for _, entry := range o.environ() {
-		if value, ok := strings.CutPrefix(entry, configVar+"="); ok {
-			return value
-		}
-	}
-	return ""
-}
-
-const (
-	prefix = "RECON_"
-	delim  = "."
-	nest   = "__"
-)
-
-// Load merges the three layers, decodes into a typed structure and validates it
-// for the role. It returns every problem found, not the first, since a
-// half-configured deployment usually is in several places.
-func Load(role Role, opts Options) (*Config, error) {
-	k := koanf.New(delim)
-
+func load(path string, environ []string) (Config, error) {
+	k := koanf.New(".")
 	if err := k.Load(structs.Provider(Defaults(), "koanf"), nil); err != nil {
-		return nil, fmt.Errorf("load defaults: %w", err)
+		return Config{}, fmt.Errorf("defaults: %w", err)
 	}
-
-	if path := opts.path(); path != "" {
-		if _, err := os.Stat(path); err == nil {
-			if err := k.Load(file.Provider(path), yaml.Parser()); err != nil {
-				return nil, fmt.Errorf("load %s: %w", path, err)
-			}
-		} else if !os.IsNotExist(err) {
-			return nil, fmt.Errorf("read %s: %w", path, err)
+	if path != "" {
+		if err := k.Load(file.Provider(path), yaml.Parser()); err != nil {
+			return Config{}, fmt.Errorf("config file %s: %w", path, err)
 		}
 	}
-
-	if err := k.Load(env.Provider(delim, env.Opt{
-		Prefix:        prefix,
-		EnvironFunc:   opts.environ,
-		TransformFunc: transform,
-	}), nil); err != nil {
-		return nil, fmt.Errorf("load environment: %w", err)
+	envProvider := env.Provider(".", env.Opt{
+		Prefix:        EnvPrefix,
+		TransformFunc: envKey,
+		EnvironFunc:   func() []string { return environ },
+	})
+	if err := k.Load(envProvider, nil); err != nil {
+		return Config{}, fmt.Errorf("environment: %w", err)
 	}
 
-	var cfg Config
-	if err := k.UnmarshalWithConf("", &cfg, koanf.UnmarshalConf{
-		Tag: "koanf",
-		DecoderConfig: &mapstructure.DecoderConfig{
-			Result: &cfg,
-			Squash: true,
-			DecodeHook: mapstructure.ComposeDecodeHookFunc(
-				mapstructure.StringToTimeDurationHookFunc(),
-			),
-			// An unknown key is a typo, i.e. a setting someone believes they changed.
-			ErrorUnused:      true,
-			WeaklyTypedInput: true,
-		},
-	}); err != nil {
-		return nil, fmt.Errorf("decode configuration: %w", err)
+	var c Config
+	if err := k.UnmarshalWithConf("", &c, koanf.UnmarshalConf{Tag: "koanf"}); err != nil {
+		return Config{}, fmt.Errorf("decode: %w", err)
 	}
-
-	if err := cfg.Validate(role); err != nil {
-		return nil, err
+	if err := c.Validate(); err != nil {
+		return Config{}, err
 	}
-	return &cfg, nil
+	return c, nil
 }
 
-// transform turns RECON_DATABASE__MIGRATION_URL into database.migration_url.
-// The provider drops an empty name, which keeps RECON_CONFIG out of the decoded
-// structure.
-func transform(key, value string) (string, any) {
-	if key == configVar {
-		return "", nil
-	}
-	trimmed, ok := strings.CutPrefix(key, prefix)
-	if !ok || trimmed == "" {
-		return "", nil
-	}
-	return strings.ReplaceAll(strings.ToLower(trimmed), nest, delim), value
+// envKey maps RECON_DATABASE__URL to database.url. A single underscore stays
+// part of the key, so RECON_PUBLIC_URL is public_url.
+func envKey(k, v string) (string, any) {
+	k = strings.ToLower(strings.TrimPrefix(k, EnvPrefix))
+	return strings.ReplaceAll(k, "__", "."), v
 }
 
-// Validate checks the whole configuration for one role. It never mutates.
-func (c *Config) Validate(role Role) error {
+// Validate reports every missing or malformed field at once.
+func (c Config) Validate() error {
 	var errs []error
-	fail := func(format string, args ...any) { errs = append(errs, fmt.Errorf(format, args...)) }
-
-	switch c.Env {
-	case EnvDev, EnvStaging, EnvProd:
-	default:
-		fail("env must be one of %s, %s or %s, got %q", EnvDev, EnvStaging, EnvProd, c.Env)
+	if c.APIKey == "" {
+		errs = append(errs, errors.New("api_key is required"))
+	} else if len(c.APIKey) < 32 {
+		errs = append(errs, errors.New("api_key must be at least 32 characters"))
 	}
-
+	if c.Database.URL == "" {
+		errs = append(errs, errors.New("database.url is required"))
+	}
+	if u, err := url.Parse(c.PublicURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		errs = append(errs, fmt.Errorf("public_url %q must be an absolute http or https URL", c.PublicURL))
+	}
+	if c.HTTP.Addr == "" {
+		errs = append(errs, errors.New("http.addr is required"))
+	}
 	switch c.Log.Level {
 	case "debug", "info", "warn", "error":
 	default:
-		fail("log.level must be debug, info, warn or error, got %q", c.Log.Level)
+		errs = append(errs, fmt.Errorf("log.level %q is not one of debug, info, warn, error", c.Log.Level))
 	}
 	switch c.Log.Format {
 	case "json", "text":
 	default:
-		fail("log.format must be json or text, got %q", c.Log.Format)
+		errs = append(errs, fmt.Errorf("log.format %q is not one of json, text", c.Log.Format))
 	}
-
-	switch role {
-	case RoleControlPlane:
-		if c.HTTP.Addr == "" {
-			fail("http.addr is required")
+	if se := c.ScopesExtractor; se.URL != "" {
+		if u, err := url.Parse(se.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			errs = append(errs, fmt.Errorf("scopes_extractor.url %q must be an absolute http or https URL", se.URL))
 		}
-		if c.HTTP.ReadTimeout <= 0 {
-			fail("http.read_timeout must be positive, got %s", c.HTTP.ReadTimeout)
+		if se.APIKey == "" {
+			errs = append(errs, errors.New("scopes_extractor.api_key is required when scopes_extractor.url is set"))
 		}
-		if c.HTTP.ShutdownTimeout <= 0 {
-			fail("http.shutdown_timeout must be positive, got %s", c.HTTP.ShutdownTimeout)
-		}
-		if c.Database.URL == "" {
-			fail("database.url is required: the control plane connects as the application role")
-		}
-		// Required because its absence has no safe reading: the loops serving every
-		// tenant would run as the application role, which row-level security answers
-		// with zero rows. No partition created, no run expired, nothing notified, all
-		// looking healthy.
-		if c.Database.SystemURL == "" {
-			fail("database.system_url is required: the loops that serve every tenant in one tick " +
-				"connect as the system role, and under row-level security the application role " +
-				"answers them with zero rows rather than with an error")
-		}
-		if c.Database.SystemMaxConns <= 0 {
-			fail("database.system_max_conns must be positive, got %d", c.Database.SystemMaxConns)
-		}
-		if c.Database.SystemURL == c.Database.URL {
-			fail("database.system_url and database.url are the same credential, so the role that " +
-				"crosses tenants is the role that must not: the separation is a fact of deployment " +
-				"rather than a naming convention")
-		}
-		// A security property, not a check.
-		if c.Database.MigrationURL != "" {
-			fail("database.migration_url must not be set on the control plane: " +
-				"separating the roles buys nothing if the owner credentials sit " +
-				"in the same environment as the application ones")
-		}
-		if c.Database.MaxConns <= 0 {
-			fail("database.max_conns must be positive, got %d", c.Database.MaxConns)
-		}
-		if c.Database.ConnectTimeout <= 0 {
-			fail("database.connect_timeout must be positive, got %s", c.Database.ConnectTimeout)
-		}
-		if len(c.Security.SigningKey) < MinSigningKeyLength {
-			fail("security.signing_key must be at least %d bytes: it is what makes a run's "+
-				"credentials unforgeable, and a guessable key is an unsigned one", MinSigningKeyLength)
-		}
-		if c.Maintenance.Interval <= 0 {
-			fail("maintenance.interval must be positive, got %s", c.Maintenance.Interval)
-		}
-		// Validated whether or not a feed is configured, so turning the matcher on later
-		// does not refuse its tunables at startup.
-		if c.Verification.CandidateTimeout > c.Verification.Timeout {
-			fail("verification.candidate_timeout (%s) exceeds verification.timeout (%s): the "+
-				"candidate lane exists so a candidate does not wait behind a sweep, and a slot "+
-				"held longer than one is that wait wearing a different name",
-				c.Verification.CandidateTimeout, c.Verification.Timeout)
-		}
-		if c.CT.Interval <= 0 || c.CT.Window <= 0 || c.CT.CacheTTL <= 0 {
-			fail("ct.interval, ct.window and ct.cache_ttl must all be positive")
-		}
-		if c.CT.Ceiling <= 0 || c.CT.CacheSize <= 0 {
-			fail("ct.ceiling and ct.cache_size must be positive: a feed with no ceiling decides " +
-				"how large a customer's inventory is")
-		}
-		for name, value := range map[string]time.Duration{
-			"resolve": c.Verification.Resolve, "full": c.Verification.Full,
-			"fingerprint": c.Verification.Fingerprint, "inactive": c.Verification.Inactive,
-			"timeout": c.Verification.Timeout, "sweep_interval": c.Verification.SweepInterval,
-			"candidate_timeout": c.Verification.CandidateTimeout,
-			"discovery_retry":   c.Verification.DiscoveryRetry,
-			"report_timeout":    c.Verification.ReportTimeout,
-			"full_floor":        c.Verification.FullFloor,
-			"render_sole":       c.Verification.RenderSole,
-			"render_recovery":   c.Verification.RenderRecovery,
-			"render_blind":      c.Verification.RenderBlind,
-		} {
-			if value <= 0 {
-				fail("verification.%s must be positive, got %s", name, value)
-			}
-		}
-		if c.Verification.Jitter < 0 {
-			fail("verification.jitter must not be negative, got %s", c.Verification.Jitter)
-		}
-		if c.Verification.BatchSize <= 0 {
-			fail("verification.batch_size must be positive, got %d", c.Verification.BatchSize)
-		}
-		if c.Verification.Ports == "" {
-			fail("verification.ports is required: the port list travels in the run " +
-				"definition so that discovery and verification scan the same ports")
-		}
-		for name, value := range map[string]time.Duration{
-			"timeout": c.Render.Timeout, "interval": c.Render.Interval,
-			"replan_spread": c.Render.ReplanSpread,
-		} {
-			if value <= 0 {
-				fail("render.%s must be positive, got %s", name, value)
-			}
-		}
-		// Seconds, the unit the statement spreads over: below one second it truncates
-		// to zero, the modulo divides by it, and every replan returns a 500.
-		if c.Render.ReplanSpread < time.Second {
-			fail("render.replan_spread must be at least a second, got %s", c.Render.ReplanSpread)
-		}
-		if c.Render.Batch <= 0 || c.Render.Concurrency <= 0 || c.Render.Cost <= 0 {
-			fail("render.batch, render.concurrency and render.cost must all be positive")
-		}
-		if c.Render.UnobservableAlert <= 0 || c.Render.UnobservableAlert > 1 {
-			fail("render.unobservable_alert must be a share in (0, 1], got %v", c.Render.UnobservableAlert)
-		}
-		switch c.Runner.Provider {
-		case RunnerNone:
-		case RunnerScaleway:
-			// Each would start a run against nothing, surfacing as a scanner that never
-			// appears and not as a missing setting.
-			if c.Runner.Region == "" {
-				fail("runner.region is required with the %s runner", RunnerScaleway)
-			}
-			if c.Runner.JobID == "" {
-				fail("runner.job_id is required with the %s runner: the definition is deployed "+
-					"out of band and this names it", RunnerScaleway)
-			}
-			if c.Runner.SecretKey == "" {
-				fail("runner.secret_key is required with the %s runner", RunnerScaleway)
-			}
-			if c.Runner.Endpoint == "" {
-				fail("runner.endpoint is required with the %s runner", RunnerScaleway)
-			}
-			if c.Runner.Timeout <= 0 {
-				fail("runner.timeout must be positive, got %s", c.Runner.Timeout)
-			}
-		default:
-			fail("runner.provider must be %s or %s, got %q", RunnerNone, RunnerScaleway, c.Runner.Provider)
-		}
-
-		switch c.Notify.MinPriority {
-		case "critical", "high", "medium", "low":
-		default:
-			fail("notify.min_priority must be critical, high, medium or low, got %q", c.Notify.MinPriority)
-		}
-		if c.Notify.Interval <= 0 || c.Notify.Timeout <= 0 || c.Notify.Batch <= 0 {
-			fail("notify.interval, notify.timeout and notify.batch must all be positive")
-		}
-		// The floor is the first re-emission tier; below it the mass tip would never
-		// speak, and the setting would pass its check and be silently overridden.
-		if floor := notify.UnobservableTiers[0]; c.Notify.UnobservableAlert < floor || c.Notify.UnobservableAlert > 1 {
-			fail("notify.unobservable_alert must be a share in [%v, 1], because %v is the first "+
-				"tier a mass tip re-emits at and nothing below it can ever fire, got %v",
-				floor, floor, c.Notify.UnobservableAlert)
-		}
-
-		// A run reaches this control plane from elsewhere, so this cannot be derived
-		// from the listen address. Without it the scanner cannot fetch its targets, and
-		// that would not look like a missing setting.
-		if c.Verification.PublicURL == "" {
-			fail("verification.public_url is required: it is where a run fetches its " +
-				"target list and posts its report")
-		}
-
-	case RoleMigrate:
-		if c.Database.MigrationURL == "" {
-			fail("database.migration_url is required: the migrator runs as the owner")
-		}
-		// Symmetric to the refusal above: this process must not hold the application
-		// credential either.
-		if c.Database.URL != "" {
-			fail("database.url must not be set on the migrator: it runs as the owner")
-		}
-		if c.Database.SystemURL != "" {
-			fail("database.system_url must not be set on the migrator: it runs as the owner")
-		}
-
-	default:
-		fail("unknown role %q", role)
 	}
-
+	if c.ScopesExtractor.Interval < time.Minute {
+		errs = append(errs, errors.New("scopes_extractor.interval must be at least 1m"))
+	}
+	if c.ScopesExtractor.Timeout <= 0 {
+		errs = append(errs, errors.New("scopes_extractor.timeout must be positive"))
+	}
+	if r := c.ScopesExtractor.MaxRemovedRatio; r <= 0 || r > 1 {
+		errs = append(errs, fmt.Errorf("scopes_extractor.max_removed_ratio %v must be in (0, 1]", r))
+	}
+	if f := c.FastRecon; f.URL != "" {
+		if u, err := url.Parse(f.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			errs = append(errs, fmt.Errorf("fastrecon.url %q must be an absolute http or https URL", f.URL))
+		}
+		if f.APIToken == "" {
+			errs = append(errs, errors.New("fastrecon.api_token is required when fastrecon.url is set"))
+		}
+	}
+	if c.FastRecon.Timeout < time.Minute {
+		errs = append(errs, errors.New("fastrecon.timeout must be at least 1m"))
+	}
+	if c.FastRecon.Slots < 1 {
+		errs = append(errs, errors.New("fastrecon.slots must be at least 1"))
+	}
+	if v := c.Verification; v.Batch < 1 || v.Resolve < time.Minute || v.Full < time.Minute || v.Dormant < time.Minute || v.ArchiveAfter < time.Hour {
+		errs = append(errs, errors.New("verification: batch must be positive, cadences at least 1m, archive_after at least 1h"))
+	}
+	if r := c.Render; r.URL != "" {
+		if u, err := url.Parse(r.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			errs = append(errs, fmt.Errorf("render.url %q must be an absolute http or https URL", r.URL))
+		}
+	}
+	if r := c.Render; r.Concurrency < 1 || r.Timeout < time.Second || r.Periodic < time.Hour || r.Retry < time.Minute {
+		errs = append(errs, errors.New("render: concurrency at least 1, timeout at least 1s, periodic at least 1h, retry at least 1m"))
+	}
+	if s := c.Screenshots; s.Dir == "" || s.Quality < 1 || s.Quality > 100 || s.Keep < 1 || s.DiskThreshold <= 0 || s.DiskThreshold > 1 {
+		errs = append(errs, errors.New("screenshots: dir required, quality 1 to 100, keep at least 1, disk_threshold above 0 and at most 1"))
+	}
+	for name, v := range map[string]string{"notify.discord_url": c.Notify.DiscordURL, "notify.webhook_url": c.Notify.WebhookURL} {
+		if v == "" {
+			continue
+		}
+		if u, err := url.Parse(v); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			// The value may hold a token: name the setting, never print it.
+			errs = append(errs, fmt.Errorf("%s must be an absolute http or https URL", name))
+		}
+	}
+	if h := c.Notify.WebhookHeader; h != "" {
+		if name, value, ok := strings.Cut(h, ":"); !ok || strings.TrimSpace(name) == "" || strings.TrimSpace(value) == "" {
+			errs = append(errs, errors.New("notify.webhook_header must be in 'Name: value' form"))
+		}
+	}
+	if u := c.CT.URL; u != "" {
+		if p, err := url.Parse(u); err != nil || (p.Scheme != "ws" && p.Scheme != "wss") || p.Host == "" {
+			errs = append(errs, fmt.Errorf("ct.url %q must be an absolute ws or wss URL", u))
+		}
+	}
+	if c.CT.MaxPerHour < 1 || c.CT.Reload < time.Minute {
+		errs = append(errs, errors.New("ct: max_per_hour at least 1, reload at least 1m"))
+	}
+	errs = append(errs, c.Runner.validate(c.CallbackBase())...)
+	if c.Notify.BrokenAfter < time.Minute {
+		errs = append(errs, errors.New("notify.broken_after must be at least 1m"))
+	}
+	if len(c.Discovery.Ports) == 0 {
+		errs = append(errs, errors.New("discovery.ports cannot be empty"))
+	}
+	for _, p := range c.Discovery.Ports {
+		if p < 1 || p > 65535 {
+			errs = append(errs, fmt.Errorf("discovery.ports holds %d, not a port", p))
+		}
+	}
+	if a := c.Discovery.AutoScan; a != "off" && a != "on_new" {
+		errs = append(errs, fmt.Errorf("discovery.auto_scan %q is not off or on_new", a))
+	}
 	return errors.Join(errs...)
 }
 
-// IsDev reports whether options refused outside development may be used. A
-// method so adding an environment does not mean auditing every comparison.
-func (c *Config) IsDev() bool { return c.Env == EnvDev }
+// Public is the config in effect for the settings page, keyed like the config
+// file. A field tagged secret shows only whether it is set.
+func (c Config) Public() map[string]any {
+	return public(reflect.ValueOf(c)).(map[string]any)
+}
+
+var durationType = reflect.TypeFor[time.Duration]()
+
+func public(v reflect.Value) any {
+	switch {
+	case v.Type() == durationType:
+		return time.Duration(v.Int()).String()
+	case v.Kind() == reflect.Struct:
+		out := map[string]any{}
+		for i := range v.NumField() {
+			f := v.Type().Field(i)
+			name := f.Tag.Get("koanf")
+			if name == "" || !f.IsExported() {
+				continue
+			}
+			if f.Tag.Get("secret") == "true" {
+				out[name] = map[string]bool{"set": !v.Field(i).IsZero()}
+				continue
+			}
+			out[name] = public(v.Field(i))
+		}
+		return out
+	case v.Kind() == reflect.Slice:
+		out := make([]any, v.Len())
+		for i := range v.Len() {
+			out[i] = public(v.Index(i))
+		}
+		return out
+	}
+	return v.Interface()
+}

@@ -1,356 +1,546 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
-	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/JoshuaMart/recon/internal/auth"
-	"github.com/JoshuaMart/recon/internal/ingest"
-	"github.com/JoshuaMart/recon/internal/runs"
+	"github.com/JoshuaMart/recon/internal/inventory"
 	"github.com/JoshuaMart/recon/internal/scope"
-	"github.com/JoshuaMart/recon/internal/store"
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
-// maxEntryBytes bounds a hand-entered list: a person typing, so the bound is
-// small and the refusal readable.
-const maxEntryBytes = 1 << 20
-
-// maxEntries bounds one call. A longer list is an import, which belongs behind a
-// job and not a request someone is waiting on.
-const maxEntries = 5000
-
-// Programs holds the routes a console drives.
-type Programs struct {
-	db        *store.Scoped
-	scheduler *runs.Scheduler
-	ingestor  *ingest.Ingestor
-	// launchTimeout bounds the work that outlives the request, which would otherwise
-	// have no bound.
-	launchTimeout time.Duration
-	now           func() time.Time
-	log           *slog.Logger
+type programView struct {
+	ID                uuid.UUID `json:"id"`
+	Origin            string    `json:"origin"`
+	Platform          *string   `json:"platform"`
+	Slug              *string   `json:"slug"`
+	Name              string    `json:"name"`
+	Bounty            *bool     `json:"bounty"`
+	State             string    `json:"state"`
+	ArchivedBy        *string   `json:"archived_by"`
+	AutoScan          *string   `json:"auto_scan"`
+	EffectiveAutoScan string    `json:"effective_auto_scan"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	OpenRules         *int32    `json:"open_rules,omitempty"`
+	Wildcards         *int32    `json:"wildcards,omitempty"`
 }
 
-// NewPrograms builds them.
-func NewPrograms(db *store.Scoped, scheduler *runs.Scheduler, ingestor *ingest.Ingestor, launchTimeout time.Duration, log *slog.Logger) *Programs {
-	if launchTimeout <= 0 {
-		launchTimeout = time.Minute
+func (s *server) viewProgram(p sqlcgen.Program) programView {
+	eff := s.DefaultAutoScan
+	if p.AutoScan != nil {
+		eff = *p.AutoScan
 	}
-	return &Programs{
-		db: db, scheduler: scheduler, ingestor: ingestor,
-		launchTimeout: launchTimeout, now: time.Now, log: log,
+	return programView{
+		ID: p.ID, Origin: p.Origin, Platform: p.Platform, Slug: p.Slug, Name: p.Name, Bounty: p.Bounty,
+		State: p.State, ArchivedBy: p.ArchivedBy, AutoScan: p.AutoScan, EffectiveAutoScan: eff,
+		CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt,
 	}
 }
 
-// StartRun provisions one run over a programme. It sits beside the cadence: the
-// scheduled pass gives regular coverage, and this re-runs a perimeter after a
-// scope change without waiting for the next tick.
-func (h *Programs) StartRun(w http.ResponseWriter, r *http.Request, principal auth.Principal) {
-	ctx := r.Context()
+type ruleView struct {
+	ID        uuid.UUID  `json:"id"`
+	Kind      string     `json:"kind"`
+	Matcher   string     `json:"matcher"`
+	Pattern   string     `json:"pattern"`
+	Origin    string     `json:"origin"`
+	Note      *string    `json:"note"`
+	ValidFrom time.Time  `json:"valid_from"`
+	ValidTo   *time.Time `json:"valid_to"`
+	InForce   bool       `json:"in_force"`
+}
 
-	programID, ok := pathUUID(w, r, "program")
+func viewRule(r sqlcgen.ScopeRule) ruleView {
+	return ruleView{
+		ID: r.ID, Kind: r.Kind, Matcher: r.Matcher, Pattern: r.Pattern, Origin: r.Origin, Note: r.Note,
+		ValidFrom: r.ValidFrom, ValidTo: r.ValidTo, InForce: r.ValidTo == nil,
+	}
+}
+
+type wildcardView struct {
+	ID          uuid.UUID  `json:"id"`
+	ProgramID   uuid.UUID  `json:"program_id"`
+	ProgramName string     `json:"program_name"`
+	Platform    *string    `json:"platform"`
+	Apex        string     `json:"apex"`
+	Active      bool       `json:"active"`
+	AutoScan    string     `json:"auto_scan"`
+	LastReconAt *time.Time `json:"last_recon_at"`
+	AssetsFound int32      `json:"assets_found"`
+	CreatedAt   time.Time  `json:"created_at"`
+	// CT is what the certificate feed brought under the apex since it is
+	// watched; nil when it is not.
+	CT *ctCoverage `json:"ct"`
+}
+
+type ctCoverage struct {
+	WatchedSince   time.Time  `json:"watched_since"`
+	Names          int64      `json:"names"`
+	Wildcards      int64      `json:"wildcards"`
+	Dropped        int64      `json:"dropped"`
+	LastNameAt     *time.Time `json:"last_name_at"`
+	LastWildcardAt *time.Time `json:"last_wildcard_at"`
+}
+
+func viewWildcard(w sqlcgen.ListWildcardsRow) wildcardView {
+	v := wildcardView{
+		ID: w.ID, ProgramID: w.ProgramID, ProgramName: w.ProgramName, Platform: w.Platform, Apex: w.Apex,
+		Active: w.Active, AutoScan: w.AutoScan, LastReconAt: w.LastReconAt, AssetsFound: w.AssetsFound,
+		CreatedAt: w.CreatedAt,
+	}
+	if w.CtWatchedSince != nil {
+		v.CT = &ctCoverage{
+			WatchedSince: *w.CtWatchedSince, Names: deref64(w.CtNames), Wildcards: deref64(w.CtWildcards),
+			Dropped: deref64(w.CtDropped), LastNameAt: w.CtLastNameAt, LastWildcardAt: w.CtLastWildcardAt,
+		}
+	}
+	return v
+}
+
+func deref64(p *int64) int64 {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+type untrackedView struct {
+	Value  string    `json:"value"`
+	Type   string    `json:"type"`
+	Reason string    `json:"reason"`
+	Since  time.Time `json:"since"`
+}
+
+func (s *server) now() time.Time { return s.Now().UTC().Truncate(time.Microsecond) }
+
+func (s *server) listPrograms(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.Store.Q.ListPrograms(r.Context())
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	out := make([]programView, 0, len(rows))
+	for _, row := range rows {
+		v := s.viewProgram(row.Program)
+		v.OpenRules, v.Wildcards = &row.OpenRules, &row.Wildcards
+		out = append(out, v)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"programs": out})
+}
+
+func validAutoScan(v *string) bool { return v == nil || *v == "off" || *v == "on_new" }
+
+func (s *server) createProgram(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name     string  `json:"name"`
+		Platform *string `json:"platform"`
+		AutoScan *string `json:"auto_scan"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	body.Name = strings.TrimSpace(body.Name)
+	if body.Name == "" {
+		writeError(w, http.StatusBadRequest, "bad_field", "name is required")
+		return
+	}
+	if !validAutoScan(body.AutoScan) {
+		writeError(w, http.StatusBadRequest, "bad_field", "auto_scan is off, on_new or null")
+		return
+	}
+	if body.Platform != nil {
+		p := strings.ToLower(strings.TrimSpace(*body.Platform))
+		body.Platform = &p
+	}
+	p, err := s.Store.Q.CreateManualProgram(r.Context(), sqlcgen.CreateManualProgramParams{
+		Name: body.Name, Platform: body.Platform, AutoScan: body.AutoScan, Now: s.now(),
+	})
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, s.viewProgram(p))
+}
+
+func (s *server) loadProgram(w http.ResponseWriter, r *http.Request, q *sqlcgen.Queries) (sqlcgen.Program, bool) {
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return sqlcgen.Program{}, false
+	}
+	p, err := q.GetProgram(r.Context(), id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "not_found", "id not found")
+		return sqlcgen.Program{}, false
+	}
+	if err != nil {
+		s.internal(w, r, err)
+		return sqlcgen.Program{}, false
+	}
+	return p, true
+}
+
+func (s *server) getProgram(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.loadProgram(w, r, s.Store.Q)
 	if !ok {
 		return
 	}
-
-	var body struct {
-		Kind  string `json:"kind"`
-		Scope string `json:"scope"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
-		fail(w, http.StatusBadRequest, "malformed", "the body is not a run request")
-		return
-	}
-	if body.Kind == "" {
-		body.Kind = runs.KindVerification
-	}
-	if body.Scope == "" {
-		body.Scope = "full"
-	}
-
-	tx, err := h.db.Begin(ctx, principal.OrgID)
+	ctx := r.Context()
+	rules, err := s.Store.Q.ListRules(ctx, p.ID)
 	if err != nil {
-		h.unavailable(ctx, w, "begin failed", err)
+		s.internal(w, r, err)
 		return
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	q := sqlcgen.New(tx)
-
-	if !h.owns(ctx, w, q, principal, programID) {
+	wildcards, err := s.Store.Q.ListWildcards(ctx, sqlcgen.ListWildcardsParams{
+		DefaultAutoScan: s.DefaultAutoScan, ProgramID: &p.ID, IncludeInactive: true,
+	})
+	if err != nil {
+		s.internal(w, r, err)
 		return
 	}
+	untracked, err := s.Store.Q.ListUntracked(ctx, p.ID)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	res := struct {
+		programView
+		Rules     []ruleView      `json:"rules"`
+		Wildcards []wildcardView  `json:"wildcards"`
+		Untracked []untrackedView `json:"untracked"`
+	}{programView: s.viewProgram(p), Rules: []ruleView{}, Wildcards: []wildcardView{}, Untracked: []untrackedView{}}
+	for _, rl := range rules {
+		res.Rules = append(res.Rules, viewRule(rl))
+	}
+	for _, wc := range wildcards {
+		res.Wildcards = append(res.Wildcards, viewWildcard(wc))
+	}
+	for _, u := range untracked {
+		res.Untracked = append(res.Untracked, untrackedView{u.Value, u.Type, u.Reason, u.FirstSeenAt})
+	}
+	writeJSON(w, http.StatusOK, res)
+}
 
-	// A list, and a verification is a list of one. The scanner takes one root domain
-	// per execution, so three apexes are three runs, and a response carrying one
-	// would have to pick which to report.
-	var definitions []*runs.Definition
-	switch body.Kind {
-	case runs.KindDiscovery:
-		definitions, err = h.scheduler.Discovery(ctx, q, principal.OrgID, programID)
-	case runs.KindVerification:
-		var one *runs.Definition
-		one, err = h.scheduler.Verification(ctx, q, principal.OrgID, programID, body.Scope)
-		if one != nil {
-			definitions = []*runs.Definition{one}
+func (s *server) patchProgram(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name     *string         `json:"name"`
+		State    *string         `json:"state"`
+		AutoScan json.RawMessage `json:"auto_scan"` // absent: unchanged, null: inherit
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	p, ok := s.loadProgram(w, r, s.Store.Q)
+	if !ok {
+		return
+	}
+	params := sqlcgen.UpdateProgramParams{
+		ID: p.ID, Name: p.Name, State: p.State, ArchivedBy: p.ArchivedBy, AutoScan: p.AutoScan, Now: s.now(),
+	}
+	if body.Name != nil {
+		if p.Origin != "manual" {
+			writeError(w, http.StatusConflict, "owned_by_sync", "a synced program takes its name from ScopesExtractor")
+			return
 		}
-	default:
-		fail(w, http.StatusBadRequest, "unknown_kind", fmt.Sprintf("run kind %q is neither discovery nor verification", body.Kind))
-		return
+		if params.Name = strings.TrimSpace(*body.Name); params.Name == "" {
+			writeError(w, http.StatusBadRequest, "bad_field", "name cannot be empty")
+			return
+		}
 	}
-
-	switch {
-	case errors.Is(err, runs.ErrNothingDue):
-		// Not a failure: nothing due is the normal state of a healthy inventory, and a
-		// 200 with a count lets the console say so.
-		writeJSON(w, http.StatusOK, map[string]any{"started": false, "reason": "nothing is due"})
-		return
-	case errors.Is(err, runs.ErrNoPerimeter):
-		fail(w, http.StatusConflict, "no_perimeter",
-			"the programme declares no apex, so there is nothing to enumerate")
-		return
-	case errors.Is(err, runs.ErrRunInFlight):
-		// The message names the run, state and age because the two situations call for
-		// opposite actions: a run something opened is one to wait for, one nobody
-		// claimed is a failed provisioning.
-		fail(w, http.StatusConflict, "run_in_flight", err.Error())
-		return
-	case err != nil:
-		h.log.WarnContext(ctx, "run refused", "program", programID, "error", err)
-		fail(w, http.StatusConflict, "refused", err.Error())
-		return
+	if body.State != nil && *body.State != p.State {
+		switch *body.State {
+		case "active", "paused":
+			params.State, params.ArchivedBy = *body.State, nil
+		case "archived":
+			user := "user"
+			params.State, params.ArchivedBy = "archived", &user
+		default:
+			writeError(w, http.StatusBadRequest, "bad_field", "state is active, paused or archived")
+			return
+		}
 	}
-
-	if err := tx.Commit(ctx); err != nil {
-		h.unavailable(ctx, w, "commit failed", err)
-		return
+	if body.AutoScan != nil {
+		var v *string
+		if err := json.Unmarshal(body.AutoScan, &v); err != nil || !validAutoScan(v) {
+			writeError(w, http.StatusBadRequest, "bad_field", "auto_scan is off, on_new or null")
+			return
+		}
+		params.AutoScan = v
 	}
-
-	// After the commit: starting inside the transaction could leave an execution running with a
-	// valid credential against a rolled-back row. And detached from the request: a console
-	// hanging up mid-call would cancel a start the platform already accepted, or the write
-	// recording its name, leaving an execution with no findable logs.
-	launchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), h.launchTimeout)
-	defer cancel()
-	// The write naming the execution opens its own scoped transaction after the
-	// platform answers, not around the call: holding one open while another control
-	// plane replies holds a pool connection just as long.
-	record := func(ctx context.Context, runID uuid.UUID, external string) error {
-		tx, err := h.db.Begin(ctx, principal.OrgID)
+	s.inTx(w, r, func(q *sqlcgen.Queries) (int, any, error) {
+		updated, err := q.UpdateProgram(r.Context(), params)
 		if err != nil {
-			return err
+			return 0, nil, err
 		}
-		defer func() { _ = tx.Rollback(ctx) }()
-		if err := sqlcgen.New(tx).RecordRunStart(ctx, sqlcgen.RecordRunStartParams{
-			RunID: uuidTo(runID), ExternalID: external,
-		}); err != nil {
-			return err
+		// Due dates follow the state: none on a paused or archived program.
+		if err := inventory.SyncSchedule(r.Context(), q, updated.ID, params.Now); err != nil {
+			return 0, nil, err
 		}
-		return tx.Commit(ctx)
-	}
-	// One entry per run, started or not. A platform refusing the third of three
-	// leaves a row the sweeper owns and two enumerations walking, which one boolean
-	// would describe neither of.
-	started := 0
-	reported := make([]map[string]any, 0, len(definitions))
-	for _, definition := range definitions {
-		entry := map[string]any{
-			"run_id":       definition.RunID,
-			"kind":         definition.Kind,
-			"scope":        definition.Scope,
-			"deadline":     definition.Deadline,
-			"target_count": definition.TargetCount,
-			// What the run was asked to do. In development nothing starts it, so the console
-			// shows this and a person runs the image.
-			"args": definition.Args,
-			"env":  definition.Env,
-		}
-		// Only a discovery has one; "" would read as a domain nobody named.
-		if definition.Apex != "" {
-			entry["apex"] = definition.Apex
-		}
-
-		if err := h.scheduler.Launch(launchCtx, record, definition); err != nil {
-			// The run exists and the sweeper owns it. Reported, not turned into a failure the
-			// caller might retry into a second run.
-			h.log.ErrorContext(ctx, "run not started",
-				"run", definition.RunID, "apex", definition.Apex, "error", err)
-			entry["started"] = false
-			entry["reason"] = "the platform did not start it, and the deadline sweeper owns the run"
-			reported = append(reported, entry)
-			continue
-		}
-		entry["started"] = true
-		entry["external_id"] = definition.ExternalID
-		reported = append(reported, entry)
-		started++
-	}
-
-	writeJSON(w, http.StatusAccepted, map[string]any{
-		// True when anything went out; the list says what did and did not.
-		"started": started > 0,
-		"runs":    reported,
+		return http.StatusOK, s.viewProgram(updated), nil
 	})
 }
 
-// CancelRun closes an open run and asks the platform to stop its execution, for
-// what the sweeper does not cover: a run started by mistake, or an execution the
-// platform calls running while doing nothing useful. The run closes failed, so a
-// discovery falls under the ordinary retry delay.
-func (h *Programs) CancelRun(w http.ResponseWriter, r *http.Request, principal auth.Principal) {
-	ctx := r.Context()
-
-	runID, ok := pathUUID(w, r, "run")
-	if !ok {
-		return
-	}
-
-	tx, err := h.db.Begin(ctx, principal.OrgID)
-	if err != nil {
-		h.unavailable(ctx, w, "begin failed", err)
-		return
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	external, err := h.scheduler.Cancel(ctx, sqlcgen.New(tx), runID)
-	switch {
-	case errors.Is(err, runs.ErrRunNotFound):
-		fail(w, http.StatusNotFound, "not_found", "no such run")
-		return
-	case errors.Is(err, runs.ErrReportInProgress):
-		fail(w, http.StatusConflict, "report_in_progress",
-			"the run's report is being written, and the run will be completed in a moment")
-		return
-	case errors.Is(err, runs.ErrRunClosed):
-		fail(w, http.StatusConflict, "run_closed", err.Error())
-		return
-	case err != nil:
-		h.unavailable(ctx, w, "cancel failed", err)
-		return
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		h.unavailable(ctx, w, "commit failed", err)
-		return
-	}
-
-	// After the commit and detached, as in StartRun. A stop the platform refuses does
-	// not reopen the run: its token is refused from now on.
-	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), h.launchTimeout)
-	defer cancel()
-	stopped, err := h.scheduler.Stop(stopCtx, external)
-	if err != nil {
-		h.log.ErrorContext(ctx, "run cancelled, the platform did not stop it",
-			"run", runID, "external", external, "error", err)
-	}
-	h.log.InfoContext(ctx, "run cancelled", "run", runID, "external", external, "stopped", stopped)
-
-	writeJSON(w, http.StatusOK, map[string]any{"run_id": runID, "state": "failed", "stopped": stopped})
+type ruleInput struct {
+	Kind    *string `json:"kind"`
+	Matcher *string `json:"matcher"`
+	Pattern *string `json:"pattern"`
+	Note    *string `json:"note"`
 }
 
-// EnterAssets records assets somebody typed in.
-func (h *Programs) EnterAssets(w http.ResponseWriter, r *http.Request, principal auth.Principal) {
-	ctx := r.Context()
+func (s *server) openRule(w http.ResponseWriter, r *http.Request) {
+	var body ruleInput
+	if !readJSON(w, r, &body) {
+		return
+	}
+	rule, err := scope.ParseRule(deref(body.Kind), deref(body.Matcher), deref(body.Pattern))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_rule", err.Error())
+		return
+	}
+	s.inTx(w, r, func(q *sqlcgen.Queries) (int, any, error) {
+		p, ok := s.loadProgram(w, r, q)
+		if !ok {
+			return 0, nil, errHandled
+		}
+		now := s.now()
+		row, err := scope.OpenRule(r.Context(), q, p.ID, rule, "local", body.Note, now)
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusConflict, "rule_already_open", rule.String()+" is already in force")
+			return 0, nil, errHandled
+		}
+		if err != nil {
+			return 0, nil, err
+		}
+		ref, err := inventory.Refresh(r.Context(), q, p, s.DefaultAutoScan, now)
+		if err != nil {
+			return 0, nil, err
+		}
+		return http.StatusCreated, ruleWritten{viewRule(row), ref}, nil
+	})
+}
 
-	programID, ok := pathUUID(w, r, "program")
+func (s *server) patchRule(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ruleInput
+		Close bool `json:"close"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	ruleID, ok := pathID(w, r, "rule")
 	if !ok {
 		return
 	}
+	s.inTx(w, r, func(q *sqlcgen.Queries) (int, any, error) {
+		p, ok := s.loadProgram(w, r, q)
+		if !ok {
+			return 0, nil, errHandled
+		}
+		old, err := q.GetRule(r.Context(), sqlcgen.GetRuleParams{ProgramID: p.ID, ID: ruleID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "not_found", "rule not found")
+			return 0, nil, errHandled
+		}
+		if err != nil {
+			return 0, nil, err
+		}
+		if old.Origin == "sync" {
+			writeError(w, http.StatusConflict, "owned_by_sync", "the sync would put it back: add a local exclusion instead")
+			return 0, nil, errHandled
+		}
+		if old.ValidTo != nil {
+			writeError(w, http.StatusConflict, "rule_closed", "a closed rule is history")
+			return 0, nil, errHandled
+		}
+		now := s.now()
+		if body.Close {
+			if body.Kind != nil || body.Matcher != nil || body.Pattern != nil || body.Note != nil {
+				writeError(w, http.StatusBadRequest, "bad_body", "close takes no other field")
+				return 0, nil, errHandled
+			}
+			if _, err := q.CloseRule(r.Context(), sqlcgen.CloseRuleParams{ID: old.ID, Now: now}); err != nil {
+				return 0, nil, err
+			}
+			old.ValidTo = &now
+			ref, err := inventory.Refresh(r.Context(), q, p, s.DefaultAutoScan, now)
+			if err != nil {
+				return 0, nil, err
+			}
+			return http.StatusOK, ruleWritten{viewRule(old), ref}, nil
+		}
+		next, err := scope.ParseRule(or(body.Kind, old.Kind), or(body.Matcher, old.Matcher), or(body.Pattern, old.Pattern))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_rule", err.Error())
+			return 0, nil, errHandled
+		}
+		note := old.Note
+		if body.Note != nil {
+			note = body.Note
+		}
+		if next == (scope.Rule{Kind: old.Kind, Matcher: old.Matcher, Pattern: old.Pattern}) && deref(note) == deref(old.Note) {
+			writeError(w, http.StatusBadRequest, "no_change", "the rule would be the same")
+			return 0, nil, errHandled
+		}
+		// An edit is a close and an open, so the history holds both versions.
+		if _, err := q.CloseRule(r.Context(), sqlcgen.CloseRuleParams{ID: old.ID, Now: now}); err != nil {
+			return 0, nil, err
+		}
+		row, err := scope.OpenRule(r.Context(), q, p.ID, next, "local", note, now)
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusConflict, "rule_already_open", next.String()+" is already in force")
+			return 0, nil, errHandled
+		}
+		if err != nil {
+			return 0, nil, err
+		}
+		ref, err := inventory.Refresh(r.Context(), q, p, s.DefaultAutoScan, now)
+		if err != nil {
+			return 0, nil, err
+		}
+		return http.StatusOK, ruleWritten{viewRule(row), ref}, nil
+	})
+}
 
+// ruleWritten is a rule write and what it moved in the inventory, so the
+// answer says what happened rather than only "ok".
+type ruleWritten struct {
+	ruleView
+	Inventory inventory.Refreshed `json:"inventory"`
+}
+
+// maxEntries bounds one manual entry request.
+const maxEntries = 1000
+
+func (s *server) declareAssets(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Entries []string `json:"entries"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxEntryBytes)).Decode(&body); err != nil {
-		fail(w, http.StatusBadRequest, "malformed", "the body is not a list of entries")
+	if !readJSON(w, r, &body) {
 		return
 	}
-	if len(body.Entries) == 0 {
-		fail(w, http.StatusBadRequest, "empty", "no entry was given")
+	if len(body.Entries) == 0 || len(body.Entries) > maxEntries {
+		writeError(w, http.StatusBadRequest, "bad_field", "entries holds 1 to 1000 hosts or URLs")
 		return
 	}
-	if len(body.Entries) > maxEntries {
-		fail(w, http.StatusRequestEntityTooLarge, "too_many",
-			fmt.Sprintf("%d entries exceeds the bound of %d", len(body.Entries), maxEntries))
-		return
-	}
-
-	tx, err := h.db.Begin(ctx, principal.OrgID)
-	if err != nil {
-		h.unavailable(ctx, w, "begin failed", err)
-		return
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	q := sqlcgen.New(tx)
-
-	if !h.owns(ctx, w, q, principal, programID) {
-		return
-	}
-
-	set, err := compileScope(ctx, q, programID, h.now())
-	if err != nil {
-		h.unavailable(ctx, w, "read perimeter failed", err)
-		return
-	}
-
-	entered, err := h.ingestor.Enter(ctx, q, ingest.Run{
-		ID:        uuid.New(),
-		OrgID:     principal.OrgID,
-		ProgramID: programID,
-		Kind:      "manual",
-	}, set, body.Entries)
-	if err != nil {
-		h.unavailable(ctx, w, "manual entry failed", err)
-		return
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		h.unavailable(ctx, w, "commit failed", err)
-		return
-	}
-
-	h.log.InfoContext(ctx, "assets entered by hand",
-		"program", programID, "accepted", len(entered.Accepted), "refused", len(entered.Refused))
-	writeJSON(w, http.StatusOK, entered)
-}
-
-// owns refuses a programme that is not this caller's, as a 404 and not a 403:
-// learning that an identifier exists in another organization is a one-bit
-// cross-tenant leak, and one bit is enough to enumerate.
-func (h *Programs) owns(
-	ctx context.Context, w http.ResponseWriter, q *sqlcgen.Queries,
-	principal auth.Principal, programID uuid.UUID,
-) bool {
-	row, err := q.ProgramForScheduling(ctx, sqlcgen.ProgramForSchedulingParams{
-		ProgramID: uuidTo(programID),
+	s.inTx(w, r, func(q *sqlcgen.Queries) (int, any, error) {
+		p, ok := s.loadProgram(w, r, q)
+		if !ok {
+			return 0, nil, errHandled
+		}
+		c, _, err := inventory.Rules(r.Context(), q, p.ID)
+		if err != nil {
+			return 0, nil, err
+		}
+		now := s.now()
+		wr := &inventory.Writer{Q: q, ProgramID: p.ID, Classifier: c, Now: now}
+		// Per entry, so three names that went nowhere are visible as such.
+		out := make([]inventory.Declared, 0, len(body.Entries))
+		for _, e := range body.Entries {
+			d, err := wr.Declare(r.Context(), e, "manual")
+			if err != nil {
+				return 0, nil, err
+			}
+			out = append(out, d)
+		}
+		if err := inventory.SyncSchedule(r.Context(), q, p.ID, now); err != nil {
+			return 0, nil, err
+		}
+		// Somebody typed these in to see what they expose: a full now.
+		for _, d := range out {
+			if d.HostKey == "" {
+				continue
+			}
+			if err := q.ScheduleFullNow(r.Context(), sqlcgen.ScheduleFullNowParams{ProgramID: p.ID, Key: d.HostKey, Now: now}); err != nil {
+				return 0, nil, err
+			}
+		}
+		return http.StatusOK, map[string]any{"entries": out}, nil
 	})
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && uuid.UUID(row.OrgID.Bytes) != principal.OrgID) {
-		fail(w, http.StatusNotFound, "not_found", "no such programme")
-		return false
+}
+
+func (s *server) listWildcards(w http.ResponseWriter, r *http.Request) {
+	params := sqlcgen.ListWildcardsParams{
+		DefaultAutoScan: s.DefaultAutoScan, IncludeInactive: r.URL.Query().Get("inactive") == "true",
+	}
+	if v := r.URL.Query().Get("program"); v != "" {
+		id, err := uuid.Parse(v)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_field", "program is not an id")
+			return
+		}
+		params.ProgramID = &id
+	}
+	rows, err := s.Store.Q.ListWildcards(r.Context(), params)
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	out := make([]wildcardView, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, viewWildcard(row))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"wildcards": out})
+}
+
+func (s *server) runSync(w http.ResponseWriter, r *http.Request) {
+	if s.Sync == nil {
+		writeError(w, http.StatusServiceUnavailable, "sync_disabled", "no ScopesExtractor is configured")
+		return
+	}
+	sum, err := s.Sync.Run(r.Context())
+	switch {
+	case errors.Is(err, scope.ErrRunning):
+		writeError(w, http.StatusConflict, "sync_running", err.Error())
+	case errors.Is(err, scope.ErrSuspicious):
+		writeError(w, http.StatusConflict, "sync_refused", err.Error())
+	case err != nil:
+		writeError(w, http.StatusBadGateway, "sync_failed", err.Error())
+	default:
+		writeJSON(w, http.StatusOK, sum)
+	}
+}
+
+// errHandled tells inTx the handler already answered.
+var errHandled = errors.New("handled")
+
+// inTx runs fn in a transaction and answers with what it returns. The
+// transaction commits only when fn returns no error.
+func (s *server) inTx(w http.ResponseWriter, r *http.Request, fn func(*sqlcgen.Queries) (int, any, error)) {
+	tx, err := s.Store.Pool.Begin(r.Context())
+	if err != nil {
+		s.internal(w, r, err)
+		return
+	}
+	defer func() { _ = tx.Rollback(r.Context()) }()
+	code, v, err := fn(s.Store.Q.WithTx(tx))
+	if errors.Is(err, errHandled) {
+		return
+	}
+	if err == nil {
+		err = tx.Commit(r.Context())
 	}
 	if err != nil {
-		h.unavailable(ctx, w, "read programme failed", err)
-		return false
+		s.internal(w, r, err)
+		return
 	}
-	return true
+	writeJSON(w, code, v)
 }
 
-func (h *Programs) unavailable(ctx context.Context, w http.ResponseWriter, message string, err error) {
-	h.log.ErrorContext(ctx, message, "error", err)
-	fail(w, http.StatusInternalServerError, "unavailable", "the request could not be served")
+func deref(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
-// compileScope reads the rules in force at an instant. It lives in ingest
-// because the CT matcher needs it too, and a second copy would be a second answer
-// to what a programme may look at.
-func compileScope(ctx context.Context, q *sqlcgen.Queries, programID uuid.UUID, at time.Time) (*scope.Set, error) {
-	return ingest.CompileScope(ctx, q, programID, at)
+func or(p *string, def string) string {
+	if p == nil {
+		return def
+	}
+	return *p
 }

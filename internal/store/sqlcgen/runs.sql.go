@@ -7,41 +7,237 @@ package sqlcgen
 
 import (
 	"context"
+	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/google/uuid"
 )
 
-const addRunTargets = `-- name: AddRunTargets :execrows
-INSERT INTO run_target (run_id, asset_id, org_id, key)
-SELECT $1::uuid, ($2::uuid[])[i], $3::uuid, ($4::text[])[i]
-  FROM generate_subscripts($2::uuid[], 1) AS i
+const activeRuns = `-- name: ActiveRuns :many
+SELECT r.id, r.kind, r.stage, r.state, r.runner, r.trigger, r.queued_at, r.started_at, r.deadline,
+  COALESCE(cardinality(r.targets), 0)::int AS targets, w.apex, p.name AS program
+FROM run r JOIN program p ON p.id = r.program_id LEFT JOIN wildcard w ON w.id = r.wildcard_id
+WHERE r.state IN ('running', 'queued')
+ORDER BY r.state DESC, r.started_at, r.queued_at, r.id
+LIMIT 50
 `
 
-type AddRunTargetsParams struct {
-	RunID    pgtype.UUID
-	AssetIds []pgtype.UUID
-	OrgID    pgtype.UUID
-	Keys     []string
+type ActiveRunsRow struct {
+	ID        uuid.UUID  `json:"id"`
+	Kind      string     `json:"kind"`
+	Stage     string     `json:"stage"`
+	State     string     `json:"state"`
+	Runner    string     `json:"runner"`
+	Trigger   string     `json:"trigger"`
+	QueuedAt  time.Time  `json:"queued_at"`
+	StartedAt *time.Time `json:"started_at"`
+	Deadline  *time.Time `json:"deadline"`
+	Targets   int32      `json:"targets"`
+	Apex      *string    `json:"apex"`
+	Program   string     `json:"program"`
 }
 
-// AddRunTargets freezes the list in one round trip, not one per target: a run costing five
-// hundred round trips to define is one nobody lets the scheduler start often.
-//
-// Parallel arrays, not COPY, by necessity: PostgreSQL refuses COPY FROM on a table with a
-// policy ("COPY FROM not supported with row-level security"). Same single round trip, with
-// the organization a scalar of the statement, so a batch mixing two tenants is inexpressible.
-//
-// generate_subscripts, not a multi-argument unnest, which sqlc's analyser cannot type. The
-// arrays are the same length by construction (built in one loop, never assembled); a short
-// one would read as nulls rather than fail.
-//
-// @tenant: scoped
-func (q *Queries) AddRunTargets(ctx context.Context, arg AddRunTargetsParams) (int64, error) {
-	result, err := q.db.Exec(ctx, addRunTargets,
-		arg.RunID,
-		arg.AssetIds,
-		arg.OrgID,
-		arg.Keys,
+// What the activity panel lists: every run in flight, and the next queued.
+func (q *Queries) ActiveRuns(ctx context.Context) ([]ActiveRunsRow, error) {
+	rows, err := q.db.Query(ctx, activeRuns)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ActiveRunsRow
+	for rows.Next() {
+		var i ActiveRunsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.Stage,
+			&i.State,
+			&i.Runner,
+			&i.Trigger,
+			&i.QueuedAt,
+			&i.StartedAt,
+			&i.Deadline,
+			&i.Targets,
+			&i.Apex,
+			&i.Program,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const claimQueuedRun = `-- name: ClaimQueuedRun :one
+UPDATE run SET state = 'running', started_at = $1::timestamptz, deadline = $2::timestamptz,
+  runner = $3
+WHERE id = (
+  SELECT r.id FROM run r JOIN program p ON p.id = r.program_id
+  WHERE r.state = 'queued' AND p.state = 'active' AND r.kind = ANY($4::text[])
+  -- A name from a certificate is worth minutes: it goes ahead of the queue.
+  ORDER BY (r.kind = 'candidate') DESC, r.queued_at, r.id
+  LIMIT 1 FOR UPDATE OF r SKIP LOCKED
+)
+RETURNING id, program_id, kind, stage, wildcard_id, state, trigger, queued_at, started_at, finished_at, deadline, error, report_meta, ingest, targets, runner, external_id
+`
+
+type ClaimQueuedRunParams struct {
+	Now      time.Time `json:"now"`
+	Deadline time.Time `json:"deadline"`
+	Runner   string    `json:"runner"`
+	Kinds    []string  `json:"kinds"`
+}
+
+// A runner claims the next run of the kinds it takes.
+func (q *Queries) ClaimQueuedRun(ctx context.Context, arg ClaimQueuedRunParams) (Run, error) {
+	row := q.db.QueryRow(ctx, claimQueuedRun,
+		arg.Now,
+		arg.Deadline,
+		arg.Runner,
+		arg.Kinds,
+	)
+	var i Run
+	err := row.Scan(
+		&i.ID,
+		&i.ProgramID,
+		&i.Kind,
+		&i.Stage,
+		&i.WildcardID,
+		&i.State,
+		&i.Trigger,
+		&i.QueuedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.Deadline,
+		&i.Error,
+		&i.ReportMeta,
+		&i.Ingest,
+		&i.Targets,
+		&i.Runner,
+		&i.ExternalID,
+	)
+	return i, err
+}
+
+const countRunning = `-- name: CountRunning :one
+SELECT count(*)::int FROM run WHERE state = 'running' AND runner = $1
+`
+
+func (q *Queries) CountRunning(ctx context.Context, runner string) (int32, error) {
+	row := q.db.QueryRow(ctx, countRunning, runner)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const enqueueRun = `-- name: EnqueueRun :one
+INSERT INTO run (program_id, kind, stage, wildcard_id, trigger, queued_at)
+VALUES ($1, $2, $3, $5, $4, $6::timestamptz)
+ON CONFLICT (wildcard_id) WHERE state IN ('queued', 'running') DO NOTHING
+RETURNING id, program_id, kind, stage, wildcard_id, state, trigger, queued_at, started_at, finished_at, deadline, error, report_meta, ingest, targets, runner, external_id
+`
+
+type EnqueueRunParams struct {
+	ProgramID  uuid.UUID  `json:"program_id"`
+	Kind       string     `json:"kind"`
+	Stage      string     `json:"stage"`
+	Trigger    string     `json:"trigger"`
+	WildcardID *uuid.UUID `json:"wildcard_id"`
+	Now        time.Time  `json:"now"`
+}
+
+func (q *Queries) EnqueueRun(ctx context.Context, arg EnqueueRunParams) (Run, error) {
+	row := q.db.QueryRow(ctx, enqueueRun,
+		arg.ProgramID,
+		arg.Kind,
+		arg.Stage,
+		arg.Trigger,
+		arg.WildcardID,
+		arg.Now,
+	)
+	var i Run
+	err := row.Scan(
+		&i.ID,
+		&i.ProgramID,
+		&i.Kind,
+		&i.Stage,
+		&i.WildcardID,
+		&i.State,
+		&i.Trigger,
+		&i.QueuedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.Deadline,
+		&i.Error,
+		&i.ReportMeta,
+		&i.Ingest,
+		&i.Targets,
+		&i.Runner,
+		&i.ExternalID,
+	)
+	return i, err
+}
+
+const failInterruptedRuns = `-- name: FailInterruptedRuns :many
+UPDATE run SET state = 'failed', finished_at = $1::timestamptz, error = 'interrupted: the process stopped during the run'
+WHERE state = 'running' AND runner = 'serve'
+RETURNING id, kind, wildcard_id
+`
+
+type FailInterruptedRunsRow struct {
+	ID         uuid.UUID  `json:"id"`
+	Kind       string     `json:"kind"`
+	WildcardID *uuid.UUID `json:"wildcard_id"`
+}
+
+// Only serve's: a synchronous call does not survive its caller, a job does
+// and is still waited for.
+func (q *Queries) FailInterruptedRuns(ctx context.Context, now time.Time) ([]FailInterruptedRunsRow, error) {
+	rows, err := q.db.Query(ctx, failInterruptedRuns, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []FailInterruptedRunsRow
+	for rows.Next() {
+		var i FailInterruptedRunsRow
+		if err := rows.Scan(&i.ID, &i.Kind, &i.WildcardID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const finishRun = `-- name: FinishRun :execrows
+UPDATE run
+SET state = $1, finished_at = $2::timestamptz, error = $3,
+    report_meta = $4::jsonb, ingest = $5::jsonb
+WHERE id = $6 AND state = 'running'
+`
+
+type FinishRunParams struct {
+	State      string    `json:"state"`
+	Now        time.Time `json:"now"`
+	Error      *string   `json:"error"`
+	ReportMeta []byte    `json:"report_meta"`
+	Ingest     []byte    `json:"ingest"`
+	ID         uuid.UUID `json:"id"`
+}
+
+func (q *Queries) FinishRun(ctx context.Context, arg FinishRunParams) (int64, error) {
+	result, err := q.db.Exec(ctx, finishRun,
+		arg.State,
+		arg.Now,
+		arg.Error,
+		arg.ReportMeta,
+		arg.Ingest,
+		arg.ID,
 	)
 	if err != nil {
 		return 0, err
@@ -49,363 +245,305 @@ func (q *Queries) AddRunTargets(ctx context.Context, arg AddRunTargetsParams) (i
 	return result.RowsAffected(), nil
 }
 
-const apexesForProgram = `-- name: ApexesForProgram :many
-SELECT DISTINCT pattern
-  FROM scope_rule
- WHERE program_id = $1::uuid
-   AND kind = 'include'
-   AND matcher = 'apex'
-   AND valid_from <= $2::timestamptz
-   AND (valid_to IS NULL OR valid_to > $2::timestamptz)
- ORDER BY pattern
+const getRun = `-- name: GetRun :one
+SELECT id, program_id, kind, stage, wildcard_id, state, trigger, queued_at, started_at, finished_at, deadline, error, report_meta, ingest, targets, runner, external_id FROM run WHERE id = $1
 `
 
-type ApexesForProgramParams struct {
-	ProgramID pgtype.UUID
-	At        pgtype.Timestamptz
-}
-
-// ApexesForProgram is a discovery run's perimeter.
-//
-// @tenant: keyed
-func (q *Queries) ApexesForProgram(ctx context.Context, arg ApexesForProgramParams) ([]string, error) {
-	rows, err := q.db.Query(ctx, apexesForProgram, arg.ProgramID, arg.At)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []string{}
-	for rows.Next() {
-		var pattern string
-		if err := rows.Scan(&pattern); err != nil {
-			return nil, err
-		}
-		items = append(items, pattern)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const exclusionsForProgram = `-- name: ExclusionsForProgram :many
-SELECT DISTINCT matcher, pattern
-  FROM scope_rule
- WHERE program_id = $1::uuid
-   AND kind = 'exclude'
-   AND valid_from <= $2::timestamptz
-   AND (valid_to IS NULL OR valid_to > $2::timestamptz)
- ORDER BY matcher, pattern
-`
-
-type ExclusionsForProgramParams struct {
-	ProgramID pgtype.UUID
-	At        pgtype.Timestamptz
-}
-
-type ExclusionsForProgramRow struct {
-	Matcher string
-	Pattern string
-}
-
-// ExclusionsForProgram is the second safety net in front of the network. The patterns
-// travel with the perimeter, not trusted to the scope re-evaluation at ingestion: a rule
-// may change between a run being defined and starting, and the re-evaluation happens
-// after the packet. One probe too many is small, but not a property to accept knowingly
-// when the pattern fits in the invocation.
-//
-// @tenant: keyed
-func (q *Queries) ExclusionsForProgram(ctx context.Context, arg ExclusionsForProgramParams) ([]ExclusionsForProgramRow, error) {
-	rows, err := q.db.Query(ctx, exclusionsForProgram, arg.ProgramID, arg.At)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ExclusionsForProgramRow{}
-	for rows.Next() {
-		var i ExclusionsForProgramRow
-		if err := rows.Scan(&i.Matcher, &i.Pattern); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const expireRuns = `-- name: ExpireRuns :many
-UPDATE run SET
-    state       = 'expired',
-    finished_at = $1::timestamptz,
-    error       = COALESCE(error, 'the deadline passed and no report was delivered')
- WHERE id IN (
-        SELECT r.id FROM run r
-         WHERE r.state IN ('pending', 'running')
-           AND r.deadline <= $1::timestamptz
-           FOR UPDATE SKIP LOCKED)
-RETURNING id, org_id, program_id, kind, scope, started_at, target_count
-`
-
-type ExpireRunsParams struct {
-	At pgtype.Timestamptz
-}
-
-type ExpireRunsRow struct {
-	ID          pgtype.UUID
-	OrgID       pgtype.UUID
-	ProgramID   pgtype.UUID
-	Kind        string
-	Scope       string
-	StartedAt   pgtype.Timestamptz
-	TargetCount *int32
-}
-
-// ExpireRuns is the deadline sweeper. It repairs nothing: due dates only move on
-// ingestion, so an abandoned run leaves the inventory as it was, and expiring it frees
-// its targets and makes the failure visible.
-//
-// @tenant: cross-org
-// @why: the deadline sweeper serves every tenant in one tick. A run nothing
-//
-//	expires holds its targets forever, and the assets it froze are invisible to
-//	every later pass.
-//
-// A run whose report is being written is skipped, not waited for. Ingestion holds the
-// row while it writes, possibly minutes: waiting would stop expiring everyone else's runs
-// and then close a run that had just delivered. The next tick finds it completed.
-func (q *Queries) ExpireRuns(ctx context.Context, arg ExpireRunsParams) ([]ExpireRunsRow, error) {
-	rows, err := q.db.Query(ctx, expireRuns, arg.At)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ExpireRunsRow{}
-	for rows.Next() {
-		var i ExpireRunsRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.OrgID,
-			&i.ProgramID,
-			&i.Kind,
-			&i.Scope,
-			&i.StartedAt,
-			&i.TargetCount,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const failRun = `-- name: FailRun :one
-UPDATE run SET
-    state       = 'failed',
-    finished_at = $1::timestamptz,
-    error       = $2::text
- WHERE id = (
-        SELECT r.id FROM run r
-         WHERE r.id = $3::uuid
-           AND r.state IN ('pending', 'running')
-           FOR UPDATE SKIP LOCKED)
-RETURNING id, program_id, kind, external_id
-`
-
-type FailRunParams struct {
-	At    pgtype.Timestamptz
-	Error string
-	RunID pgtype.UUID
-}
-
-type FailRunRow struct {
-	ID         pgtype.UUID
-	ProgramID  pgtype.UUID
-	Kind       string
-	ExternalID *string
-}
-
-// FailRun closes an open run that delivered nothing, for the sweeper when the platform
-// says the execution failed and for a person cancelling from the console. Both skip a
-// run whose report is being written (see ExpireRuns) and read no row back then: the run
-// is about to be completed, which is not theirs to overrule.
-//
-// @tenant: keyed
-func (q *Queries) FailRun(ctx context.Context, arg FailRunParams) (FailRunRow, error) {
-	row := q.db.QueryRow(ctx, failRun, arg.At, arg.Error, arg.RunID)
-	var i FailRunRow
+func (q *Queries) GetRun(ctx context.Context, id uuid.UUID) (Run, error) {
+	row := q.db.QueryRow(ctx, getRun, id)
+	var i Run
 	err := row.Scan(
 		&i.ID,
 		&i.ProgramID,
 		&i.Kind,
+		&i.Stage,
+		&i.WildcardID,
+		&i.State,
+		&i.Trigger,
+		&i.QueuedAt,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.Deadline,
+		&i.Error,
+		&i.ReportMeta,
+		&i.Ingest,
+		&i.Targets,
+		&i.Runner,
 		&i.ExternalID,
 	)
 	return i, err
 }
 
-const liveDiscoveryForApex = `-- name: LiveDiscoveryForApex :one
-SELECT id, kind, scope, state, deadline, created_at, started_at, target_count
-  FROM run
- WHERE program_id = $1::uuid
-   AND kind = 'discovery'
-   AND apex = $2::text
-   AND state IN ('pending', 'running')
- ORDER BY created_at DESC
- LIMIT 1
+const getWildcard = `-- name: GetWildcard :one
+SELECT w.id, w.program_id, w.rule_id, w.apex, w.last_recon_at, w.last_recon_run, w.assets_found, w.created_at, (r.valid_to IS NULL)::bool AS rule_in_force FROM wildcard w JOIN scope_rule r ON r.id = w.rule_id WHERE w.id = $1
 `
 
-type LiveDiscoveryForApexParams struct {
-	ProgramID pgtype.UUID
-	Apex      string
+type GetWildcardRow struct {
+	ID           uuid.UUID  `json:"id"`
+	ProgramID    uuid.UUID  `json:"program_id"`
+	RuleID       uuid.UUID  `json:"rule_id"`
+	Apex         string     `json:"apex"`
+	LastReconAt  *time.Time `json:"last_recon_at"`
+	LastReconRun *uuid.UUID `json:"last_recon_run"`
+	AssetsFound  int32      `json:"assets_found"`
+	CreatedAt    time.Time  `json:"created_at"`
+	RuleInForce  bool       `json:"rule_in_force"`
 }
 
-type LiveDiscoveryForApexRow struct {
-	ID          pgtype.UUID
-	Kind        string
-	Scope       string
-	State       string
-	Deadline    pgtype.Timestamptz
-	CreatedAt   pgtype.Timestamptz
-	StartedAt   pgtype.Timestamptz
-	TargetCount *int32
-}
-
-// LiveDiscoveryForApex is the per-apex half of the bound above. One apex in flight says
-// nothing about a programme's other enumerations. The unique index says the same and
-// would refuse the insert; this is asked first so a caller gets the run named back, and
-// the free apexes can still go out.
-//
-// @tenant: keyed
-func (q *Queries) LiveDiscoveryForApex(ctx context.Context, arg LiveDiscoveryForApexParams) (LiveDiscoveryForApexRow, error) {
-	row := q.db.QueryRow(ctx, liveDiscoveryForApex, arg.ProgramID, arg.Apex)
-	var i LiveDiscoveryForApexRow
+func (q *Queries) GetWildcard(ctx context.Context, id uuid.UUID) (GetWildcardRow, error) {
+	row := q.db.QueryRow(ctx, getWildcard, id)
+	var i GetWildcardRow
 	err := row.Scan(
 		&i.ID,
-		&i.Kind,
-		&i.Scope,
-		&i.State,
-		&i.Deadline,
+		&i.ProgramID,
+		&i.RuleID,
+		&i.Apex,
+		&i.LastReconAt,
+		&i.LastReconRun,
+		&i.AssetsFound,
 		&i.CreatedAt,
-		&i.StartedAt,
-		&i.TargetCount,
+		&i.RuleInForce,
 	)
 	return i, err
 }
 
-const liveRunForProgram = `-- name: LiveRunForProgram :one
-SELECT id, kind, scope, state, deadline, created_at, started_at, target_count
-  FROM run
- WHERE program_id = $1::uuid
-   AND kind = $2::text
-   AND state IN ('pending', 'running')
- ORDER BY created_at DESC
- LIMIT 1
+const listOpenRules = `-- name: ListOpenRules :many
+SELECT id, program_id, kind, matcher, pattern, origin, note, valid_from, valid_to FROM scope_rule WHERE program_id = $1 AND valid_to IS NULL
 `
 
-type LiveRunForProgramParams struct {
-	ProgramID pgtype.UUID
-	Kind      string
-}
-
-type LiveRunForProgramRow struct {
-	ID          pgtype.UUID
-	Kind        string
-	Scope       string
-	State       string
-	Deadline    pgtype.Timestamptz
-	CreatedAt   pgtype.Timestamptz
-	StartedAt   pgtype.Timestamptz
-	TargetCount *int32
-}
-
-// LiveRunForProgram is what a second request runs into. started_at comes back because
-// it alone separates a run something opened from one whose provisioning failed, which
-// call for opposite actions.
-//
-// @tenant: keyed
-func (q *Queries) LiveRunForProgram(ctx context.Context, arg LiveRunForProgramParams) (LiveRunForProgramRow, error) {
-	row := q.db.QueryRow(ctx, liveRunForProgram, arg.ProgramID, arg.Kind)
-	var i LiveRunForProgramRow
-	err := row.Scan(
-		&i.ID,
-		&i.Kind,
-		&i.Scope,
-		&i.State,
-		&i.Deadline,
-		&i.CreatedAt,
-		&i.StartedAt,
-		&i.TargetCount,
-	)
-	return i, err
-}
-
-const markRunRunning = `-- name: MarkRunRunning :exec
-UPDATE run SET
-    state      = 'running',
-    started_at = COALESCE(started_at, $1::timestamptz)
- WHERE id = $2::uuid AND state = 'pending'
-`
-
-type MarkRunRunningParams struct {
-	At    pgtype.Timestamptz
-	RunID pgtype.UUID
-}
-
-// MarkRunRunning records that a scanner opened the run.
-//
-// @tenant: keyed
-func (q *Queries) MarkRunRunning(ctx context.Context, arg MarkRunRunningParams) error {
-	_, err := q.db.Exec(ctx, markRunRunning, arg.At, arg.RunID)
-	return err
-}
-
-const openRunsOnPlatform = `-- name: OpenRunsOnPlatform :many
-SELECT id, org_id, program_id, kind, scope, external_id, started_at
-  FROM run
- WHERE state IN ('pending', 'running')
-   AND external_id IS NOT NULL
- ORDER BY created_at
-`
-
-type OpenRunsOnPlatformRow struct {
-	ID         pgtype.UUID
-	OrgID      pgtype.UUID
-	ProgramID  pgtype.UUID
-	Kind       string
-	Scope      string
-	ExternalID *string
-	StartedAt  pgtype.Timestamptz
-}
-
-// OpenRunsOnPlatform is what the sweeper asks the platform about. Only runs it has an
-// execution name for: one never given a name was refused at the start and nothing can be
-// asked about it, so the deadline is its only way out.
-//
-// @tenant: cross-org
-// @why: the sweeper serves every tenant in one tick, and the question it asks
-//
-//	is about an execution on the platform, which knows no tenant either.
-func (q *Queries) OpenRunsOnPlatform(ctx context.Context) ([]OpenRunsOnPlatformRow, error) {
-	rows, err := q.db.Query(ctx, openRunsOnPlatform)
+func (q *Queries) ListOpenRules(ctx context.Context, programID uuid.UUID) ([]ScopeRule, error) {
+	rows, err := q.db.Query(ctx, listOpenRules, programID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []OpenRunsOnPlatformRow{}
+	var items []ScopeRule
 	for rows.Next() {
-		var i OpenRunsOnPlatformRow
+		var i ScopeRule
 		if err := rows.Scan(
 			&i.ID,
-			&i.OrgID,
 			&i.ProgramID,
 			&i.Kind,
-			&i.Scope,
+			&i.Matcher,
+			&i.Pattern,
+			&i.Origin,
+			&i.Note,
+			&i.ValidFrom,
+			&i.ValidTo,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRuns = `-- name: ListRuns :many
+SELECT r.id, r.program_id, r.kind, r.stage, r.wildcard_id, r.state, r.trigger, r.queued_at, r.started_at, r.finished_at, r.deadline, r.error, r.report_meta, r.ingest, r.targets, r.runner, r.external_id, w.apex FROM run r LEFT JOIN wildcard w ON w.id = r.wildcard_id
+WHERE ($1::uuid IS NULL OR r.program_id = $1)
+ORDER BY r.queued_at DESC, r.id DESC
+LIMIT $2
+`
+
+type ListRunsParams struct {
+	ProgramID *uuid.UUID `json:"program_id"`
+	Lim       int32      `json:"lim"`
+}
+
+type ListRunsRow struct {
+	Run  Run     `json:"run"`
+	Apex *string `json:"apex"`
+}
+
+func (q *Queries) ListRuns(ctx context.Context, arg ListRunsParams) ([]ListRunsRow, error) {
+	rows, err := q.db.Query(ctx, listRuns, arg.ProgramID, arg.Lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRunsRow
+	for rows.Next() {
+		var i ListRunsRow
+		if err := rows.Scan(
+			&i.Run.ID,
+			&i.Run.ProgramID,
+			&i.Run.Kind,
+			&i.Run.Stage,
+			&i.Run.WildcardID,
+			&i.Run.State,
+			&i.Run.Trigger,
+			&i.Run.QueuedAt,
+			&i.Run.StartedAt,
+			&i.Run.FinishedAt,
+			&i.Run.Deadline,
+			&i.Run.Error,
+			&i.Run.ReportMeta,
+			&i.Run.Ingest,
+			&i.Run.Targets,
+			&i.Run.Runner,
+			&i.Run.ExternalID,
+			&i.Apex,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockRunningRun = `-- name: LockRunningRun :one
+SELECT id FROM run WHERE id = $1 AND state = 'running' FOR UPDATE NOWAIT
+`
+
+// The run a report is ingested for, locked for the transaction: a second copy
+// posted meanwhile finds it taken and is answered at once.
+func (q *Queries) LockRunningRun(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, lockRunningRun, id)
+	var id_2 uuid.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
+const markWildcardRecon = `-- name: MarkWildcardRecon :exec
+UPDATE wildcard SET last_recon_at = $1::timestamptz, last_recon_run = $2,
+  assets_found = (SELECT count(*) FROM asset WHERE asset.wildcard_id = wildcard.id)
+WHERE wildcard.id = $3
+`
+
+type MarkWildcardReconParams struct {
+	Now   time.Time  `json:"now"`
+	RunID *uuid.UUID `json:"run_id"`
+	ID    uuid.UUID  `json:"id"`
+}
+
+func (q *Queries) MarkWildcardRecon(ctx context.Context, arg MarkWildcardReconParams) error {
+	_, err := q.db.Exec(ctx, markWildcardRecon, arg.Now, arg.RunID, arg.ID)
+	return err
+}
+
+const newWildcards = `-- name: NewWildcards :many
+SELECT w.id FROM wildcard w WHERE w.program_id = $1 AND w.created_at = $2::timestamptz
+`
+
+type NewWildcardsParams struct {
+	ProgramID uuid.UUID `json:"program_id"`
+	Now       time.Time `json:"now"`
+}
+
+func (q *Queries) NewWildcards(ctx context.Context, arg NewWildcardsParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, newWildcards, arg.ProgramID, arg.Now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const oldestWildcards = `-- name: OldestWildcards :many
+SELECT w.id, w.program_id FROM wildcard w
+JOIN scope_rule r ON r.id = w.rule_id
+JOIN program p ON p.id = w.program_id
+WHERE r.valid_to IS NULL AND p.state = 'active'
+  AND ($1::uuid IS NULL OR w.program_id = $1)
+  AND NOT EXISTS (SELECT 1 FROM run x WHERE x.wildcard_id = w.id AND x.state IN ('queued', 'running'))
+ORDER BY w.last_recon_at NULLS FIRST, w.created_at, w.id
+LIMIT $2
+`
+
+type OldestWildcardsParams struct {
+	ProgramID *uuid.UUID `json:"program_id"`
+	Lim       int32      `json:"lim"`
+}
+
+type OldestWildcardsRow struct {
+	ID        uuid.UUID `json:"id"`
+	ProgramID uuid.UUID `json:"program_id"`
+}
+
+func (q *Queries) OldestWildcards(ctx context.Context, arg OldestWildcardsParams) ([]OldestWildcardsRow, error) {
+	rows, err := q.db.Query(ctx, oldestWildcards, arg.ProgramID, arg.Lim)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []OldestWildcardsRow
+	for rows.Next() {
+		var i OldestWildcardsRow
+		if err := rows.Scan(&i.ID, &i.ProgramID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const queuedRunCount = `-- name: QueuedRunCount :one
+SELECT count(*)::int FROM run WHERE state = 'queued'
+`
+
+func (q *Queries) QueuedRunCount(ctx context.Context) (int32, error) {
+	row := q.db.QueryRow(ctx, queuedRunCount)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const requeueRun = `-- name: RequeueRun :exec
+UPDATE run SET state = 'queued', started_at = NULL, deadline = NULL WHERE id = $1 AND state = 'running'
+`
+
+func (q *Queries) RequeueRun(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.Exec(ctx, requeueRun, id)
+	return err
+}
+
+const runningJobs = `-- name: RunningJobs :many
+SELECT id, kind, wildcard_id, external_id FROM run
+WHERE state = 'running' AND runner = 'scaleway' AND external_id IS NOT NULL
+`
+
+type RunningJobsRow struct {
+	ID         uuid.UUID  `json:"id"`
+	Kind       string     `json:"kind"`
+	WildcardID *uuid.UUID `json:"wildcard_id"`
+	ExternalID *string    `json:"external_id"`
+}
+
+// The jobs a remote runner is waited for: their state is read every minute.
+func (q *Queries) RunningJobs(ctx context.Context) ([]RunningJobsRow, error) {
+	rows, err := q.db.Query(ctx, runningJobs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []RunningJobsRow
+	for rows.Next() {
+		var i RunningJobsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.WildcardID,
 			&i.ExternalID,
-			&i.StartedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -417,191 +555,49 @@ func (q *Queries) OpenRunsOnPlatform(ctx context.Context) ([]OpenRunsOnPlatformR
 	return items, nil
 }
 
-const programForScheduling = `-- name: ProgramForScheduling :one
-SELECT id, org_id, name, state, authorized_from, authorized_to, rate_limit_rps,
-       discovery_interval, last_discovery_at, version
-  FROM program
- WHERE id = $1::uuid
+const setExternalID = `-- name: SetExternalID :exec
+UPDATE run SET external_id = $2 WHERE id = $1
 `
 
-type ProgramForSchedulingParams struct {
-	ProgramID pgtype.UUID
+type SetExternalIDParams struct {
+	ID         uuid.UUID `json:"id"`
+	ExternalID *string   `json:"external_id"`
 }
 
-type ProgramForSchedulingRow struct {
-	ID                pgtype.UUID
-	OrgID             pgtype.UUID
-	Name              string
-	State             string
-	AuthorizedFrom    pgtype.Timestamptz
-	AuthorizedTo      pgtype.Timestamptz
-	RateLimitRps      int32
-	DiscoveryInterval pgtype.Interval
-	LastDiscoveryAt   pgtype.Timestamptz
-	Version           int32
+func (q *Queries) SetExternalID(ctx context.Context, arg SetExternalIDParams) error {
+	_, err := q.db.Exec(ctx, setExternalID, arg.ID, arg.ExternalID)
+	return err
 }
 
-// ProgramForScheduling reads what a run needs to be defined.
-//
-// @tenant: keyed
-func (q *Queries) ProgramForScheduling(ctx context.Context, arg ProgramForSchedulingParams) (ProgramForSchedulingRow, error) {
-	row := q.db.QueryRow(ctx, programForScheduling, arg.ProgramID)
-	var i ProgramForSchedulingRow
-	err := row.Scan(
-		&i.ID,
-		&i.OrgID,
-		&i.Name,
-		&i.State,
-		&i.AuthorizedFrom,
-		&i.AuthorizedTo,
-		&i.RateLimitRps,
-		&i.DiscoveryInterval,
-		&i.LastDiscoveryAt,
-		&i.Version,
-	)
-	return i, err
-}
-
-const programsDueForCandidates = `-- name: ProgramsDueForCandidates :many
-SELECT p.id, p.org_id, p.name
-  FROM program p
-  JOIN asset_current c ON c.program_id = p.id
- WHERE p.state = 'active'
-   AND p.authorized_from <= $1::timestamptz
-   AND (p.authorized_to IS NULL OR p.authorized_to > $1::timestamptz)
-   AND c.kind = 'fqdn'
-   AND c.scope_status = 'in_scope'
-   AND c.lifecycle = 'candidate'
-   AND c.next_full_at IS NULL
-   AND c.next_resolve_at <= $1::timestamptz
-   AND NOT EXISTS (
-        SELECT 1 FROM run r
-         WHERE r.program_id = p.id
-           AND r.kind = 'candidate'
-           AND r.state IN ('pending', 'running'))
- GROUP BY p.id, p.org_id, p.name
- ORDER BY p.id
+const timeOutRuns = `-- name: TimeOutRuns :many
+UPDATE run SET state = 'timed_out', finished_at = $1::timestamptz, error = 'deadline passed'
+WHERE state = 'running' AND deadline < $1::timestamptz
+RETURNING id, kind, wildcard_id, runner, external_id
 `
 
-type ProgramsDueForCandidatesParams struct {
-	At pgtype.Timestamptz
+type TimeOutRunsRow struct {
+	ID         uuid.UUID  `json:"id"`
+	Kind       string     `json:"kind"`
+	WildcardID *uuid.UUID `json:"wildcard_id"`
+	Runner     string     `json:"runner"`
+	ExternalID *string    `json:"external_id"`
 }
 
-type ProgramsDueForCandidatesRow struct {
-	ID    pgtype.UUID
-	OrgID pgtype.UUID
-	Name  string
-}
-
-// ProgramsDueForCandidates wakes the lane that must not wait. Unlike
-// ProgramsDueForVerification, only a live *candidate* run holds this pass back.
-//
-// A live verification does not, which is the point: a sweep holds its slot for its whole
-// deadline, and a candidate arriving a minute in would wait half an hour for a check wanted
-// at sixty seconds. Nor does a live discovery, by decision: discovery blocks verification
-// because a full sweep would send a second scanner at hosts the first is connected to, while
-// a resolve sends nothing to the target.
-//
-// @tenant: cross-org
-// @why: the candidate pass provisions for every programme of every tenant in
-//
-//	one pass, exactly as the due date pass does.
-func (q *Queries) ProgramsDueForCandidates(ctx context.Context, arg ProgramsDueForCandidatesParams) ([]ProgramsDueForCandidatesRow, error) {
-	rows, err := q.db.Query(ctx, programsDueForCandidates, arg.At)
+func (q *Queries) TimeOutRuns(ctx context.Context, now time.Time) ([]TimeOutRunsRow, error) {
+	rows, err := q.db.Query(ctx, timeOutRuns, now)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ProgramsDueForCandidatesRow{}
+	var items []TimeOutRunsRow
 	for rows.Next() {
-		var i ProgramsDueForCandidatesRow
-		if err := rows.Scan(&i.ID, &i.OrgID, &i.Name); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const programsDueForDiscovery = `-- name: ProgramsDueForDiscovery :many
-SELECT p.id, p.org_id, p.name, p.rate_limit_rps
-  FROM program p
- WHERE p.state = 'active'
-   AND p.authorized_from <= $1::timestamptz
-   AND (p.authorized_to IS NULL OR p.authorized_to > $1::timestamptz)
-   AND (p.last_discovery_at IS NULL
-        OR p.last_discovery_at + p.discovery_interval <= $1::timestamptz
-        -- Or the last discovery ended without delivering and the retry delay has passed. A run
-        -- that failed in thirty seconds must not cost a week of coverage; clearing
-        -- last_discovery_at instead would destroy the record of the last enumeration and turn
-        -- a permanently broken runner into a loop provisioning and billing every tick.
-        OR EXISTS (
-             SELECT 1 FROM run r
-              WHERE r.program_id = p.id
-                AND r.kind = 'discovery'
-                AND r.state IN ('expired', 'failed')
-                AND r.finished_at + $2::interval <= $1::timestamptz
-                AND NOT EXISTS (
-                      SELECT 1 FROM run later
-                       WHERE later.program_id = p.id
-                         AND later.kind = 'discovery'
-                         AND later.created_at > r.created_at)))
-   -- The condition that does the work. It prevents a provisioning storm and
-   -- bounds concurrency to one discovery run per programme.
-   AND NOT EXISTS (
-        SELECT 1 FROM run r
-         WHERE r.program_id = p.id AND r.kind = 'discovery'
-           AND r.state IN ('pending', 'running'))
-   -- A programme with nothing to enumerate is not due, or it is selected and refused every
-   -- tick: at a one-minute cadence, a warning a minute forever.
-   AND EXISTS (
-        SELECT 1 FROM scope_rule s
-         WHERE s.program_id = p.id
-           AND s.kind = 'include' AND s.matcher = 'apex'
-           AND s.valid_from <= $1::timestamptz
-           AND (s.valid_to IS NULL OR s.valid_to > $1::timestamptz))
- ORDER BY p.id
-`
-
-type ProgramsDueForDiscoveryParams struct {
-	At    pgtype.Timestamptz
-	Retry pgtype.Interval
-}
-
-type ProgramsDueForDiscoveryRow struct {
-	ID           pgtype.UUID
-	OrgID        pgtype.UUID
-	Name         string
-	RateLimitRps int32
-}
-
-// ProgramsDueForDiscovery is the pass that provisions enumeration. The authorization
-// window is checked here, not only the state: otherwise an expired programme is
-// provisioned every tick and refused when the run opens, an execution billed for nothing
-// every thirty seconds.
-//
-// @tenant: cross-org
-// @why: the discovery cadence provisions enumeration for every programme of
-//
-//	every tenant in one pass, and a per tenant sweep would need a list of tenants
-//	to walk, which is the same crossing wearing a loop.
-func (q *Queries) ProgramsDueForDiscovery(ctx context.Context, arg ProgramsDueForDiscoveryParams) ([]ProgramsDueForDiscoveryRow, error) {
-	rows, err := q.db.Query(ctx, programsDueForDiscovery, arg.At, arg.Retry)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ProgramsDueForDiscoveryRow{}
-	for rows.Next() {
-		var i ProgramsDueForDiscoveryRow
+		var i TimeOutRunsRow
 		if err := rows.Scan(
 			&i.ID,
-			&i.OrgID,
-			&i.Name,
-			&i.RateLimitRps,
+			&i.Kind,
+			&i.WildcardID,
+			&i.Runner,
+			&i.ExternalID,
 		); err != nil {
 			return nil, err
 		}
@@ -611,362 +607,4 @@ func (q *Queries) ProgramsDueForDiscovery(ctx context.Context, arg ProgramsDueFo
 		return nil, err
 	}
 	return items, nil
-}
-
-const programsDueForVerification = `-- name: ProgramsDueForVerification :many
-SELECT p.id, p.org_id, p.name,
-       bool_or(c.next_full_at <= $1::timestamptz) AS full_due
-  FROM program p
-  JOIN asset_current c ON c.program_id = p.id
- WHERE p.state = 'active'
-   AND p.authorized_from <= $1::timestamptz
-   AND (p.authorized_to IS NULL OR p.authorized_to > $1::timestamptz)
-   -- The selection's predicate, so a programme is never woken for work the selection would
-   -- then refuse to find. A name is the unit: an address is never a target of its own, and
-   -- a service is observed through its host's run.
-   AND c.kind = 'fqdn'
-   AND c.scope_status = 'in_scope'
-   AND c.lifecycle <> 'archived'
-   AND NOT (c.lifecycle = 'candidate' AND c.next_full_at IS NULL)
-   AND (c.next_full_at <= $1::timestamptz OR c.next_resolve_at <= $1::timestamptz)
-   AND NOT EXISTS (
-        SELECT 1 FROM run r
-         WHERE r.program_id = p.id
-           -- Either kind. A live verification is the bound the unique index keeps; a live
-           -- discovery is the perimeter being walked now, and freezes no targets because it is the
-           -- one allowed to find things, so nothing else sees its hosts. Waking a programme then
-           -- would select assets whose report has not landed and send a second scanner at hosts the
-           -- first is connected to.
-           AND r.kind IN ('verification', 'discovery')
-           AND r.state IN ('pending', 'running'))
- GROUP BY p.id, p.org_id, p.name
- ORDER BY p.id
-`
-
-type ProgramsDueForVerificationParams struct {
-	At pgtype.Timestamptz
-}
-
-type ProgramsDueForVerificationRow struct {
-	ID      pgtype.UUID
-	OrgID   pgtype.UUID
-	Name    string
-	FullDue bool
-}
-
-// ProgramsDueForVerification is the pass on due dates, counterpart of the discovery cadence
-// and what was missing: due dates were written and counted in the queue view but no tick
-// dispatched them, so runs went out only on a button press.
-//
-// The authorization window is checked here as well as at the run. Nothing is billed either
-// way (the run is refused before the platform is called); this stops the pass waking an
-// expired programme, walking its due assets and logging a refusal once a minute.
-//
-// full_due decides the rung without a second query: a full run executes every rung below it
-// and moves both dates, so taking full first cannot starve resolve. The absence of a live
-// verification run does the work, as for discovery; the unique index is the guarantee
-// (read-then-write is not a reservation under read committed), this only avoids provisioning
-// what the index would refuse.
-//
-// @tenant: cross-org
-// @why: the due date pass provisions verification for every programme of every
-//
-//	tenant in one pass, and a per tenant sweep would need a list of tenants to
-//	walk, which is the same crossing wearing a loop.
-func (q *Queries) ProgramsDueForVerification(ctx context.Context, arg ProgramsDueForVerificationParams) ([]ProgramsDueForVerificationRow, error) {
-	rows, err := q.db.Query(ctx, programsDueForVerification, arg.At)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ProgramsDueForVerificationRow{}
-	for rows.Next() {
-		var i ProgramsDueForVerificationRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.OrgID,
-			&i.Name,
-			&i.FullDue,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const recordRunStart = `-- name: RecordRunStart :exec
-UPDATE run SET external_id = $1::text WHERE id = $2::uuid
-`
-
-type RecordRunStartParams struct {
-	ExternalID string
-	RunID      pgtype.UUID
-}
-
-// RecordRunStart names the execution the platform created. Written after the start, as
-// the run is committed first: a platform refusing on a quota must leave a row the
-// deadline sweeper owns, not an absence.
-//
-// @tenant: keyed
-func (q *Queries) RecordRunStart(ctx context.Context, arg RecordRunStartParams) error {
-	_, err := q.db.Exec(ctx, recordRunStart, arg.ExternalID, arg.RunID)
-	return err
-}
-
-const runForTargets = `-- name: RunForTargets :one
-SELECT r.id, r.org_id, r.program_id, r.kind, r.scope, r.state, r.deadline
-  FROM run r
- WHERE r.id = $1::uuid
-`
-
-type RunForTargetsParams struct {
-	RunID pgtype.UUID
-}
-
-type RunForTargetsRow struct {
-	ID        pgtype.UUID
-	OrgID     pgtype.UUID
-	ProgramID pgtype.UUID
-	Kind      string
-	Scope     string
-	State     string
-	Deadline  pgtype.Timestamptz
-}
-
-// RunForTargets reads what the target list endpoint has to check.
-//
-// @tenant: keyed
-func (q *Queries) RunForTargets(ctx context.Context, arg RunForTargetsParams) (RunForTargetsRow, error) {
-	row := q.db.QueryRow(ctx, runForTargets, arg.RunID)
-	var i RunForTargetsRow
-	err := row.Scan(
-		&i.ID,
-		&i.OrgID,
-		&i.ProgramID,
-		&i.Kind,
-		&i.Scope,
-		&i.State,
-		&i.Deadline,
-	)
-	return i, err
-}
-
-const selectDueCandidates = `-- name: SelectDueCandidates :many
-SELECT c.asset_id, c.key, c.lifecycle, c.backoff_tier
-  FROM asset_current c
- WHERE c.org_id = $1::uuid
-   AND c.program_id = $2::uuid
-   AND c.kind = 'fqdn'
-   AND c.scope_status = 'in_scope'
-   AND c.lifecycle = 'candidate'
-   -- The pair, not the lifecycle. A hand-entered host is a candidate until it answers and
-   -- carries a full date because it was typed in to learn what it exposes: taking it here
-   -- would say a name resolves and never sweep a port.
-   AND c.next_full_at IS NULL
-   AND c.next_resolve_at <= $3::timestamptz
-   -- The lease is the same one, across lanes as well as within one: a host
-   -- frozen by a verification run is not taken by a candidate run either.
-   AND NOT EXISTS (
-        SELECT 1 FROM run_target t
-          JOIN run r ON r.id = t.run_id
-         WHERE t.asset_id = c.asset_id
-           AND r.state IN ('pending', 'running'))
- ORDER BY c.next_resolve_at, c.asset_id
- LIMIT $4::int
-`
-
-type SelectDueCandidatesParams struct {
-	OrgID     pgtype.UUID
-	ProgramID pgtype.UUID
-	At        pgtype.Timestamptz
-	Batch     int32
-}
-
-type SelectDueCandidatesRow struct {
-	AssetID     pgtype.UUID
-	Key         string
-	Lifecycle   string
-	BackoffTier int32
-}
-
-// SelectDueCandidates is the candidate lane's half of the selection: SelectDueHosts'
-// columns and lease with the lifecycle reversed. A candidate is selected by this pass
-// only, or the two fight over the same names.
-//
-// The rung is not a parameter. A CHECK pins a candidate run to resolve: one resolver
-// round trip with nothing sent to the target is what lets this lane run beside a
-// verification without adding up to anything the rate budget cares about.
-//
-// @tenant: scoped
-func (q *Queries) SelectDueCandidates(ctx context.Context, arg SelectDueCandidatesParams) ([]SelectDueCandidatesRow, error) {
-	rows, err := q.db.Query(ctx, selectDueCandidates,
-		arg.OrgID,
-		arg.ProgramID,
-		arg.At,
-		arg.Batch,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []SelectDueCandidatesRow{}
-	for rows.Next() {
-		var i SelectDueCandidatesRow
-		if err := rows.Scan(
-			&i.AssetID,
-			&i.Key,
-			&i.Lifecycle,
-			&i.BackoffTier,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const selectDueHosts = `-- name: SelectDueHosts :many
-
-SELECT c.asset_id, c.key, c.lifecycle, c.backoff_tier
-  FROM asset_current c
- WHERE c.org_id = $1::uuid
-   AND c.program_id = $2::uuid
-   AND c.kind = 'fqdn'
-   AND c.scope_status = 'in_scope'
-   AND c.lifecycle <> 'archived'
-   -- The candidate lane is excluded here, mutually: otherwise the two passes fight over the same
-   -- names, each freezing what the other was about to take.
-   --
-   -- The lane is the pair, never the lifecycle alone. CANDIDATE is not a CT state: a host typed
-   -- into the assets form is one until its first answer, and excluding on lifecycle alone would
-   -- divert it into a lane pinned to resolve, where nothing ever sweeps its ports. A null full
-   -- date separates them: a candidate that has not earned the expensive rung is the state the
-   -- aggressive curve describes.
-   AND NOT (c.lifecycle = 'candidate' AND c.next_full_at IS NULL)
-   AND CASE WHEN $3::text = 'full' THEN c.next_full_at ELSE c.next_resolve_at END
-       <= $4::timestamptz
-   -- The lease, and the whole of it. Two runs never hold the same host, and a
-   -- run that dies frees its hosts by expiring rather than by restitution.
-   AND NOT EXISTS (
-        SELECT 1 FROM run_target t
-          JOIN run r ON r.id = t.run_id
-         WHERE t.asset_id = c.asset_id
-           AND r.state IN ('pending', 'running'))
- ORDER BY CASE WHEN $3::text = 'full' THEN c.next_full_at ELSE c.next_resolve_at END,
-          c.asset_id
- LIMIT $5::int
-`
-
-type SelectDueHostsParams struct {
-	OrgID     pgtype.UUID
-	ProgramID pgtype.UUID
-	Rung      string
-	At        pgtype.Timestamptz
-	Batch     int32
-}
-
-type SelectDueHostsRow struct {
-	AssetID     pgtype.UUID
-	Key         string
-	Lifecycle   string
-	BackoffTier int32
-}
-
-// Runs: selecting what is due, freezing it, and expiring what never delivered.
-//
-// There is no queue table and no lease column. Three due dates decide eligibility, and
-// a run's frozen target list is its whole reservation: selection skips what a live run
-// holds, and the reservation expires with the run.
-// SelectDueHosts is the scheduler's pass.
-//
-// The identity tiebreaker is not decoration: assets are written in bulk, so thousands of
-// rows share a due date to the microsecond, and a LIMIT over ties leaves the planner free
-// to return different rows on two ticks.
-//
-// Only fqdn assets: an address is the answer to a name, so the schedule belongs on the
-// name, and a service is observed through its host's run.
-//
-// @tenant: scoped
-func (q *Queries) SelectDueHosts(ctx context.Context, arg SelectDueHostsParams) ([]SelectDueHostsRow, error) {
-	rows, err := q.db.Query(ctx, selectDueHosts,
-		arg.OrgID,
-		arg.ProgramID,
-		arg.Rung,
-		arg.At,
-		arg.Batch,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []SelectDueHostsRow{}
-	for rows.Next() {
-		var i SelectDueHostsRow
-		if err := rows.Scan(
-			&i.AssetID,
-			&i.Key,
-			&i.Lifecycle,
-			&i.BackoffTier,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const startRunOnPlatform = `-- name: StartRunOnPlatform :exec
-UPDATE run SET
-    state      = 'running',
-    started_at = COALESCE(started_at, $1::timestamptz)
- WHERE id = (
-        SELECT r.id FROM run r
-         WHERE r.id = $2::uuid
-           AND r.state = 'pending'
-           FOR UPDATE SKIP LOCKED)
-`
-
-type StartRunOnPlatformParams struct {
-	At    pgtype.Timestamptz
-	RunID pgtype.UUID
-}
-
-// StartRunOnPlatform records that the platform is executing a run. The first sign a
-// discovery run gets of being taken, having no target list to open. Skipped, not waited
-// for, under an ingestion: the scanner is still running while it delivers, so this is
-// exactly when a report holds the row.
-//
-// @tenant: keyed
-func (q *Queries) StartRunOnPlatform(ctx context.Context, arg StartRunOnPlatformParams) error {
-	_, err := q.db.Exec(ctx, startRunOnPlatform, arg.At, arg.RunID)
-	return err
-}
-
-const touchDiscovery = `-- name: TouchDiscovery :exec
-UPDATE program SET last_discovery_at = $1::timestamptz WHERE id = $2::uuid
-`
-
-type TouchDiscoveryParams struct {
-	At        pgtype.Timestamptz
-	ProgramID pgtype.UUID
-}
-
-// TouchDiscovery records that a discovery run was provisioned, at creation not
-// completion: a run that dies must not be restarted by the cadence, as the deadline
-// sweeper handles it.
-//
-// @tenant: keyed
-func (q *Queries) TouchDiscovery(ctx context.Context, arg TouchDiscoveryParams) error {
-	_, err := q.db.Exec(ctx, touchDiscovery, arg.At, arg.ProgramID)
-	return err
 }

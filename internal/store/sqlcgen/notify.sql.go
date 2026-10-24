@@ -7,49 +7,67 @@ package sqlcgen
 
 import (
 	"context"
+	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/google/uuid"
 )
 
-const channelsForOrg = `-- name: ChannelsForOrg :many
-SELECT id, url, secret_ref, template, min_priority, managed_by
-  FROM notification_channel
- WHERE org_id = $1::uuid AND enabled
- ORDER BY created_at
+const addMatches = `-- name: AddMatches :many
+INSERT INTO saved_search_match (saved_search_id, asset_id, since)
+SELECT $1, unnest($2::uuid[]), $3::timestamptz
+ON CONFLICT DO NOTHING
+RETURNING asset_id
 `
 
-type ChannelsForOrgParams struct {
-	OrgID pgtype.UUID
+type AddMatchesParams struct {
+	SearchID uuid.UUID   `json:"search_id"`
+	Assets   []uuid.UUID `json:"assets"`
+	Now      time.Time   `json:"now"`
 }
 
-type ChannelsForOrgRow struct {
-	ID          pgtype.UUID
-	Url         string
-	SecretRef   *string
-	Template    *string
-	MinPriority string
-	ManagedBy   string
-}
-
-// ChannelsForOrg is where an organization's alerts go.
-//
-// @tenant: scoped
-func (q *Queries) ChannelsForOrg(ctx context.Context, arg ChannelsForOrgParams) ([]ChannelsForOrgRow, error) {
-	rows, err := q.db.Query(ctx, channelsForOrg, arg.OrgID)
+// The matches now: new ones are returned, gone ones deleted.
+func (q *Queries) AddMatches(ctx context.Context, arg AddMatchesParams) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, addMatches, arg.SearchID, arg.Assets, arg.Now)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ChannelsForOrgRow{}
+	var items []uuid.UUID
 	for rows.Next() {
-		var i ChannelsForOrgRow
+		var asset_id uuid.UUID
+		if err := rows.Scan(&asset_id); err != nil {
+			return nil, err
+		}
+		items = append(items, asset_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const alertingSearches = `-- name: AlertingSearches :many
+SELECT id, name, query, view, alert, created_at, updated_at, evaluated_at FROM saved_search WHERE alert ORDER BY id
+`
+
+func (q *Queries) AlertingSearches(ctx context.Context) ([]SavedSearch, error) {
+	rows, err := q.db.Query(ctx, alertingSearches)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []SavedSearch
+	for rows.Next() {
+		var i SavedSearch
 		if err := rows.Scan(
 			&i.ID,
-			&i.Url,
-			&i.SecretRef,
-			&i.Template,
-			&i.MinPriority,
-			&i.ManagedBy,
+			&i.Name,
+			&i.Query,
+			&i.View,
+			&i.Alert,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.EvaluatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -61,158 +79,75 @@ func (q *Queries) ChannelsForOrg(ctx context.Context, arg ChannelsForOrgParams) 
 	return items, nil
 }
 
-const countWindow = `-- name: CountWindow :one
-SELECT count(*)
-  FROM notification_event
- WHERE program_id = $1::uuid
-   AND priority = $2::text
-   AND asset_id IS NOT NULL
-   AND notified_at >= $3::timestamptz
+const appendNotification = `-- name: AppendNotification :exec
+UPDATE notification
+SET items = (items || $2::text[])[1:$3::int],
+    total = total + $4::int, title = $5
+WHERE id = $1
 `
 
-type CountWindowParams struct {
-	ProgramID pgtype.UUID
-	Priority  string
-	Since     pgtype.Timestamptz
+type AppendNotificationParams struct {
+	ID    int64    `json:"id"`
+	Items []string `json:"items"`
+	Cap   int32    `json:"cap"`
+	N     int32    `json:"n"`
+	Title string   `json:"title"`
 }
 
-// CountWindow is how many of a programme's events at one priority were sent inside the
-// window. Read from the table, not memory: an in-memory counter resets on restart,
-// reopening the tap exactly when an incident restarts the process.
-//
-// An event with no asset does not consume the window: counting it would shrink the cap
-// the moment a programme went dark, when most room is needed.
-//
-// @tenant: keyed
-func (q *Queries) CountWindow(ctx context.Context, arg CountWindowParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countWindow, arg.ProgramID, arg.Priority, arg.Since)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
-const digestInWindow = `-- name: DigestInWindow :one
-SELECT count(*) FROM notification_event
- WHERE program_id = $1::uuid
-   AND kind = 'digest'
-   AND priority = $2::text
-   AND created_at >= $3::timestamptz
-`
-
-type DigestInWindowParams struct {
-	ProgramID pgtype.UUID
-	Priority  string
-	Since     pgtype.Timestamptz
-}
-
-// DigestInWindow reports whether a summary already speaks for this window. Without it
-// every suppressed event past the cap writes its own summary, and an anti-flood producing a
-// notification per suppressed notification is not one.
-//
-// @tenant: keyed
-func (q *Queries) DigestInWindow(ctx context.Context, arg DigestInWindowParams) (int64, error) {
-	row := q.db.QueryRow(ctx, digestInWindow, arg.ProgramID, arg.Priority, arg.Since)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
-const markNotified = `-- name: MarkNotified :exec
-UPDATE notification_event SET notified_at = $1::timestamptz
- WHERE id = $2::bigint AND created_at = $3::timestamptz
-`
-
-type MarkNotifiedParams struct {
-	At        pgtype.Timestamptz
-	ID        int64
-	CreatedAt pgtype.Timestamptz
-}
-
-// MarkNotified closes one event. By (id, created_at): the primary key is composite, and
-// omitting the second half scans every partition per mark.
-//
-// @tenant: keyed
-func (q *Queries) MarkNotified(ctx context.Context, arg MarkNotifiedParams) error {
-	_, err := q.db.Exec(ctx, markNotified, arg.At, arg.ID, arg.CreatedAt)
+func (q *Queries) AppendNotification(ctx context.Context, arg AppendNotificationParams) error {
+	_, err := q.db.Exec(ctx, appendNotification,
+		arg.ID,
+		arg.Items,
+		arg.Cap,
+		arg.N,
+		arg.Title,
+	)
 	return err
 }
 
-const onboardingDue = `-- name: OnboardingDue :many
-WITH held AS (
-    SELECT e.org_id, e.program_id, count(*) AS held
-      FROM notification_event e
-     WHERE e.suppressed
-       AND e.kind = 'new_active'
-       -- A window overflow writes a digest too, and excluding on any digest would silence a
-       -- programme's onboarding summary for good: a large first run saturates the high window on
-       -- port openings, which the grace does not hold, so the overflow digest lands first and the
-       -- onboarding one never.
-       AND NOT EXISTS (
-             SELECT 1 FROM notification_event d
-              WHERE d.program_id = e.program_id
-                AND d.kind = 'digest'
-                AND d.payload ->> 'reason' = 'first run')
-       -- The grace is at most seven days, so nothing older can still be waiting. Without the bound
-       -- this walks every suppressed row of the retention window, twice a minute, forever.
-       AND e.created_at > $1::timestamptz
-     GROUP BY e.org_id, e.program_id
-)
-SELECT h.org_id, h.program_id, p.name, p.created_at, h.held,
-       EXISTS (SELECT 1 FROM run r
-                WHERE r.program_id = p.id AND r.kind = 'discovery'
-                  AND r.state = 'completed') AS completed_discovery,
-       EXISTS (SELECT 1 FROM run r
-                WHERE r.program_id = p.id AND r.kind = 'discovery') AS any_discovery,
-       (SELECT count(*) FROM asset a WHERE a.program_id = p.id) AS assets
-  FROM held h
-  JOIN program p ON p.id = h.program_id
- ORDER BY h.program_id
+const dropMatches = `-- name: DropMatches :exec
+DELETE FROM saved_search_match WHERE saved_search_id = $1 AND NOT (asset_id = ANY($2::uuid[]))
 `
 
-type OnboardingDueParams struct {
-	Since pgtype.Timestamptz
+type DropMatchesParams struct {
+	SearchID uuid.UUID   `json:"search_id"`
+	Assets   []uuid.UUID `json:"assets"`
 }
 
-type OnboardingDueRow struct {
-	OrgID              pgtype.UUID
-	ProgramID          pgtype.UUID
-	Name               string
-	CreatedAt          pgtype.Timestamptz
-	Held               int64
-	CompletedDiscovery bool
-	AnyDiscovery       bool
-	Assets             int64
+func (q *Queries) DropMatches(ctx context.Context, arg DropMatchesParams) error {
+	_, err := q.db.Exec(ctx, dropMatches, arg.SearchID, arg.Assets)
+	return err
 }
 
-// OnboardingDue finds the programmes whose first run is over and whose flood has never
-// been summarised. The summary is emitted when the grace ends, not during: one per batch
-// would each carry a count already wrong when written.
-//
-// And it is emitted at all, which is the point: an overflow must never produce the
-// absence of a notification, and a first run saying nothing is the same loss of signal.
-//
-// @tenant: cross-org
-// @why: the first run summary is due per programme, and the loop that emits it
-//
-//	serves every tenant in one tick.
-func (q *Queries) OnboardingDue(ctx context.Context, arg OnboardingDueParams) ([]OnboardingDueRow, error) {
-	rows, err := q.db.Query(ctx, onboardingDue, arg.Since)
+const dueNotifications = `-- name: DueNotifications :many
+SELECT id, kind, group_key, title, items, total, link, created_at, due_at, sent_at, outcome, attempts, delivered, last_error FROM notification WHERE sent_at IS NULL AND due_at <= $1::timestamptz
+ORDER BY due_at, id LIMIT 20 FOR UPDATE SKIP LOCKED
+`
+
+func (q *Queries) DueNotifications(ctx context.Context, now time.Time) ([]Notification, error) {
+	rows, err := q.db.Query(ctx, dueNotifications, now)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []OnboardingDueRow{}
+	var items []Notification
 	for rows.Next() {
-		var i OnboardingDueRow
+		var i Notification
 		if err := rows.Scan(
-			&i.OrgID,
-			&i.ProgramID,
-			&i.Name,
+			&i.ID,
+			&i.Kind,
+			&i.GroupKey,
+			&i.Title,
+			&i.Items,
+			&i.Total,
+			&i.Link,
 			&i.CreatedAt,
-			&i.Held,
-			&i.CompletedDiscovery,
-			&i.AnyDiscovery,
-			&i.Assets,
+			&i.DueAt,
+			&i.SentAt,
+			&i.Outcome,
+			&i.Attempts,
+			&i.Delivered,
+			&i.LastError,
 		); err != nil {
 			return nil, err
 		}
@@ -224,33 +159,28 @@ func (q *Queries) OnboardingDue(ctx context.Context, arg OnboardingDueParams) ([
 	return items, nil
 }
 
-const oneOrganization = `-- name: OneOrganization :many
-SELECT id FROM org ORDER BY created_at LIMIT 2
+const failingComponents = `-- name: FailingComponents :many
+SELECT component, failing_since, announced, detail FROM health_state WHERE failing_since IS NOT NULL ORDER BY failing_since
 `
 
-// OneOrganization is the condition the configured channel is bootstrapped under. A
-// configuration file cannot name a tenant, so exactly one organization is the only
-// unambiguous case; beyond it, a global URL on one of several would leak one tenant's
-// alerts into another's channel.
-//
-// @tenant: cross-org
-// @why: counting organizations is the one question that cannot be asked from
-//
-//	inside one, and the answer decides whether a configured channel may be
-//	attached at all.
-func (q *Queries) OneOrganization(ctx context.Context) ([]pgtype.UUID, error) {
-	rows, err := q.db.Query(ctx, oneOrganization)
+func (q *Queries) FailingComponents(ctx context.Context) ([]HealthState, error) {
+	rows, err := q.db.Query(ctx, failingComponents)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []pgtype.UUID{}
+	var items []HealthState
 	for rows.Next() {
-		var id pgtype.UUID
-		if err := rows.Scan(&id); err != nil {
+		var i HealthState
+		if err := rows.Scan(
+			&i.Component,
+			&i.FailingSince,
+			&i.Announced,
+			&i.Detail,
+		); err != nil {
 			return nil, err
 		}
-		items = append(items, id)
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -258,67 +188,82 @@ func (q *Queries) OneOrganization(ctx context.Context) ([]pgtype.UUID, error) {
 	return items, nil
 }
 
-const pendingEvents = `-- name: PendingEvents :many
-SELECT e.id, e.created_at, e.org_id, e.program_id, e.asset_id, e.kind, e.priority, e.payload,
-       a.key AS asset_key, p.name AS program_name
-  FROM notification_event e
-  JOIN program p ON p.id = e.program_id
-  LEFT JOIN asset a ON a.id = e.asset_id
- WHERE e.notified_at IS NULL
-   AND NOT e.suppressed
- ORDER BY CASE e.priority
-              WHEN 'critical' THEN 0 WHEN 'high' THEN 1
-              WHEN 'medium' THEN 2 ELSE 3 END,
-          e.created_at
- LIMIT $1::int
+const getHealthState = `-- name: GetHealthState :one
+SELECT component, failing_since, announced, detail FROM health_state WHERE component = $1
 `
 
-type PendingEventsParams struct {
-	Batch int32
+func (q *Queries) GetHealthState(ctx context.Context, component string) (HealthState, error) {
+	row := q.db.QueryRow(ctx, getHealthState, component)
+	var i HealthState
+	err := row.Scan(
+		&i.Component,
+		&i.FailingSince,
+		&i.Announced,
+		&i.Detail,
+	)
+	return i, err
 }
 
-type PendingEventsRow struct {
-	ID          int64
-	CreatedAt   pgtype.Timestamptz
-	OrgID       pgtype.UUID
-	ProgramID   pgtype.UUID
-	AssetID     pgtype.UUID
-	Kind        string
-	Priority    string
-	Payload     []byte
-	AssetKey    *string
-	ProgramName string
+const insertNotification = `-- name: InsertNotification :exec
+INSERT INTO notification (kind, group_key, title, items, total, link, created_at, due_at)
+VALUES ($1, $2, $3, ($4::text[])[1:$5::int], $6::int, $7, $8::timestamptz, $9::timestamptz)
+`
+
+type InsertNotificationParams struct {
+	Kind     string    `json:"kind"`
+	GroupKey string    `json:"group_key"`
+	Title    string    `json:"title"`
+	Items    []string  `json:"items"`
+	Cap      int32     `json:"cap"`
+	N        int32     `json:"n"`
+	Link     *string   `json:"link"`
+	Now      time.Time `json:"now"`
+	Due      time.Time `json:"due"`
 }
 
-// PendingEvents is the notifier's queue. Ordered by priority so a takeover leaves before a
-// title change; the partial index means a closed month costs an empty index to consult,
-// not a month of rows to filter.
-//
-// @tenant: cross-org
-// @why: the notifier drains every tenant's queue in one tick, ordered by
-//
-//	priority across all of them: a takeover leaves before a title change whoever
-//	owns either.
-func (q *Queries) PendingEvents(ctx context.Context, arg PendingEventsParams) ([]PendingEventsRow, error) {
-	rows, err := q.db.Query(ctx, pendingEvents, arg.Batch)
+func (q *Queries) InsertNotification(ctx context.Context, arg InsertNotificationParams) error {
+	_, err := q.db.Exec(ctx, insertNotification,
+		arg.Kind,
+		arg.GroupKey,
+		arg.Title,
+		arg.Items,
+		arg.Cap,
+		arg.N,
+		arg.Link,
+		arg.Now,
+		arg.Due,
+	)
+	return err
+}
+
+const matchLabels = `-- name: MatchLabels :many
+SELECT ac.asset_id, ac.kind, ac.key, ac.status_code, ac.title FROM asset_current ac WHERE ac.asset_id = ANY($1::uuid[])
+ORDER BY ac.key
+`
+
+type MatchLabelsRow struct {
+	AssetID    uuid.UUID `json:"asset_id"`
+	Kind       string    `json:"kind"`
+	Key        string    `json:"key"`
+	StatusCode *int32    `json:"status_code"`
+	Title      *string   `json:"title"`
+}
+
+func (q *Queries) MatchLabels(ctx context.Context, assets []uuid.UUID) ([]MatchLabelsRow, error) {
+	rows, err := q.db.Query(ctx, matchLabels, assets)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []PendingEventsRow{}
+	var items []MatchLabelsRow
 	for rows.Next() {
-		var i PendingEventsRow
+		var i MatchLabelsRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.CreatedAt,
-			&i.OrgID,
-			&i.ProgramID,
 			&i.AssetID,
 			&i.Kind,
-			&i.Priority,
-			&i.Payload,
-			&i.AssetKey,
-			&i.ProgramName,
+			&i.Key,
+			&i.StatusCode,
+			&i.Title,
 		); err != nil {
 			return nil, err
 		}
@@ -330,184 +275,150 @@ func (q *Queries) PendingEvents(ctx context.Context, arg PendingEventsParams) ([
 	return items, nil
 }
 
-const purgeSuppressed = `-- name: PurgeSuppressed :execrows
-DELETE FROM notification_event
- WHERE suppressed AND created_at < $1::timestamptz
+const notificationDelivered = `-- name: NotificationDelivered :exec
+UPDATE notification SET delivered = array_append(delivered, $2::text)
+WHERE id = $1 AND NOT ($2::text = ANY(delivered))
 `
 
-type PurgeSuppressedParams struct {
-	Before pgtype.Timestamptz
+type NotificationDeliveredParams struct {
+	ID      int64  `json:"id"`
+	Channel string `json:"channel"`
 }
 
-// PurgeSuppressed drops the onboarding and overflow noise. A targeted DELETE inside the
-// partitions, not a partition drop: those rows are written in waves and the delete is
-// bounded. Partitioning on suppressed would be the wrong axis.
-//
-// @tenant: cross-org
-// @why: retention is a property of the deployment, applied to every tenant's
-//
-//	partitions at once.
-func (q *Queries) PurgeSuppressed(ctx context.Context, arg PurgeSuppressedParams) (int64, error) {
-	result, err := q.db.Exec(ctx, purgeSuppressed, arg.Before)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+func (q *Queries) NotificationDelivered(ctx context.Context, arg NotificationDeliveredParams) error {
+	_, err := q.db.Exec(ctx, notificationDelivered, arg.ID, arg.Channel)
+	return err
 }
 
-const stuckEvents = `-- name: StuckEvents :one
-SELECT count(*) FROM notification_event
- WHERE notified_at IS NULL AND NOT suppressed AND created_at < $1::timestamptz
+const notificationRetry = `-- name: NotificationRetry :exec
+UPDATE notification SET due_at = $2::timestamptz, attempts = attempts + 1, last_error = $3
+WHERE id = $1
 `
 
-type StuckEventsParams struct {
-	Before pgtype.Timestamptz
+type NotificationRetryParams struct {
+	ID    int64     `json:"id"`
+	Due   time.Time `json:"due"`
+	Error *string   `json:"error"`
 }
 
-// StuckEvents counts what has been neither notified nor suppressed for too long. A broken
-// notifier is silent by nature: ingestion keeps writing and the inventory stays correct,
-// until the takeover it misses.
-//
-// @tenant: cross-org
-// @why: housekeeping watches the whole queue. A per tenant count cannot
-//
-//	detect a notifier that stopped, which is the failure this exists for.
-func (q *Queries) StuckEvents(ctx context.Context, arg StuckEventsParams) (int64, error) {
-	row := q.db.QueryRow(ctx, stuckEvents, arg.Before)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
+func (q *Queries) NotificationRetry(ctx context.Context, arg NotificationRetryParams) error {
+	_, err := q.db.Exec(ctx, notificationRetry, arg.ID, arg.Due, arg.Error)
+	return err
 }
 
-const suppressWindow = `-- name: SuppressWindow :execrows
-UPDATE notification_event SET suppressed = true
- WHERE id = ANY($1::bigint[]) AND created_at = ANY($2::timestamptz[])
+const notificationSent = `-- name: NotificationSent :exec
+UPDATE notification SET sent_at = $3::timestamptz, outcome = $2, attempts = attempts + 1, last_error = $4
+WHERE id = $1
 `
 
-type SuppressWindowParams struct {
-	Ids        []int64
-	CreatedAts []pgtype.Timestamptz
+type NotificationSentParams struct {
+	ID      int64     `json:"id"`
+	Outcome *string   `json:"outcome"`
+	Now     time.Time `json:"now"`
+	Error   *string   `json:"error"`
 }
 
-// SuppressWindow marks what the summary speaks for. The events stay in the database,
-// readable and unsent: an overflow must never produce the absence of a notification, how
-// an anti-flood turns into lost signal.
-//
-// @tenant: keyed
-func (q *Queries) SuppressWindow(ctx context.Context, arg SuppressWindowParams) (int64, error) {
-	result, err := q.db.Exec(ctx, suppressWindow, arg.Ids, arg.CreatedAts)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const suppressedInWindow = `-- name: SuppressedInWindow :one
-SELECT count(*) FROM notification_event
- WHERE program_id = $1::uuid
-   AND priority = $2::text
-   AND suppressed
-   AND created_at >= $3::timestamptz
-`
-
-type SuppressedInWindowParams struct {
-	ProgramID pgtype.UUID
-	Priority  string
-	Since     pgtype.Timestamptz
-}
-
-// SuppressedInWindow is what the summary stands for.
-//
-// @tenant: keyed
-func (q *Queries) SuppressedInWindow(ctx context.Context, arg SuppressedInWindowParams) (int64, error) {
-	row := q.db.QueryRow(ctx, suppressedInWindow, arg.ProgramID, arg.Priority, arg.Since)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
-}
-
-const upsertConfigChannel = `-- name: UpsertConfigChannel :exec
-INSERT INTO notification_channel (id, org_id, url, template, min_priority, managed_by)
-VALUES ($1::uuid, $2::uuid, $3::text, $4::text,
-        $5::text, 'config')
-ON CONFLICT (org_id) WHERE managed_by = 'config' DO UPDATE SET
-    url          = EXCLUDED.url,
-    template     = EXCLUDED.template,
-    min_priority = EXCLUDED.min_priority,
-    enabled      = true
-`
-
-type UpsertConfigChannelParams struct {
-	ID          pgtype.UUID
-	OrgID       pgtype.UUID
-	Url         string
-	Template    *string
-	MinPriority string
-}
-
-// UpsertConfigChannel is the bootstrap of the configured output. Keyed on the
-// organization and the config marker, not the URL: otherwise changing the URL and
-// restarting inserts a second active row without disabling the first, and every alert goes
-// out twice, one to the replaced destination.
-//
-// @tenant: scoped
-func (q *Queries) UpsertConfigChannel(ctx context.Context, arg UpsertConfigChannelParams) error {
-	_, err := q.db.Exec(ctx, upsertConfigChannel,
+func (q *Queries) NotificationSent(ctx context.Context, arg NotificationSentParams) error {
+	_, err := q.db.Exec(ctx, notificationSent,
 		arg.ID,
-		arg.OrgID,
-		arg.Url,
-		arg.Template,
-		arg.MinPriority,
+		arg.Outcome,
+		arg.Now,
+		arg.Error,
 	)
 	return err
 }
 
-const writeEvents = `-- name: WriteEvents :execrows
-
-INSERT INTO notification_event (
-    org_id, program_id, asset_id, kind, priority, payload, created_at, suppressed)
-SELECT $1::uuid, $2::uuid,
-       ($3::uuid[])[i], ($4::text[])[i], ($5::text[])[i],
-       ($6::jsonb[])[i], ($7::timestamptz[])[i], ($8::boolean[])[i]
-  FROM generate_subscripts($4::text[], 1) AS i
+const openNotification = `-- name: OpenNotification :one
+SELECT id FROM notification
+WHERE group_key = $1 AND sent_at IS NULL AND due_at > $2::timestamptz
+ORDER BY id DESC LIMIT 1 FOR UPDATE
 `
 
-type WriteEventsParams struct {
-	OrgID      pgtype.UUID
-	ProgramID  pgtype.UUID
-	AssetIds   []pgtype.UUID
-	Kinds      []string
-	Priorities []string
-	Payloads   [][]byte
-	CreatedAts []pgtype.Timestamptz
-	Suppressed []bool
+type OpenNotificationParams struct {
+	GroupKey string    `json:"group_key"`
+	Now      time.Time `json:"now"`
 }
 
-// Notifications. The event is written by ingestion, in its transaction; only
-// the sending is asynchronous.
-// WriteEvents inserts a whole batch in one statement. Ingestion has a round trip budget
-// per observation, enforced by a test; one INSERT per changed observation would blow it
-// on a first run where everything changes. The budget is per observation beyond a batch's
-// fixed cost.
-//
-// Parallel arrays, not COPY (see AddRunTargets): COPY FROM is refused on a table with a
-// policy. Same round trip, with organization and programme as scalars of the statement,
-// constants of the batch for every caller.
-//
-// @tenant: scoped
-func (q *Queries) WriteEvents(ctx context.Context, arg WriteEventsParams) (int64, error) {
-	result, err := q.db.Exec(ctx, writeEvents,
-		arg.OrgID,
-		arg.ProgramID,
-		arg.AssetIds,
-		arg.Kinds,
-		arg.Priorities,
-		arg.Payloads,
-		arg.CreatedAts,
-		arg.Suppressed,
+// An event joins the open notification of its group, or opens one due at the
+// end of its window. Locking the row keeps two events from opening two.
+func (q *Queries) OpenNotification(ctx context.Context, arg OpenNotificationParams) (int64, error) {
+	row := q.db.QueryRow(ctx, openNotification, arg.GroupKey, arg.Now)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
+const putHealthState = `-- name: PutHealthState :exec
+INSERT INTO health_state (component, failing_since, announced, detail) VALUES ($1, $3, $2, $4)
+ON CONFLICT (component) DO UPDATE SET failing_since = EXCLUDED.failing_since, announced = EXCLUDED.announced, detail = EXCLUDED.detail
+`
+
+type PutHealthStateParams struct {
+	Component    string     `json:"component"`
+	Announced    bool       `json:"announced"`
+	FailingSince *time.Time `json:"failing_since"`
+	Detail       *string    `json:"detail"`
+}
+
+func (q *Queries) PutHealthState(ctx context.Context, arg PutHealthStateParams) error {
+	_, err := q.db.Exec(ctx, putHealthState,
+		arg.Component,
+		arg.Announced,
+		arg.FailingSince,
+		arg.Detail,
 	)
+	return err
+}
+
+const recentNotifications = `-- name: RecentNotifications :many
+SELECT id, kind, group_key, title, items, total, link, created_at, due_at, sent_at, outcome, attempts, delivered, last_error FROM notification ORDER BY created_at DESC, id DESC LIMIT 30
+`
+
+func (q *Queries) RecentNotifications(ctx context.Context) ([]Notification, error) {
+	rows, err := q.db.Query(ctx, recentNotifications)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return result.RowsAffected(), nil
+	defer rows.Close()
+	var items []Notification
+	for rows.Next() {
+		var i Notification
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.GroupKey,
+			&i.Title,
+			&i.Items,
+			&i.Total,
+			&i.Link,
+			&i.CreatedAt,
+			&i.DueAt,
+			&i.SentAt,
+			&i.Outcome,
+			&i.Attempts,
+			&i.Delivered,
+			&i.LastError,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const searchEvaluated = `-- name: SearchEvaluated :exec
+UPDATE saved_search SET evaluated_at = $2::timestamptz WHERE id = $1
+`
+
+type SearchEvaluatedParams struct {
+	ID  uuid.UUID `json:"id"`
+	Now time.Time `json:"now"`
+}
+
+func (q *Queries) SearchEvaluated(ctx context.Context, arg SearchEvaluatedParams) error {
+	_, err := q.db.Exec(ctx, searchEvaluated, arg.ID, arg.Now)
+	return err
 }

@@ -1,704 +1,192 @@
 //go:build integration
 
-// The milestone 7 assertions that live on the contract rather than on a screen.
-package api_test
+package api
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
+	"net/url"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
-	"github.com/JoshuaMart/recon/internal/auth"
+	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
-// raw drives one console route and returns the body untouched. Unlike call, which
-// decodes into a map, it can tell an absent key from a zero value, which half the
-// assertions below need.
-func (h *harness) raw(t *testing.T, method, path, token string, body any) (*http.Response, []byte) {
+func assetID(t *testing.T, c *client, program, key string) string {
 	t.Helper()
-
-	var reader io.Reader
-	if body != nil {
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			t.Fatalf("encode: %v", err)
-		}
-		reader = bytes.NewReader(encoded)
-	}
-	req, err := http.NewRequest(method, h.server.URL+path, reader)
+	a, err := c.st.Q.GetAssetByKey(t.Context(), sqlcgen.GetAssetByKeyParams{ProgramID: uuid.MustParse(program), Kind: "fqdn", Key: key})
 	if err != nil {
-		t.Fatalf("request: %v", err)
+		t.Fatalf("%s: %v", key, err)
 	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+	return a.ID.String()
+}
+
+func TestSavedSearches(t *testing.T) {
+	c := newClient(t)
+
+	code, s := c.do("POST", "/api/saved-searches", `{"name":"Old nginx","query":"tech:nginx@<1.25"}`)
+	if code != 201 || s["view"] != "services" || s["alert"] != false {
+		t.Fatalf("create = %d %v", code, s)
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	id := s["id"].(string)
+	if code, body := c.do("POST", "/api/saved-searches", `{"name":"Old nginx","query":"port:443"}`); code != 409 {
+		t.Fatalf("same name = %d %v, want 409", code, body)
+	}
+	// A query the language refuses would fail every time it is opened.
+	if code, body := c.do("POST", "/api/saved-searches", `{"name":"Typo","query":"techh:nginx"}`); code != 400 {
+		t.Fatalf("bad query = %d %v, want 400", code, body)
+	}
+	if code, body := c.do("PATCH", "/api/saved-searches/"+id, `{"view":"assets"}`); code != 400 {
+		t.Fatalf("bad view = %d %v, want 400", code, body)
+	}
+	code, s = c.do("PATCH", "/api/saved-searches/"+id, `{"alert":true}`)
+	if code != 200 || s["alert"] != true || s["query"] != "tech:nginx@<1.25" {
+		t.Fatalf("patch = %d %v, want the query kept", code, s)
+	}
+	if code, l := c.do("GET", "/api/saved-searches", ""); code != 200 || len(l["saved_searches"].([]any)) != 1 {
+		t.Fatalf("list = %d %v", code, l)
+	}
+	if code, _ := c.do("DELETE", "/api/saved-searches/"+id, ""); code != 204 {
+		t.Fatalf("delete = %d", code)
+	}
+	if code, _ := c.do("DELETE", "/api/saved-searches/"+id, ""); code != 404 {
+		t.Fatalf("delete twice = %d, want 404", code)
+	}
+}
+
+func declare(t *testing.T, c *client, entries string) (string, []any) {
+	t.Helper()
+	_, p := c.do("POST", "/api/programs", `{"name":"Acme"}`)
+	id := p["id"].(string)
+	if code, body := c.do("POST", "/api/programs/"+id+"/rules", `{"kind":"include","matcher":"apex","pattern":"acme.com"}`); code != 201 {
+		t.Fatalf("rule = %d %v", code, body)
+	}
+	code, d := c.do("POST", "/api/programs/"+id+"/assets", `{"entries":`+entries+`}`)
+	if code != 200 {
+		t.Fatalf("declare = %d %v", code, d)
+	}
+	return id, d["entries"].([]any)
+}
+
+func TestChangesFeed(t *testing.T) {
+	c := newClient(t)
+	declare(t, c, `["a.acme.com","b.acme.com","c.acme.com"]`)
+
+	code, f := c.do("GET", "/api/changes", "")
+	rows := f["changes"].([]any)
+	if code != 200 || len(rows) < 3 || f["next"] != nil {
+		t.Fatalf("feed = %d %v", code, f)
+	}
+	first := rows[0].(map[string]any)
+	if first["program"] != "Acme" || first["asset_key"] == "" {
+		t.Fatalf("row = %v", first)
+	}
+	if code, body := c.do("GET", "/api/changes?cursor=nope", ""); code != 400 {
+		t.Fatalf("bad cursor = %d %v", code, body)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	count := func(path string) int {
+		t.Helper()
+		code, f := c.do("GET", path, "")
+		if code != 200 {
+			t.Fatalf("%s = %d %v", path, code, f)
+		}
+		return len(f["changes"].([]any))
+	}
+	if n := count("/api/changes?q=" + url.QueryEscape("change:new_asset host:a.acme.com")); n != 1 {
+		t.Fatalf("change: and the language together = %d rows, want 1", n)
+	}
+	if n := count("/api/changes?q=change:port_opened"); n != 0 {
+		t.Fatalf("change:port_opened = %d rows, want 0", n)
+	}
+	_, before := c.do("GET", "/api/changes/unseen", "")
+
+	// Marking as seen what a query shows leaves the rest unseen.
+	if code, r := c.do("POST", "/api/changes/seen", `{"q":"host:a.acme.com"}`); code != 200 || r["assets"].(float64) != 1 {
+		t.Fatalf("mark seen = %d %v", code, r)
+	}
+	if n := count("/api/changes?q=host:a.acme.com"); n != 0 {
+		t.Fatalf("a seen asset's changes still unseen: %d", n)
+	}
+	if n := count("/api/changes?view=all&q=host:a.acme.com"); n != 1 {
+		t.Fatalf("the all view lost a seen change: %d", n)
+	}
+	if n := count("/api/changes?q=host:b.acme.com"); n != 1 {
+		t.Fatalf("b was marked seen too: %d", n)
+	}
+	_, after := c.do("GET", "/api/changes/unseen", "")
+	if after["unseen"].(float64) != before["unseen"].(float64)-1 {
+		t.Fatalf("unseen %v then %v, want one less", before["unseen"], after["unseen"])
+	}
+
+	// change: belongs to the feed: search refuses it rather than ignoring it.
+	if code, body := c.do("GET", "/api/search?q=change:new_asset", ""); code != 400 || body["error"] != "unknown_field" {
+		t.Fatalf("change: in search = %d %v", code, body)
+	}
+}
+
+func TestProbeNow(t *testing.T) {
+	c := newClientWith(t, func(d *Deps) { d.Verification = true })
+	pid, _ := declare(t, c, `["a.acme.com","x.other.com"]`)
+	a := assetID(t, c, pid, "a.acme.com")
+	if code, r := c.do("POST", "/api/assets/"+a+"/probe", ""); code != 200 || r["queued"] != true {
+		t.Fatalf("probe in scope = %d %v", code, r)
+	}
+	// First in line: before any host overdue for a day, not merely due now.
+	cur, err := c.st.Q.GetAssetCurrent(t.Context(), uuid.MustParse(a))
+	if err != nil || cur.NextFullAt == nil || !cur.NextFullAt.Before(time.Now().Add(-24*time.Hour)) {
+		t.Fatalf("next_full_at = %v %v, want before any backlog", cur.NextFullAt, err)
+	}
+	if code, r := c.do("POST", "/api/assets/"+assetID(t, c, pid, "x.other.com")+"/probe", ""); code != 200 || r["queued"] != false || r["reason"] == "" {
+		t.Fatalf("probe out of scope = %d %v", code, r)
+	}
+
+	off := newClient(t)
+	pid, _ = declare(t, off, `["a.acme.com"]`)
+	id := assetID(t, off, pid, "a.acme.com")
+	if code, r := off.do("POST", "/api/assets/"+id+"/probe", ""); r["queued"] != false || r["reason"] != "verification is disabled" {
+		t.Fatalf("probe with verification off = %d %v", code, r)
+	}
+}
+
+func TestActivity(t *testing.T) {
+	c := newClient(t)
+	pid, _ := declare(t, c, `["a.acme.com"]`)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, c.srv.URL+"/api/activity", nil)
 	if err != nil {
-		t.Fatalf("%s %s: %v", method, path, err)
+		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = resp.Body.Close() })
-	payload, err := io.ReadAll(resp.Body)
+	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("read body: %v", err)
+		t.Fatal(err)
 	}
-	return resp, payload
-}
-
-func (h *harness) console(t *testing.T) string {
-	t.Helper()
-
-	return h.token(t, h.org, auth.ActionReadAssets, auth.ActionManageScope, auth.ActionManageJobs)
-}
-
-func decode[T any](t *testing.T, payload []byte) T {
-	t.Helper()
-
-	var out T
-	if err := json.Unmarshal(payload, &out); err != nil {
-		t.Fatalf("decode %s: %v", payload, err)
-	}
-	return out
-}
-
-// A rule write reclassifies in the same transaction, and the due dates move with the
-// verdict; two transactions leave a window scanning what was just taken away.
-func TestAScopeWriteMovesTheDueDatesWithIt(t *testing.T) {
-	h := newHarness(t)
-	token := h.console(t)
-
-	// An asset in scope with a schedule, and one outside the perimeter with
-	// none, which is what the include below is going to move.
-	inside, outside := uuid.New(), uuid.New()
-	h.asset(t, inside, "www.target.test", "in_scope", true)
-	h.asset(t, outside, "www.other.test", "unknown", false)
-
-	resp, payload := h.raw(t, http.MethodPost,
-		"/programs/"+h.program.String()+"/rules", token, map[string]any{
-			"kind": "include", "matcher": "apex", "pattern": "other.test",
-		})
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("status %d: %s", resp.StatusCode, payload)
-	}
-
-	body := decode[struct {
-		Rule   map[string]any `json:"rule"`
-		Effect struct {
-			Examined int `json:"examined"`
-			Changed  int `json:"changed"`
-			Gained   int `json:"gained"`
-		} `json:"effect"`
-	}](t, payload)
-
-	// The effect is returned so somebody does not have to run a search to find
-	// out what they just did.
-	if body.Effect.Examined < 2 {
-		t.Errorf("examined = %d, want every asset of the programme", body.Effect.Examined)
-	}
-	if body.Effect.Changed != 1 || body.Effect.Gained != 1 {
-		t.Errorf("effect = %+v, want the one asset the new include reaches", body.Effect)
-	}
-	if in, ok := body.Rule["in_force"].(bool); !ok || !in {
-		t.Error("the rule came back out of force, so the screen would show a perimeter that is not applied")
-	}
-
-	// The half that matters: the schedule moved with the status, in the same
-	// commit. A status without a due date costs coverage.
-	var status string
-	var due *time.Time
-	if err := h.pool.QueryRow(context.Background(),
-		`SELECT scope_status, next_resolve_at FROM asset_current WHERE asset_id = $1`, outside).
-		Scan(&status, &due); err != nil {
-		t.Fatalf("read the reclassified asset: %v", err)
-	}
-	if status != "in_scope" {
-		t.Errorf("scope_status = %s, want in_scope", status)
-	}
-	if due == nil {
-		t.Error("the asset came into scope with no due date, so nothing will ever probe it")
-	}
-
-	// And asset was moved as well as its projection. Updating one would leave
-	// the next report reinstating the old verdict.
-	var identity string
-	if err := h.pool.QueryRow(context.Background(),
-		`SELECT scope_status FROM asset WHERE id = $1`, outside).Scan(&identity); err != nil {
-		t.Fatalf("read the asset identity: %v", err)
-	}
-	if identity != "in_scope" {
-		t.Errorf("asset.scope_status = %s, want it in step with the projection", identity)
-	}
-
-	// The other direction: an exclude takes an asset out and its due dates must go, or it
-	// keeps being scanned outside the authorization.
-	resp, payload = h.raw(t, http.MethodPost,
-		"/programs/"+h.program.String()+"/rules", token, map[string]any{
-			"kind": "exclude", "matcher": "fqdn", "pattern": "www.target.test",
-		})
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("status %d: %s", resp.StatusCode, payload)
-	}
-
-	var excluded string
-	var resolve, full, fingerprint *time.Time
-	if err := h.pool.QueryRow(context.Background(),
-		`SELECT scope_status, next_resolve_at, next_full_at, next_fingerprint_at
-		   FROM asset_current WHERE asset_id = $1`, inside).
-		Scan(&excluded, &resolve, &full, &fingerprint); err != nil {
-		t.Fatalf("read the excluded asset: %v", err)
-	}
-	if excluded != "out_of_scope" {
-		t.Errorf("scope_status = %s, want out_of_scope", excluded)
-	}
-	if resolve != nil || full != nil || fingerprint != nil {
-		t.Errorf("an excluded asset kept a schedule (%v, %v, %v), which is a scan outside the authorization",
-			resolve, full, fingerprint)
-	}
-}
-
-// A rule the perimeter cannot compile is refused and writes nothing: one sitting in
-// the table that no reclassification can read makes every later write fail.
-func TestAFailedRuleWritesNothing(t *testing.T) {
-	h := newHarness(t)
-	token := h.console(t)
-
-	before := h.count(t, `SELECT count(*) FROM scope_rule WHERE program_id = $1`, h.program)
-
-	resp, payload := h.raw(t, http.MethodPost,
-		"/programs/"+h.program.String()+"/rules", token, map[string]any{
-			"kind": "include", "matcher": "regex", "pattern": "([a-z",
-		})
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status %d, want 400: %s", resp.StatusCode, payload)
-	}
-	if after := h.count(t, `SELECT count(*) FROM scope_rule WHERE program_id = $1`, h.program); after != before {
-		t.Errorf("scope_rule rows went from %d to %d on a refusal", before, after)
-	}
-
-	// The same for a matcher nothing knows. It is named rather than stored and
-	// discovered later by a classification that quietly matches nothing.
-	resp, _ = h.raw(t, http.MethodPost,
-		"/programs/"+h.program.String()+"/rules", token, map[string]any{
-			"kind": "include", "matcher": "guess", "pattern": "target.test",
-		})
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("status %d on an unknown matcher, want 400", resp.StatusCode)
-	}
-}
-
-// A write carrying a stale version answers 409 and applies nothing, the
-// reclassification included.
-func TestAStaleVersionAppliesNothing(t *testing.T) {
-	h := newHarness(t)
-	token := h.console(t)
-
-	resp, payload := h.raw(t, http.MethodGet, "/programs/"+h.program.String(), token, nil)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status %d: %s", resp.StatusCode, payload)
-	}
-	current := decode[struct {
-		Program struct {
-			Name    string `json:"name"`
-			Version int    `json:"version"`
-		} `json:"program"`
-	}](t, payload).Program
-
-	// An edit with the version that was read lands.
-	resp, payload = h.raw(t, http.MethodPatch, "/programs/"+h.program.String(), token, map[string]any{
-		"name": "renamed", "version": current.Version, "rate_limit_rps": 5,
-	})
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status %d: %s", resp.StatusCode, payload)
-	}
-
-	// The same version again is a caller deciding on a stale state: a refusal, not a
-	// syntax error, so it must say which.
-	resp, payload = h.raw(t, http.MethodPatch, "/programs/"+h.program.String(), token, map[string]any{
-		"name": "renamed twice", "version": current.Version, "rate_limit_rps": 9,
-	})
-	if resp.StatusCode != http.StatusConflict {
-		t.Fatalf("status %d, want 409: %s", resp.StatusCode, payload)
-	}
-
-	var name string
-	var rate int
-	if err := h.pool.QueryRow(context.Background(),
-		`SELECT name, rate_limit_rps FROM program WHERE id = $1`, h.program).Scan(&name, &rate); err != nil {
-		t.Fatalf("read the programme: %v", err)
-	}
-	if name != "renamed" || rate != 5 {
-		t.Errorf("the programme reads %q at %d rps, so the refused write applied part of itself", name, rate)
-	}
-
-	// An edit with no version is refused before reaching the database; defaulting to the
-	// current one would make the column decorative.
-	resp, _ = h.raw(t, http.MethodPatch, "/programs/"+h.program.String(), token, map[string]any{
-		"name": "no version",
-	})
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("status %d on a versionless edit, want 400", resp.StatusCode)
-	}
-}
-
-// A programme of another organization is a 404 and never a 403. One bit is
-// enough to enumerate.
-func TestAnotherTenantsProgrammeIsNotFound(t *testing.T) {
-	h := newHarness(t)
-
-	other := uuid.New()
-	h.exec(t, `INSERT INTO org (id, name) VALUES ($1, 'other')`, other)
-	token := h.token(t, other, auth.ActionReadAssets, auth.ActionManageScope)
-
-	for _, probe := range []struct {
-		method, path string
-		body         any
-	}{
-		{http.MethodGet, "/programs/" + h.program.String(), nil},
-		{
-			http.MethodPatch, "/programs/" + h.program.String(),
-			map[string]any{"name": "taken", "version": 1},
-		},
-		{
-			http.MethodPost, "/programs/" + h.program.String() + "/rules",
-			map[string]any{"kind": "include", "matcher": "apex", "pattern": "target.test"},
-		},
-	} {
-		resp, payload := h.call(t, probe.method, probe.path, token, probe.body)
-		if resp.StatusCode != http.StatusNotFound {
-			t.Errorf("%s %s: status %d, want 404: %s", probe.method, probe.path,
-				resp.StatusCode, payload)
-		}
-	}
-	if n := h.count(t, `SELECT count(*) FROM program WHERE org_id = $1`, other); n != 0 {
-		t.Errorf("the other organization ended up with %d programmes", n)
-	}
-}
-
-// The counters cost a scan per programme, so they are asked for rather than
-// given: the switcher renders this list on every page.
-func TestTheProgrammeCountersAreAskedFor(t *testing.T) {
-	h := newHarness(t)
-	token := h.console(t)
-	h.asset(t, uuid.New(), "www.target.test", "in_scope", true)
-
-	_, payload := h.raw(t, http.MethodGet, "/programs", token, nil)
-	plain := decode[struct {
-		Programs []map[string]any `json:"programs"`
-	}](t, payload).Programs
-	if len(plain) != 1 {
-		t.Fatalf("programmes = %d, want 1", len(plain))
-	}
-	if _, present := plain[0]["assets"]; present {
-		t.Error("the default list carries the counters, and it is the shape the switcher renders")
-	}
-	if _, present := plain[0]["rules_in_force"]; !present {
-		t.Error("the list carries no rule count, which costs nothing and is what the screen reads")
-	}
-
-	_, payload = h.raw(t, http.MethodGet, "/programs?counts=1", token, nil)
-	counted := decode[struct {
-		Programs []struct {
-			Assets        *int `json:"assets"`
-			AssetsInScope *int `json:"assets_in_scope"`
-		} `json:"programs"`
-	}](t, payload).Programs
-	if len(counted) != 1 || counted[0].Assets == nil || *counted[0].Assets != 1 {
-		t.Fatalf("counted = %+v, want one asset", counted)
-	}
-	if counted[0].AssetsInScope == nil || *counted[0].AssetsInScope != 1 {
-		t.Errorf("in scope = %v, want 1", counted[0].AssetsInScope)
-	}
-
-	// The detail answers them unasked: the switcher's reason not to does not apply to
-	// one programme someone navigated to, whose perimeter size the screen opens with.
-	programID, ok := plain[0]["id"].(string)
-	if !ok {
-		t.Fatalf("the list carried no identifier: %+v", plain[0])
-	}
-	_, payload = h.raw(t, http.MethodGet, "/programs/"+programID, token, nil)
-	detail := decode[struct {
-		Program struct {
-			Assets        *int `json:"assets"`
-			AssetsInScope *int `json:"assets_in_scope"`
-		} `json:"program"`
-	}](t, payload).Program
-	if detail.Assets == nil || *detail.Assets != 1 {
-		t.Errorf("the detail counts %v assets, want 1", detail.Assets)
+	_ = res.Body.Close()
+	if res.StatusCode != 401 {
+		t.Fatalf("activity without a session = %d, want 401: it says why a component fails", res.StatusCode)
 	}
-	if detail.AssetsInScope == nil || *detail.AssetsInScope != 1 {
-		t.Errorf("the detail counts %v in scope, want 1", detail.AssetsInScope)
+	if _, err := c.st.Q.EnqueueRun(t.Context(), sqlcgen.EnqueueRunParams{ProgramID: uuid.MustParse(pid), Kind: "verification", Stage: "resolve", Trigger: "schedule", Now: time.Now()}); err != nil {
+		t.Fatal(err)
 	}
-}
-
-// A perimeter with nothing in it has a size, nought. The group by returns no row for
-// an empty programme, so counts are defaulted: an omitted field reads as a number
-// nobody computed, not zero.
-func TestAnEmptyProgrammeCountsNought(t *testing.T) {
-	h := newHarness(t)
-	token := h.console(t)
-
-	_, payload := h.raw(t, http.MethodGet, "/programs", token, nil)
-	plain := decode[struct {
-		Programs []map[string]any `json:"programs"`
-	}](t, payload).Programs
-	programID, ok := plain[0]["id"].(string)
-	if !ok {
-		t.Fatalf("the list carried no identifier: %+v", plain[0])
-	}
-
-	_, payload = h.raw(t, http.MethodGet, "/programs/"+programID, token, nil)
-	detail := decode[struct {
-		Program struct {
-			Assets        *int `json:"assets"`
-			AssetsInScope *int `json:"assets_in_scope"`
-		} `json:"program"`
-	}](t, payload).Program
-	if detail.Assets == nil || *detail.Assets != 0 {
-		t.Errorf("assets = %v, want a zero somebody can read", detail.Assets)
-	}
-	if detail.AssetsInScope == nil || *detail.AssetsInScope != 0 {
-		t.Errorf("in scope = %v, want a zero somebody can read", detail.AssetsInScope)
-	}
-}
-
-// The queue answers "why is nothing moving", and the three numbers are
-// disjoint: a row held by a run is not also due.
-func TestTheQueueSeparatesDueFromHeld(t *testing.T) {
-	h := newHarness(t)
-	token := h.console(t)
-
-	due, held, later, gone := uuid.New(), uuid.New(), uuid.New(), uuid.New()
-	h.asset(t, due, "due.target.test", "in_scope", true)
-	h.asset(t, held, "held.target.test", "in_scope", true)
-	h.asset(t, later, "later.target.test", "in_scope", true)
-	h.asset(t, gone, "gone.target.test", "in_scope", false)
-
-	h.exec(t, `UPDATE asset_current SET next_resolve_at = $2 WHERE asset_id = $1`,
-		later, h.clock.now.Add(24*time.Hour))
-
-	runID := uuid.New()
-	h.exec(t, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline)
-	           VALUES ($1, $2, $3, 'verification', 'full', 'running', now() + interval '1 hour')`,
-		runID, h.org, h.program)
-	h.exec(t, `INSERT INTO run_target (run_id, asset_id, org_id, key)
-	           VALUES ($1, $2, $3, 'held.target.test')`, runID, held, h.org)
-
-	_, payload := h.raw(t, http.MethodGet, "/queue", token, nil)
-	body := decode[struct {
-		Depths []struct {
-			Queue string `json:"queue"`
-			Due   int    `json:"due"`
-			Later int    `json:"later"`
-			InRun int    `json:"in_run"`
-		} `json:"depths"`
-		Runs []struct {
-			ID    uuid.UUID `json:"id"`
-			State string    `json:"state"`
-		} `json:"runs"`
-	}](t, payload)
-
-	var resolve *struct {
-		Queue string `json:"queue"`
-		Due   int    `json:"due"`
-		Later int    `json:"later"`
-		InRun int    `json:"in_run"`
-	}
-	for i := range body.Depths {
-		if body.Depths[i].Queue == "resolve" {
-			resolve = &body.Depths[i]
-		}
-	}
-	if resolve == nil {
-		t.Fatalf("no resolve queue in %s", payload)
-	}
-	if resolve.Due != 1 {
-		t.Errorf("due = %d, want the one asset nothing holds", resolve.Due)
-	}
-	if resolve.InRun != 1 {
-		t.Errorf("in_run = %d, want the one a live run holds", resolve.InRun)
-	}
-	if resolve.Later != 1 {
-		t.Errorf("later = %d, want the one scheduled ahead", resolve.Later)
-	}
-	// The asset with no due date is counted nowhere. Filing it under later
-	// would show a queue that never drains.
-	if total := resolve.Due + resolve.Later + resolve.InRun; total != 3 {
-		t.Errorf("the three numbers add to %d over four assets, and the fourth has left the scheduler", total)
-	}
-
-	if len(body.Runs) != 1 || body.Runs[0].ID != runID {
-		t.Errorf("runs = %+v, want the one in flight: without them an empty queue "+
-			"and a full one look alike", body.Runs)
-	}
-}
-
-// asset writes a projected asset the way ingestion would, which is what these
-// tests need and what a report would take three round trips to produce.
-func (h *harness) asset(t *testing.T, id uuid.UUID, key, status string, scheduled bool) {
-	t.Helper()
-
-	h.exec(t, `INSERT INTO asset (id, org_id, program_id, kind, key, host,
-	                              discovery_source, scope_status, first_seen, last_seen)
-	           VALUES ($1, $2, $3, 'fqdn', $4, $4, 'test', $5, now(), now())`,
-		id, h.org, h.program, key, status)
-
-	// All three due dates, not one: a fixture leaving two null lets an exclusion clearing
-	// only the first pass, since the others read null either way (found by removing one
-	// branch and watching the test stay green).
-	//
-	// They use the harness clock, not now(): readers compare against h.now(), this
-	// process's clock, while now() is the container's, and the two drift. With the
-	// database ahead, a fixture meant to be due reads as scheduled ahead and the queue
-	// test blames the application.
-	due := "NULL, NULL, NULL"
-	if scheduled {
-		due = "$6, $6, $6"
-	}
-	h.exec(t, fmt.Sprintf(`
-		INSERT INTO asset_current (asset_id, org_id, program_id, kind, key, host,
-		                           scope_status, lifecycle, first_seen, last_seen,
-		                           next_resolve_at, next_full_at, next_fingerprint_at)
-		VALUES ($1, $2, $3, 'fqdn', $4, $4, $5, 'active', $6, $6, %s)`, due),
-		id, h.org, h.program, key, status, h.clock.now)
-}
-
-// A service discovered and never probed is found by the port its key carries. The
-// port is promoted at creation, since an unanswered service is the interesting case
-// and a filter working only after a probe would hide it.
-func TestAnUnprobedServiceIsFoundByItsPort(t *testing.T) {
-	h := newHarness(t)
-	token := h.console(t)
-
-	resp, payload := h.raw(t, http.MethodPost,
-		"/programs/"+h.program.String()+"/assets", token, map[string]any{
-			"entries": []string{"https://app.target.test", "plain.target.test"},
-		})
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status %d: %s", resp.StatusCode, payload)
-	}
-
-	resp, payload = h.raw(t, http.MethodPost, "/assets/search", token, map[string]any{
-		"filter": map[string]any{"op": "eq", "field": "port", "value": 443},
-	})
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status %d: %s", resp.StatusCode, payload)
-	}
-
-	found := decode[struct {
-		Assets []struct {
-			Key           string  `json:"key"`
-			Port          *int    `json:"port"`
-			LastCheckedAt *string `json:"last_checked_at"`
-		} `json:"assets"`
-	}](t, payload).Assets
-
-	if len(found) == 0 {
-		t.Fatalf("a filter on port 443 matched nothing: %s", payload)
-	}
-	for _, asset := range found {
-		if asset.Port == nil || *asset.Port != 443 {
-			t.Errorf("%s came back on a port filter with port %v", asset.Key, asset.Port)
-		}
-		// The half that makes the assertion mean something: none of these has
-		// ever been probed, so the column cannot have come from an observation.
-		if asset.LastCheckedAt != nil {
-			t.Errorf("%s has been probed, so this proves nothing about promotion at creation", asset.Key)
-		}
-	}
-}
-
-// The enrichment state is served, not deduced: the console cannot tell "no database"
-// from "configured, no match", as no asset carries an ASN either way.
-func TestTheDeploymentSaysWhetherItEnriches(t *testing.T) {
-	h := newHarness(t)
-
-	_, payload := h.raw(t, http.MethodGet, "/assets/fields", h.console(t), nil)
-	body := decode[struct {
-		Fields     map[string][]string `json:"fields"`
-		Enrichment *struct {
-			Configured bool `json:"configured"`
-		} `json:"enrichment"`
-	}](t, payload)
-
-	if body.Enrichment == nil {
-		t.Fatal("the vocabulary says nothing about enrichment, so the console would have to guess")
-	}
-	if body.Enrichment.Configured {
-		t.Error("this harness has no MaxMind database and the endpoint claims it enriches")
-	}
-	// And the vocabulary itself, which is the other half of the same idea: a
-	// console learning what it may filter on against 400s learns it wrong.
-	if len(body.Fields["program_id"]) == 0 {
-		t.Error("program_id is not in the vocabulary, so the switcher cannot filter on it")
-	}
-	if _, present := body.Fields["org_id"]; present {
-		t.Error("org_id is in the vocabulary: a tenant filter a caller can express is one " +
-			"a caller can forget")
-	}
-}
-
-// The queue carries the platform's name for each execution, or a failed run's logs
-// are unfindable. It must come back on the read, not only the answer that started the
-// run, which lives for one request while someone looks after a reload.
-func TestTheQueueCarriesTheExecutionIdentifier(t *testing.T) {
-	h := newHarness(t)
-	token := h.console(t)
-
-	started, unstarted := uuid.New(), uuid.New()
-	h.exec(t, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline, external_id, apex)
-	           VALUES ($1, $2, $3, 'discovery', 'full', 'pending', now() + interval '1 hour', 'job-exec-1', 'acme.test')`,
-		started, h.org, h.program)
-	h.exec(t, `INSERT INTO run (id, org_id, program_id, kind, scope, state, deadline)
-	           VALUES ($1, $2, $3, 'verification', 'full', 'pending', now() + interval '1 hour')`,
-		unstarted, h.org, h.program)
-
-	_, payload := h.raw(t, http.MethodGet, "/queue", token, nil)
-	runs := decode[struct {
-		Runs []struct {
-			ID         uuid.UUID `json:"id"`
-			ExternalID *string   `json:"external_id"`
-		} `json:"runs"`
-	}](t, payload).Runs
-
-	found := map[uuid.UUID]*string{}
-	for _, run := range runs {
-		found[run.ID] = run.ExternalID
-	}
-	if got := found[started]; got == nil || *got != "job-exec-1" {
-		t.Errorf("the started run came back with external_id %v, want the platform's identifier", got)
+	since, detail := time.Now().Add(-time.Hour), "connection refused"
+	if err := c.st.Q.PutHealthState(t.Context(), sqlcgen.PutHealthStateParams{Component: "sync", FailingSince: &since, Detail: &detail}); err != nil {
+		t.Fatal(err)
 	}
-	// And absent stays absent. A run nothing started and one whose execution is
-	// unnamed would otherwise read the same, and they want opposite actions.
-	if got, present := found[unstarted]; !present || got != nil {
-		t.Errorf("the unstarted run came back with external_id %v, want none", got)
+	if err := c.st.Q.PutHealthState(t.Context(), sqlcgen.PutHealthStateParams{Component: "render"}); err != nil {
+		t.Fatal(err)
 	}
-}
 
-// An include naming a thing declares it, and it joins the ordinary cycle. An apex says
-// where enumeration starts; the other two name something existing (a host to probe, a
-// path to render). Before, they classified nothing, so the rule read as in force over
-// an inventory it never filled and the three queues stayed at zero.
-func TestAnIncludeThatNamesAThingCreatesIt(t *testing.T) {
-	h := newHarness(t)
-	token := h.console(t)
-	ctx := context.Background()
-
-	resp, payload := h.raw(t, http.MethodPost,
-		"/programs/"+h.program.String()+"/rules", token, map[string]any{
-			"kind": "include", "matcher": "fqdn", "pattern": "www.target.test",
-		})
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("status %d: %s", resp.StatusCode, payload)
-	}
-
-	// The host exists, is in scope and has a due date, which is the point: a verification
-	// run selects on it, and without it nothing ever looks.
-	var status string
-	var full, resolve *time.Time
-	var source string
-	if err := h.pool.QueryRow(ctx, `
-		SELECT c.scope_status, c.next_full_at, c.next_resolve_at, a.discovery_source
-		  FROM asset_current c JOIN asset a ON a.id = c.asset_id
-		 WHERE c.program_id = $1 AND c.key = 'www.target.test'`, h.program).
-		Scan(&status, &full, &resolve, &source); err != nil {
-		t.Fatalf("the fqdn rule created no asset: %v", err)
-	}
-	if status != "in_scope" {
-		t.Errorf("scope_status = %s, want in_scope", status)
-	}
-	if full == nil || resolve == nil {
-		t.Errorf("due dates = full %v resolve %v, want both: a host with none is one "+
-			"no run will ever select", full, resolve)
-	}
-	// The lineage says which act put it here, because "why is this here" has two
-	// different answers and a rule is not somebody typing into a form.
-	if source != "scope_rule" {
-		t.Errorf("discovery_source = %q, want the rule that declared it", source)
-	}
-
-	// A URL declares the chain it needs. The host is what carries the schedule,
-	// because a URL has no liveness of its own: what answers is the service.
-	resp, payload = h.raw(t, http.MethodPost,
-		"/programs/"+h.program.String()+"/rules", token, map[string]any{
-			"kind": "include", "matcher": "url_prefix", "pattern": "https://app.target.test/admin",
-		})
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("status %d: %s", resp.StatusCode, payload)
+	code, a := c.do("GET", "/api/activity", "")
+	if code != 200 {
+		t.Fatalf("activity = %d %v", code, a)
 	}
-
-	for _, want := range []struct {
-		key, kind string
-		scheduled bool
-	}{
-		{"app.target.test", "fqdn", true},
-		{"app.target.test:443/tcp", "service", false},
-		{"https://app.target.test/admin", "url", false},
-	} {
-		var kind, status string
-		var due *time.Time
-		if err := h.pool.QueryRow(ctx, `
-			SELECT kind, scope_status, next_full_at FROM asset_current
-			 WHERE program_id = $1 AND key = $2`, h.program, want.key).
-			Scan(&kind, &status, &due); err != nil {
-			t.Errorf("the url rule created no %s: %v", want.key, err)
-			continue
-		}
-		if kind != want.kind {
-			t.Errorf("%s is a %s, want a %s", want.key, kind, want.kind)
-		}
-		// Every link of the chain is in scope: a path is unreachable without its host, so an
-		// included URL puts its host in the perimeter.
-		if status != "in_scope" {
-			t.Errorf("%s classified %s, want in_scope", want.key, status)
-		}
-		if (due != nil) != want.scheduled {
-			t.Errorf("%s scheduled = %v, want %v: the host carries the due date and "+
-				"the service is observed through it", want.key, due != nil, want.scheduled)
-		}
-	}
-
-	// An exclusion names something to take it out, which is not a reason to put
-	// it in. Nothing is created.
-	before := h.count(t, `SELECT count(*) FROM asset WHERE program_id = $1`, h.program)
-	resp, _ = h.raw(t, http.MethodPost,
-		"/programs/"+h.program.String()+"/rules", token, map[string]any{
-			"kind": "exclude", "matcher": "fqdn", "pattern": "never.target.test",
-		})
-	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("status %d on the exclusion", resp.StatusCode)
-	}
-	if after := h.count(t, `SELECT count(*) FROM asset WHERE program_id = $1`, h.program); after != before {
-		t.Errorf("an exclusion created %d assets", after-before)
-	}
-}
-
-// A pattern the entry path cannot read is refused rather than stored, and the
-// rule goes with it.
-func TestARuleNamingSomethingUnrepresentableIsRefused(t *testing.T) {
-	h := newHarness(t)
-	token := h.console(t)
-
-	before := h.count(t, `SELECT count(*) FROM scope_rule WHERE program_id = $1`, h.program)
-
-	resp, payload := h.raw(t, http.MethodPost,
-		"/programs/"+h.program.String()+"/rules", token, map[string]any{
-			"kind": "include", "matcher": "url_prefix", "pattern": "not a url at all",
-		})
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status %d, want 400: %s", resp.StatusCode, payload)
+	runs := a["runs"].([]any)
+	if len(runs) != 1 || a["queued"] != float64(1) || runs[0].(map[string]any)["program"] != "Acme" {
+		t.Fatalf("runs = %v queued = %v", runs, a["queued"])
 	}
-	if after := h.count(t, `SELECT count(*) FROM scope_rule WHERE program_id = $1`, h.program); after != before {
-		t.Errorf("scope_rule rows went from %d to %d on a refusal: the rule and what it "+
-			"declares are one transaction", before, after)
+	// Only what fails now: a component that recovered is not a problem.
+	problems := a["problems"].([]any)
+	if len(problems) != 1 || problems[0].(map[string]any)["component"] != "sync" || problems[0].(map[string]any)["detail"] != detail {
+		t.Fatalf("problems = %v", problems)
 	}
 }
