@@ -231,6 +231,42 @@ func TestUnreachableTargetIsRetriedAndCountsTowardUnobservable(t *testing.T) {
 	}
 }
 
+// A service that keeps refusing backs off, and a render that works ends it.
+func TestTargetFailuresInARowBackOff(t *testing.T) {
+	r := renderSetup(t)
+	fail := true
+	r.scanner.result = func(string) (*fingerprint.Result, error) {
+		if fail {
+			return nil, &fingerprint.UnreachableError{Reason: "connection_refused"}
+		}
+		return page(t, "1.24", 240), nil
+	}
+	svc := func() sqlcgen.AssetCurrent {
+		return current(t, r.st, r.program.ID, "service", "api.example.com:443/tcp")
+	}
+	for i, want := range []time.Duration{6 * time.Hour, 12 * time.Hour, 24 * time.Hour} {
+		r.drain(t)
+		s := svc()
+		if s.RenderFailures != int16(i+1) || s.NextRenderAt == nil {
+			t.Fatalf("failure %d: count %d next %v", i+1, s.RenderFailures, s.NextRenderAt)
+		}
+		// The writer's jitter is 10 %, and the fixture's random is its midpoint.
+		if got := s.NextRenderAt.Sub(r.clock.now()); got != want {
+			t.Errorf("failure %d: retried after %s, want %s", i+1, got, want)
+		}
+		r.clock.set(*s.NextRenderAt)
+	}
+	if n := count(t, r, `SELECT count(*) FROM observation o JOIN asset a ON a.id = o.asset_id
+		WHERE a.key = 'api.example.com:443/tcp' AND o.layer = 'fingerprint' AND o.data->>'browser' = 'connection_refused'`); n == 0 {
+		t.Error("the reason was not recorded")
+	}
+	fail = false
+	r.drain(t)
+	if s := svc(); s.RenderFailures != 0 || s.NextRenderAt.Before(r.clock.now().Add(20*24*time.Hour)) {
+		t.Errorf("after a success: count %d next %v, want 0 and the periodic cadence", s.RenderFailures, s.NextRenderAt)
+	}
+}
+
 func TestMajorVersionMakesEverythingDue(t *testing.T) {
 	r := renderSetup(t)
 	r.scanner.result = func(string) (*fingerprint.Result, error) { return page(t, "1.24", 240), nil }

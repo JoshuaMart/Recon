@@ -83,6 +83,48 @@ func (e *BusyError) Error() string {
 }
 func (e *BusyError) Unwrap() error { return ErrBusy }
 
+// UnreachableError is a target the browser could not render, with why: a
+// network error code in lower case (connection_refused), timeout, or
+// no_response.
+type UnreachableError struct{ Reason string }
+
+func (e *UnreachableError) Error() string { return "target did not answer the browser: " + e.Reason }
+func (e *UnreachableError) Unwrap() error { return ErrUnreachable }
+
+// Reason is why a target could not be rendered, no_response when the error
+// does not say.
+func Reason(err error) string {
+	if u, ok := errors.AsType[*UnreachableError](err); ok {
+		return u.Reason
+	}
+	return "no_response"
+}
+
+// navError reads a 500 about the target: the browser got no response, or its
+// navigation failed (net::ERR_*, or a page that never loaded). Every other
+// 500 is the renderer's own fault.
+func navError(raw []byte) (string, bool) {
+	switch {
+	case bytes.Contains(raw, []byte("no responses received")):
+		return "no_response", true
+	case !bytes.Contains(raw, []byte("navigating to ")):
+		return "", false
+	}
+	if _, after, ok := bytes.Cut(raw, []byte("net::ERR_")); ok {
+		end := bytes.IndexFunc(after, func(r rune) bool { return r != '_' && (r < 'A' || r > 'Z') })
+		if end < 0 {
+			end = len(after)
+		}
+		if end > 0 {
+			return strings.ToLower(string(after[:end])), true
+		}
+	}
+	if bytes.Contains(raw, []byte("deadline exceeded")) {
+		return "timeout", true
+	}
+	return "navigation_failed", true
+}
+
 // Client calls one Fingerprinter.
 type Client struct {
 	url  string
@@ -126,11 +168,10 @@ func (c *Client) Scan(ctx context.Context, url string) (*Result, []byte, error) 
 		secs, _ := strconv.Atoi(res.Header.Get("Retry-After"))
 		return nil, nil, &BusyError{RetryAfter: time.Duration(max(secs, 1)) * time.Second}
 	case http.StatusRequestTimeout:
-		return nil, nil, fmt.Errorf("%w: scan timed out", ErrUnreachable)
+		return nil, nil, &UnreachableError{Reason: "timeout"}
 	case http.StatusInternalServerError:
-		// The one 500 that is about the target: the browser got no response.
-		if bytes.Contains(raw, []byte("no responses received")) {
-			return nil, nil, fmt.Errorf("%w: no responses received", ErrUnreachable)
+		if reason, ok := navError(raw); ok {
+			return nil, nil, &UnreachableError{Reason: reason}
 		}
 	}
 	return nil, nil, fmt.Errorf("fingerprinter: %s: %s", res.Status, strings.TrimSpace(string(raw[:min(len(raw), 300)])))

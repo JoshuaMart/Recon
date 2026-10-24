@@ -2,6 +2,7 @@ package render
 
 import (
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -59,5 +60,17 @@ func TestPoliteness(t *testing.T) {
 	d.mu.Unlock()
 	if !d.claim(same) {
 		t.Error("a released asset can be claimed again by the next pass")
+	}
+}
+
+func TestRetryDoublesUpToThePeriodicCadence(t *testing.T) {
+	w := &Writer{Settings: DefaultSettings}
+	for failures, want := range map[int]time.Duration{
+		1: 6 * time.Hour, 2: 12 * time.Hour, 3: 24 * time.Hour, 5: 96 * time.Hour,
+		7: 16 * 24 * time.Hour, 8: 21 * 24 * time.Hour, 30000: 21 * 24 * time.Hour,
+	} {
+		if got := w.retryAfter(failures); got != want {
+			t.Errorf("retryAfter(%d) = %s, want %s", failures, got, want)
+		}
 	}
 }

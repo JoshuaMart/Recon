@@ -88,6 +88,17 @@ func (w *Writer) after(d time.Duration) time.Time {
 	return w.now().Add(time.Duration(float64(d) * (1 + w.Settings.Jitter*(2*r()-1))))
 }
 
+// retryAfter is the wait after this many target failures in a row: Retry,
+// doubled each time, never past Periodic. A dead service is not retried
+// every few hours forever; verification still sees it come back.
+func (w *Writer) retryAfter(failures int) time.Duration {
+	d := w.Settings.Retry
+	for i := 1; i < failures && d < w.Settings.Periodic; i++ {
+		d *= 2
+	}
+	return min(d, w.Settings.Periodic)
+}
+
 // Outcome is what writing a render did.
 type Outcome struct {
 	Changed        bool
@@ -184,7 +195,11 @@ func (w *Writer) Unreachable(ctx context.Context, t Target, reason string) error
 	if _, _, err := wr.Settle(ctx, inventory.Settle{ID: t.AssetID, Kind: t.Kind, Outcomes: map[string]string{"fingerprint": "error"}, Verify: true}); err != nil {
 		return err
 	}
-	if err := q.ScheduleRender(ctx, sqlcgen.ScheduleRenderParams{AssetID: t.AssetID, Next: w.after(w.Settings.Retry)}); err != nil {
+	failures, err := q.RecordRenderFailure(ctx, t.AssetID)
+	if err != nil {
+		return err
+	}
+	if err := q.SetNextRender(ctx, sqlcgen.SetNextRenderParams{AssetID: t.AssetID, Next: w.after(w.retryAfter(int(failures)))}); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

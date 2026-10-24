@@ -142,12 +142,17 @@ queue is not an incident, so it does not notify.
 | Fingerprinter answer | Observation | Due date |
 |---|---|---|
 | `200`, result | written, normalized and deduplicated, `outcome = ok` | the periodic cadence (21 d) |
-| `500` "no responses received", `408` scan timed out | the target did not answer the browser: `outcome = error`, which counts toward `unobservable`, never `inactive` | retried in 6 h |
+| `500` "no responses received", `500` "navigating to …" (a `net::ERR_*` or a page that never loads), `408` scan timed out | the target did not answer the browser: `outcome = error` with the reason (`connection_refused`, `timeout`, …), which counts toward `unobservable`, never `inactive` | retried after 6 h, doubled on each failure in a row, capped at the periodic cadence |
 | `429` | **nothing**: the service was busy, the asset did nothing | unchanged |
-| any other `5xx`, connection refused | nothing: a fault of the renderer, not of the target | unchanged, dispatcher pauses |
+| any other `5xx`, connection refused, Recon's own timeout | nothing: a fault of the renderer, not of the target | unchanged, dispatcher pauses |
 
 A `429` must never touch the asset: counting it would walk healthy assets toward `unobservable` because
-the renderer was busy.
+the renderer was busy. A target failure must never pause the dispatcher: one host refusing connections
+would hold back every other render. The backoff (`render_failures` on `asset_current`, reset by a
+success) keeps a dead service from being retried every 6 h; verification still sees it come back.
+
+Chrome runs with `--ignore-certificate-errors`: an expired, self-signed or misnamed certificate is often
+what makes a host worth a look, and the browser sits on a network that reaches nothing of Recon's.
 
 ## Technologies
 

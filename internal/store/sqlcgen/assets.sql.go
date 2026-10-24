@@ -25,7 +25,7 @@ func (q *Queries) CountWildcardAssets(ctx context.Context, wildcardID *uuid.UUID
 }
 
 const getAssetCurrent = `-- name: GetAssetCurrent :one
-SELECT asset_id, program_id, kind, key, host, port, scheme, scope_status, lifecycle, dns_state, tcp_state, http_state, ips, cname, cdn, status_code, title, server, final_url, first_seen, last_seen, last_changed, next_resolve_at, next_full_at, backoff_tier, lifecycle_since, last_checked_at, next_render_at, render_priority, last_render_at, redirect_hosts, header_names, cookie_names, script_hashes, favicon_hash, external_hosts, web_sockets, has_robots, has_sitemap, has_llms_txt, waf, headers, asn, asn_org, country, ct_lane FROM asset_current WHERE asset_id = $1
+SELECT asset_id, program_id, kind, key, host, port, scheme, scope_status, lifecycle, dns_state, tcp_state, http_state, ips, cname, cdn, status_code, title, server, final_url, first_seen, last_seen, last_changed, next_resolve_at, next_full_at, backoff_tier, lifecycle_since, last_checked_at, next_render_at, render_priority, last_render_at, redirect_hosts, header_names, cookie_names, script_hashes, favicon_hash, external_hosts, web_sockets, has_robots, has_sitemap, has_llms_txt, waf, headers, asn, asn_org, country, ct_lane, render_failures FROM asset_current WHERE asset_id = $1
 `
 
 func (q *Queries) GetAssetCurrent(ctx context.Context, assetID uuid.UUID) (AssetCurrent, error) {
@@ -78,6 +78,7 @@ func (q *Queries) GetAssetCurrent(ctx context.Context, assetID uuid.UUID) (Asset
 		&i.AsnOrg,
 		&i.Country,
 		&i.CtLane,
+		&i.RenderFailures,
 	)
 	return i, err
 }

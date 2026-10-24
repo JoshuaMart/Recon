@@ -265,6 +265,21 @@ func (q *Queries) PutTech(ctx context.Context, arg PutTechParams) error {
 	return err
 }
 
+const recordRenderFailure = `-- name: RecordRenderFailure :one
+UPDATE asset_current SET render_failures = LEAST(render_failures + 1, 32767), render_priority = 0
+WHERE asset_id = $1
+RETURNING render_failures
+`
+
+// A target the browser could not render: one more failure in a row, which
+// the caller turns into the next date.
+func (q *Queries) RecordRenderFailure(ctx context.Context, assetID uuid.UUID) (int16, error) {
+	row := q.db.QueryRow(ctx, recordRenderFailure, assetID)
+	var render_failures int16
+	err := row.Scan(&render_failures)
+	return render_failures, err
+}
+
 const renderQueueDepth = `-- name: RenderQueueDepth :many
 SELECT ac.render_priority, count(*)::int AS depth
 FROM asset_current ac JOIN program p ON p.id = ac.program_id
@@ -315,7 +330,7 @@ func (q *Queries) RerenderAll(ctx context.Context, now time.Time) (int64, error)
 
 const scheduleRender = `-- name: ScheduleRender :exec
 UPDATE asset_current SET next_render_at = $1::timestamptz, render_priority = 0,
-  last_render_at = COALESCE($2, last_render_at)
+  last_render_at = COALESCE($2, last_render_at), render_failures = 0
 WHERE asset_id = $3
 `
 
@@ -325,6 +340,7 @@ type ScheduleRenderParams struct {
 	AssetID    uuid.UUID  `json:"asset_id"`
 }
 
+// A render written: the failures in a row end with it.
 func (q *Queries) ScheduleRender(ctx context.Context, arg ScheduleRenderParams) error {
 	_, err := q.db.Exec(ctx, scheduleRender, arg.Next, arg.RenderedAt, arg.AssetID)
 	return err
@@ -420,6 +436,20 @@ func (q *Queries) ScreenshotsBeyond(ctx context.Context, arg ScreenshotsBeyondPa
 		return nil, err
 	}
 	return items, nil
+}
+
+const setNextRender = `-- name: SetNextRender :exec
+UPDATE asset_current SET next_render_at = $1::timestamptz WHERE asset_id = $2
+`
+
+type SetNextRenderParams struct {
+	Next    time.Time `json:"next"`
+	AssetID uuid.UUID `json:"asset_id"`
+}
+
+func (q *Queries) SetNextRender(ctx context.Context, arg SetNextRenderParams) error {
+	_, err := q.db.Exec(ctx, setNextRender, arg.Next, arg.AssetID)
+	return err
 }
 
 const setRenderCurrent = `-- name: SetRenderCurrent :exec

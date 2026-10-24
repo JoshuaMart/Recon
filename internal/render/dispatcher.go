@@ -240,7 +240,7 @@ func (d *Dispatcher) render(ctx context.Context, t Target) {
 		d.mu.Unlock()
 		return
 	case errors.Is(err, fingerprint.ErrUnreachable):
-		if err := d.Writer.Unreachable(context.WithoutCancel(ctx), t, "no_response"); err != nil {
+		if err := d.Writer.Unreachable(context.WithoutCancel(ctx), t, fingerprint.Reason(err)); err != nil {
 			d.Log.ErrorContext(ctx, "render: writing an unreachable target", "asset", t.AssetID, "err", err)
 		}
 		return

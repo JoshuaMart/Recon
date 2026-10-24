@@ -75,6 +75,7 @@ type AssetCurrent struct {
 	AsnOrg         *string      `json:"asn_org"`
 	Country        *string      `json:"country"`
 	CtLane         bool         `json:"ct_lane"`
+	RenderFailures int16        `json:"render_failures"`
 }
 
 type AssetLayer struct {

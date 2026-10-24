@@ -21,6 +21,8 @@ x-chrome: &chrome
   init: true
   shm_size: 1g
   command:
+    # A bad certificate is often what makes a host worth a look.
+    - --ignore-certificate-errors
     - --remote-allow-origins=*
     - --disable-dev-shm-usage
     - --disable-gpu
