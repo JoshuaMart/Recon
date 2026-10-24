@@ -251,7 +251,8 @@ func TestTargetFailuresInARowBackOff(t *testing.T) {
 			t.Fatalf("failure %d: count %d next %v", i+1, s.RenderFailures, s.NextRenderAt)
 		}
 		// The writer's jitter is 10 %, and the fixture's random is its midpoint.
-		if got := s.NextRenderAt.Sub(r.clock.now()); got != want {
+		// Its clock is PostgreSQL's, to the microsecond.
+		if got := s.NextRenderAt.Sub(r.clock.now().Truncate(time.Microsecond)); got != want {
 			t.Errorf("failure %d: retried after %s, want %s", i+1, got, want)
 		}
 		r.clock.set(*s.NextRenderAt)
