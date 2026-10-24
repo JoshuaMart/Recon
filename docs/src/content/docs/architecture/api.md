@@ -18,7 +18,7 @@ flowchart LR
 |---|---|---|
 | UI | `POST /api/session` with the API key sets an httpOnly, `Secure`, `SameSite=Strict` signed cookie (30 days) | `/api/*` |
 | Scripts | `Authorization: Bearer <api key>` | `/api/*` |
-| A FastRecon run | the run's [HMAC tokens](/architecture/stack/#the-run-contract), in a header | its own `/runs/{id}/targets` and `/runs/{id}/report` |
+| A FastRecon job | the run's [HMAC tokens](/architecture/stack/#the-scaleway-runner), in a header | its own `/runs/{id}/targets` and `/runs/{id}/report` |
 
 The API key is set in the config. A write with the cookie must also carry an `Origin` matching
 `public_url`, which with `SameSite=Strict` covers CSRF.
@@ -57,8 +57,8 @@ The API key is set in the config. A write with the cookie must also carry an `Or
 | `GET /api/health` | sync, CT, Fingerprinter, runners, render queue (public, states only) |
 | `GET /api/settings` | the config in effect without its secrets, and screenshot storage used |
 | `GET /*` (anything else) | the interface, `index.html` for any path it routes itself |
-| `GET /runs/{id}/targets` | one host per line, for that run only |
-| `POST /runs/{id}/report` | the FastRecon report |
+| `GET /runs/{id}/targets` | one host per line, for that run only, while it runs |
+| `POST /runs/{id}/report` | the FastRecon report, once: `409` when the run is no longer running |
 
 There is no `DELETE` on programs, rules or assets ([P2](/architecture/principles/#p2-nothing-is-deleted)).
 Saved searches are your settings, not inventory, so they can be deleted.

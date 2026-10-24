@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/JoshuaMart/recon/internal/enrich"
 	"github.com/JoshuaMart/recon/internal/ingest"
@@ -56,8 +57,30 @@ type Scheduler struct {
 	// have something new to evaluate. Nil does nothing.
 	OnIngested func()
 
-	wg sync.WaitGroup
+	// Jobs follows remote jobs: their state is read and an overdue one is
+	// stopped, whatever the runner in effect, so a job started before a
+	// switch back to serve is still seen to its end. With StartJobs, recon
+	// and verification runs are started as jobs, JobSlots at a time; CT
+	// candidates stay on Runner. Jobs reach Recon at CallbackURL with tokens
+	// from Tokens: the report's lasts the run's deadline plus Grace, and the
+	// job waits ReportTimeout for Recon to take it.
+	Jobs          Jobs
+	StartJobs     bool
+	JobSlots      int
+	Tokens        *Tokens
+	CallbackURL   string
+	Grace         time.Duration
+	ReportTimeout time.Duration
+
+	wg        sync.WaitGroup
+	lastWatch time.Time
 }
+
+// Runners as the run table names them.
+const (
+	onServe    = "serve"
+	onScaleway = "scaleway"
+)
 
 func (s *Scheduler) now() time.Time { return s.Now().UTC().Truncate(time.Microsecond) }
 
@@ -125,19 +148,42 @@ func (s *Scheduler) Pass(ctx context.Context) error {
 			return err
 		}
 	}
+	// CT candidates always run on serve: a job takes tens of seconds to
+	// start, for a run of seconds whose worth is minutes.
+	local := []string{"candidate"}
+	if s.Jobs != nil && s.StartJobs {
+		if err := s.claim(ctx, onScaleway, []string{"recon", "verification"}, s.JobSlots, s.startJob); err != nil {
+			return err
+		}
+	} else {
+		local = append(local, "recon", "verification")
+	}
+	if s.Jobs != nil {
+		if err := s.watchJobs(ctx); err != nil {
+			return err
+		}
+	}
 	if s.Runner == nil {
 		return nil
 	}
+	return s.claim(ctx, onServe, local, s.Slots, s.execute)
+}
+
+// claim starts queued runs of these kinds on one runner while it has free
+// slots.
+func (s *Scheduler) claim(ctx context.Context, runner string, kinds []string, slots int, run func(context.Context, sqlcgen.Run)) error {
 	for {
-		running, err := s.Store.Q.CountRunning(ctx)
+		running, err := s.Store.Q.CountRunning(ctx, runner)
 		if err != nil {
 			return err
 		}
-		if int(running) >= s.Slots {
+		if int(running) >= slots {
 			return nil
 		}
 		now := s.now()
-		r, err := s.Store.Q.ClaimQueuedRun(ctx, sqlcgen.ClaimQueuedRunParams{Now: now, Deadline: now.Add(s.Timeout + deadlineMargin)})
+		r, err := s.Store.Q.ClaimQueuedRun(ctx, sqlcgen.ClaimQueuedRunParams{
+			Now: now, Deadline: now.Add(s.Timeout + deadlineMargin), Runner: runner, Kinds: kinds,
+		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -147,7 +193,7 @@ func (s *Scheduler) Pass(ctx context.Context) error {
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			s.execute(ctx, r)
+			run(ctx, r)
 		}()
 	}
 }
@@ -379,14 +425,14 @@ func Exclusions(rules []sqlcgen.ScopeRule) []string {
 func (s *Scheduler) ingest(ctx context.Context, r sqlcgen.Run, apex string, raw []byte) (ingest.Summary, error) {
 	rep, err := ingest.Parse(raw)
 	if err != nil {
-		return ingest.Summary{}, err
+		return ingest.Summary{}, fmt.Errorf("%w: %w", ErrBadReport, err)
 	}
 	want := "domain"
 	if r.Kind == "verification" || r.Kind == "candidate" {
 		want = "targets"
 	}
 	if rep.Run.Input != want {
-		return ingest.Summary{}, fmt.Errorf("a %s report must have input %s, got %q", r.Kind, want, rep.Run.Input)
+		return ingest.Summary{}, fmt.Errorf("%w: a %s report must have input %s, got %q", ErrBadReport, r.Kind, want, rep.Run.Input)
 	}
 	tx, err := s.Store.Pool.Begin(ctx)
 	if err != nil {
@@ -394,6 +440,16 @@ func (s *Scheduler) ingest(ctx context.Context, r sqlcgen.Run, apex string, raw 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := s.Store.Q.WithTx(tx)
+
+	// One copy at a time: a delivery retried while the first is still being
+	// written is turned away before it redoes the work.
+	if _, err := q.LockRunningRun(ctx, r.ID); err != nil {
+		var pe *pgconn.PgError
+		if errors.Is(err, pgx.ErrNoRows) || (errors.As(err, &pe) && pe.Code == "55P03") {
+			return ingest.Summary{}, fmt.Errorf("%w, or its report is being taken", ErrRunClosed)
+		}
+		return ingest.Summary{}, err
+	}
 
 	now := s.now()
 	sum, err := ingest.Ingest(ctx, q, ingest.Input{
@@ -416,7 +472,7 @@ func (s *Scheduler) ingest(ctx context.Context, r sqlcgen.Run, apex string, raw 
 		return ingest.Summary{}, err
 	}
 	if n == 0 {
-		return ingest.Summary{}, errors.New("the run is no longer running (timed out?), report dropped")
+		return ingest.Summary{}, fmt.Errorf("%w (timed out?), report dropped", ErrRunClosed)
 	}
 	if r.WildcardID != nil {
 		if err := q.MarkWildcardRecon(ctx, sqlcgen.MarkWildcardReconParams{ID: *r.WildcardID, RunID: &r.ID, Now: now}); err != nil {
@@ -501,6 +557,7 @@ func (s *Scheduler) timeOut(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var jobs []string
 	for _, r := range rows {
 		s.Log.WarnContext(ctx, "run timed out", "run", r.ID)
 		if r.Kind == "recon" {
@@ -508,8 +565,23 @@ func (s *Scheduler) timeOut(ctx context.Context) error {
 				return err
 			}
 		}
+		if r.Runner == onScaleway && r.ExternalID != nil {
+			jobs = append(jobs, *r.ExternalID)
+		}
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	// A job does not outlive the run it belongs to.
+	for _, id := range jobs {
+		if s.Jobs == nil {
+			break
+		}
+		if err := s.Jobs.Stop(ctx, id); err != nil {
+			s.Log.ErrorContext(ctx, "stopping a timed out job", "job", id, "err", err)
+		}
+	}
+	return nil
 }
 
 // EnqueueRecon queues a recon on a wildcard. queued is false, with a reason,

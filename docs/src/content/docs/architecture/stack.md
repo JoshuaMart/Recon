@@ -27,7 +27,7 @@ Not used: an ORM, a message broker, Kubernetes.
 | `public_url`, API key, database URL | programs, manual programs, local rules |
 | ScopesExtractor URL and key, sync interval | auto-scan per program |
 | Fingerprinter URL, render concurrency | triage, tags, notes |
-| runner choice and credentials, FastRecon source keys | saved searches and their alerts |
+| runner choice and credentials (FastRecon source keys live in the job) | saved searches and their alerts |
 | port list, cadences, backoff curves, batch size | |
 | auto-scan global default | |
 | notification channels | |
@@ -68,14 +68,14 @@ checks both properties on the running stack, each next to a probe that must succ
 
 A FastRecon run is started by a **runner**, behind one interface:
 
-| Runner | Where FastRecon runs | How the report comes back |
-|---|---|---|
-| `serve` | `fastrecon serve`, a service of the compose stack | as the response to `POST /run`, synchronously |
-| `scaleway` ([phase 9](/architecture/roadmap/)) | a Scaleway Serverless Job, to scan from other addresses than the VPS | webhook to `public_url`, which must then be reachable over HTTPS |
+| Runner | Where FastRecon runs | How the report comes back | Takes |
+|---|---|---|---|
+| `serve` | `fastrecon serve`, a service of the compose stack | as the response to `POST /run`, synchronously | CT candidates always; recon and verification without a remote runner |
+| `scaleway` | a Scaleway Serverless Job, scanning from other addresses than the VPS | posted to `/runs/{id}/report` | recon and verification, when `runner.provider` is `scaleway` |
 
-`serve` is the default and needs no credential on Recon's side beyond the FastRecon token: no Docker
-socket, no webhook, no target URL. One `fastrecon serve` instance runs one run at a time and answers
-`429` otherwise, so the number of instances is the number of slots.
+CT candidates stay on `serve`: a job takes tens of seconds to start, for a run of seconds whose worth is
+minutes. `serve` needs no credential on Recon's side beyond the FastRecon token. One instance runs one
+run at a time and answers `429` otherwise, so the number of instances is the number of slots.
 
 ### The run contract
 
@@ -87,15 +87,45 @@ socket, no webhook, no target URL. One `fastrecon serve` instance runs one run a
  "ports": "80,443,8080,...", "timeout": "30m"}
 ```
 
-- The first shape is a recon on a wildcard, the second a verification (phase 3).
+- The first shape is a recon on a wildcard, the second a verification or a CT candidate run.
 - `run.stage` holds the value sent as `stages`: `enum`, `resolve`, `ports` or `full`.
 - The exclusions are the program's `exclude` rules that name hosts: an `fqdn` as is, an `apex` as both
   the apex and `*.apex`. `url_prefix` and `cidr` exclusions are applied at ingestion.
 - The report is re-derived on arrival: a recon's hosts must sit under its wildcard, a verification's
   must be its targets, and every outcome is recomputed.
 - FastRecon's source API keys live in its own environment, never in a request.
-- The `scaleway` runner adds two HMAC tokens over `(run id, purpose, expiry)` for its target URL and
-  webhook, so nothing is stored and they expire on their own.
+
+### The Scaleway runner
+
+```mermaid
+sequenceDiagram
+  participant R as Recon
+  participant S as Scaleway Jobs
+  participant J as FastRecon job
+  R->>S: start the definition, with this run's args
+  S->>J: container
+  J->>R: GET /runs/{id}/targets (verification)
+  J->>R: POST /runs/{id}/report
+  R-->>R: ingest, run succeeded
+  R->>S: every minute: the job run's state
+```
+
+| Rule | Why |
+|---|---|
+| Recon starts the definition, it never updates it | an update replaces the whole environment and wipes the source keys without an error |
+| the whole invocation travels as arguments: `--stages`, `-d` or `--targets-url`, `--exclude`, `--ports`, `--timeout`, `--webhook-url`, `--webhook-timeout`, and the tokens as headers | arguments replace the definition's, the environment merges with it: a `-d` left on the definition must never pin a run |
+| two HMAC tokens over `(run, purpose, expiry)`, one to fetch the targets, one to post the report, in headers | nothing is stored or revoked; a token in a URL lands in every access log |
+| the report token lasts the deadline plus a grace | a run that spends its whole budget can still deliver |
+| `--webhook-timeout` is minutes, not the 30 s default | ingesting a large report takes longer, and a hang-up rolled back the write while retries redid the work |
+| a report for a run that is not running answers `409` and is not ingested | FastRecon retries a delivery; the second copy of an ingested report changes nothing |
+| at startup, the definition is read: it must exist, retry nothing, and outlive `fastrecon.timeout` | a misconfiguration is a log line at boot, not a first run that dies |
+| every minute, the job run's state is read | a job the platform calls failed closes its run at once, with the platform's reason, instead of at its deadline |
+| a run past its deadline is timed out and its job stopped | a job does not outlive the run it belongs to |
+| `runner.callback_url` is where a job reaches Recon, `public_url` by default | a local test exposes Recon through a tunnel while the interface stays on `localhost` |
+| the callback is `https`, `http` only to localhost | the run tokens travel with every call |
+| the job routes are always served, and jobs are followed whenever the Scaleway settings are set | a job started before a switch back to `serve` still delivers, and is still watched and stopped |
+| a report is taken with its run locked | a delivery retried while the first copy is still being written is answered `409` at once |
+| a job whose id could not be recorded is stopped and its run failed | unrecorded, it could be neither watched nor stopped |
 
 ### Run states
 
@@ -105,7 +135,7 @@ stateDiagram-v2
   queued --> running: a slot frees up
   running --> queued: FastRecon busy (429)
   running --> succeeded: report ingested
-  running --> failed: refused (400), error, or interrupted
+  running --> failed: refused (400), error, the job failed, or interrupted
   running --> timed_out: deadline passed
 ```
 
@@ -113,20 +143,20 @@ stateDiagram-v2
 |---|---|
 | deadline | the run's `timeout` plus 10 minutes |
 | a sweeper | marks `running` runs past their deadline `timed_out`, every minute |
-| at startup | runs left `running` by a stopped process are `failed`: a synchronous call does not survive it |
+| at startup | runs left `running` on `serve` are `failed`: a synchronous call does not survive its caller. A job keeps running and is still waited for |
 | a report after a terminal state | not ingested |
 | a timed out verification | its hosts are still due, the next tick takes them again |
 | a failed or timed out recon | `wildcard.last_recon_at` does not move |
 
 ### Concurrency
 
-A slot is a run in `running`.
+A slot is a run in `running`, counted per runner.
 
 | Kind | Slots (config) | Order |
 |---|---|---|
-| recon | 1 per `fastrecon serve` instance | queue order, and `scan the N oldest` queues oldest first |
-| verification | 1 | due date |
-| CT candidates | 1, separate, ahead of the queue | so a candidate never waits behind a batch; runs with verification off |
+| recon | `fastrecon.slots` on `serve`, `runner.slots` on Scaleway | queue order, and `scan the N oldest` queues oldest first |
+| verification | 1 at a time, on the same runner as recon | due date |
+| CT candidates | 1, on `serve`, ahead of the queue | so a candidate never waits behind a batch; runs with verification off |
 | renders | adaptive, see [absorbing a burst](/architecture/fingerprinting/#absorbing-a-burst) | priority, then due date |
 
 ## Backups

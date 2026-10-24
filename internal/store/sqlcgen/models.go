@@ -209,6 +209,8 @@ type Run struct {
 	ReportMeta []byte     `json:"report_meta"`
 	Ingest     []byte     `json:"ingest"`
 	Targets    []string   `json:"targets"`
+	Runner     string     `json:"runner"`
+	ExternalID *string    `json:"external_id"`
 }
 
 type SavedSearch struct {

@@ -58,6 +58,17 @@ screenshots:
   keep: 3              # visually distinct screenshots kept per asset
   disk_threshold: 0.9  # share of the filesystem in use past which a health notification fires
 
+runner:
+  provider: serve      # serve, or scaleway: recon and verification as Serverless Jobs
+  endpoint: https://api.scaleway.com
+  region: ""           # fr-par, nl-ams, pl-waw
+  job_id: ""           # the job definition, created once outside Recon
+  secret_key: ""       # an IAM key allowed to start Serverless Jobs
+  callback_url: ""     # where a job reaches Recon; public_url when empty
+  slots: 4             # jobs in flight at once
+  grace: 30m           # a report token lasts the run's deadline plus this
+  report_timeout: 5m   # the job's wait for Recon to take its report
+
 ct:
   url: ""              # the certstream websocket; empty leaves CT off
   max_per_hour: 40     # names a program may gain from CT in an hour, the overflow counted

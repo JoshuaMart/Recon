@@ -247,7 +247,7 @@ const enqueueCandidate = `-- name: EnqueueCandidate :one
 INSERT INTO run (program_id, kind, stage, targets, trigger, queued_at)
 VALUES ($1, 'candidate', $2, $3::text[], 'ct', $4::timestamptz)
 ON CONFLICT (kind) WHERE kind = 'candidate' AND state IN ('queued', 'running') DO NOTHING
-RETURNING id, program_id, kind, stage, wildcard_id, state, trigger, queued_at, started_at, finished_at, deadline, error, report_meta, ingest, targets
+RETURNING id, program_id, kind, stage, wildcard_id, state, trigger, queued_at, started_at, finished_at, deadline, error, report_meta, ingest, targets, runner, external_id
 `
 
 type EnqueueCandidateParams struct {
@@ -281,6 +281,8 @@ func (q *Queries) EnqueueCandidate(ctx context.Context, arg EnqueueCandidatePara
 		&i.ReportMeta,
 		&i.Ingest,
 		&i.Targets,
+		&i.Runner,
+		&i.ExternalID,
 	)
 	return i, err
 }

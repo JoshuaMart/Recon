@@ -232,6 +232,28 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, st *store.S
 	} else {
 		log.InfoContext(ctx, "no fastrecon.url: runs stay queued")
 	}
+	// The routes a job calls are always served: a job started before a
+	// switch back to serve still delivers. Its tokens only need the API key.
+	tokens := runs.NewTokens(cfg.APIKey)
+	sched.Tokens, deps.RunJobs, deps.RunTokens = tokens, sched, tokens
+	if rc := cfg.Runner; rc.JobID != "" && rc.SecretKey != "" {
+		jobs := &runs.Scaleway{
+			Endpoint: rc.Endpoint, Region: rc.Region, JobID: rc.JobID, Secret: rc.SecretKey,
+			HTTP: &http.Client{Timeout: 30 * time.Second},
+		}
+		// Followed whatever the provider, so a job is seen to its end.
+		sched.Jobs, sched.JobSlots = jobs, rc.Slots
+		sched.CallbackURL, sched.Grace, sched.ReportTimeout = cfg.CallbackBase(), rc.Grace, rc.ReportTimeout
+		if rc.Provider == "scaleway" {
+			sched.StartJobs = true
+			// Read once: a misconfigured definition is said at boot, not by a
+			// first run that dies.
+			if err := jobs.Check(ctx, cfg.FastRecon.Timeout); err != nil {
+				log.ErrorContext(ctx, "the Scaleway job definition is not usable as is", "err", err)
+			}
+			log.InfoContext(ctx, "recon and verification run as Scaleway jobs", "job", rc.JobID, "callback", cfg.CallbackBase())
+		}
+	}
 	if err := sched.Recover(ctx); err != nil {
 		return err
 	}

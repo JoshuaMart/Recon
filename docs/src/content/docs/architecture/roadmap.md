@@ -33,7 +33,7 @@ flowchart LR
 | **6 Interface** ✓ | the screens, triage, wildcards view | a full hunt session without touching the API |
 | **7 Changes and notifications** ✓ | change rows, feed, saved search alerts, Discord | a week of use sends only what the defaults list |
 | **8 Certificate Transparency** ✓ | CT matcher, candidate flow, the certificate notification | a certificate for a new name under a wildcard is probed within a minute |
-| **9 Scaleway runner** | the [`scaleway` runner](/architecture/stack/#runs): FastRecon in a Serverless Job, `GET /runs/{id}/targets` and `POST /runs/{id}/report` behind HMAC tokens, the runner chosen per run kind in the config | a recon and a verification run in a job, scanning from an address other than the VPS, and their reports are ingested like a `serve` run's |
+| **9 Scaleway runner** ✓ | the [`scaleway` runner](/architecture/stack/#runs): FastRecon in a Serverless Job, `GET /runs/{id}/targets` and `POST /runs/{id}/report` behind HMAC tokens, the runner chosen per run kind in the config | a recon and a verification run in a job, scanning from an address other than the VPS, and their reports are ingested like a `serve` run's |
 | **10 BBOT import** | the [BBOT import](/architecture/discovery/#bbot-import): parser, the import route and `recon import bbot` | a BBOT `output.json` declares its names, classified against the program's scope, and observes nothing |
 
 ## Later

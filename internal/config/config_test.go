@@ -111,11 +111,13 @@ func TestPublicLeavesSecretsOut(t *testing.T) {
 	c := Defaults()
 	c.APIKey, c.Database.URL = "secret-key-1", "postgres://u:secret-db-2@db/recon"
 	c.ScopesExtractor.APIKey, c.FastRecon.APIToken = "secret-se-3", "secret-fr-4"
+	c.Notify.DiscordURL, c.Notify.WebhookURL = "https://discord.test/secret-dc-5", "https://hook.test/secret-wh-6"
+	c.Notify.WebhookHeader, c.Runner.SecretKey = "X-Token: secret-wh-7", "secret-scw-8"
 	b, err := json.Marshal(c.Public())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(b), "secret") {
+	if strings.Contains(string(b), "secret-") {
 		t.Fatalf("a secret reached the settings page: %s", b)
 	}
 	if !strings.Contains(string(b), `"api_key":{"set":true}`) {
@@ -150,4 +152,42 @@ func TestPublicListsEverySetting(t *testing.T) {
 		}
 	}
 	walk("", example, Defaults().Public())
+}
+
+func TestRunnerValidation(t *testing.T) {
+	valid := func(mod func(*Config)) error {
+		c := Defaults()
+		c.APIKey, c.Database.URL = key, "postgres://x"
+		c.Runner.Provider, c.Runner.Region, c.Runner.JobID, c.Runner.SecretKey = "scaleway", "fr-par", "job", "secret"
+		c.PublicURL = "https://recon.example"
+		if mod != nil {
+			mod(&c)
+		}
+		return c.Validate()
+	}
+	if err := valid(nil); err != nil {
+		t.Fatalf("a full scaleway runner refused: %v", err)
+	}
+	for name, mod := range map[string]func(*Config){
+		"no secret":            func(c *Config) { c.Runner.SecretKey = "" },
+		"http callback":        func(c *Config) { c.Runner.CallbackURL = "http://vps.example:8080" },
+		"http public url":      func(c *Config) { c.PublicURL = "http://recon.example" },
+		"half set under serve": func(c *Config) { c.Runner.Provider, c.Runner.Region = "serve", "" },
+		"unknown provider":     func(c *Config) { c.Runner.Provider = "lambda" },
+	} {
+		if valid(mod) == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	for name, mod := range map[string]func(*Config){
+		"http to localhost": func(c *Config) { c.Runner.CallbackURL = "http://localhost:8080" },
+		"serve, kept set":   func(c *Config) { c.Runner.Provider = "serve" },
+		"serve, none set": func(c *Config) {
+			c.Runner.Provider, c.Runner.Region, c.Runner.JobID, c.Runner.SecretKey = "serve", "", "", ""
+		},
+	} {
+		if err := valid(mod); err != nil {
+			t.Errorf("%s: refused: %v", name, err)
+		}
+	}
 }

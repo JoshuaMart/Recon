@@ -120,7 +120,7 @@ func serviceState(t *testing.T, f *fixture) string {
 func waitIdle(t *testing.T, f *fixture) {
 	t.Helper()
 	for range 600 {
-		n, err := f.st.Q.CountRunning(context.Background())
+		n, err := f.st.Q.CountRunning(context.Background(), "serve")
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -154,6 +154,20 @@
 			]
 		},
 		{
+			title: 'Runner',
+			rows: [
+				{ key: 'runner.provider', label: 'Recon and verification on', kind: 'text', hint: 'serve: this stack; scaleway: a Serverless Job per run. CT stays on serve' },
+				{ key: 'runner.region', label: 'Region', kind: 'mono' },
+				{ key: 'runner.job_id', label: 'Job definition', kind: 'mono' },
+				{ key: 'runner.secret_key', label: 'Secret key', kind: 'secret' },
+				{ key: 'runner.callback_url', label: 'Callback', kind: 'mono', hint: 'where a job reaches Recon; the public URL when empty' },
+				{ key: 'runner.slots', label: 'Jobs at once', kind: 'text' },
+				{ key: 'runner.grace', label: 'Report token past the deadline', kind: 'duration' },
+				{ key: 'runner.report_timeout', label: 'Report delivery wait', kind: 'duration' },
+				{ key: 'runner.endpoint', label: 'API', kind: 'mono' }
+			]
+		},
+		{
 			title: 'Verification',
 			rows: [
 				{ key: 'verification.enabled', label: 'Enabled', kind: 'flag', hint: 'probes every in-scope host on its due date' },

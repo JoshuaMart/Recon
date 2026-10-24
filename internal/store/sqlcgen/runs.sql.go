@@ -13,24 +13,33 @@ import (
 )
 
 const claimQueuedRun = `-- name: ClaimQueuedRun :one
-UPDATE run SET state = 'running', started_at = $1::timestamptz, deadline = $2::timestamptz
+UPDATE run SET state = 'running', started_at = $1::timestamptz, deadline = $2::timestamptz,
+  runner = $3
 WHERE id = (
   SELECT r.id FROM run r JOIN program p ON p.id = r.program_id
-  WHERE r.state = 'queued' AND p.state = 'active'
+  WHERE r.state = 'queued' AND p.state = 'active' AND r.kind = ANY($4::text[])
   -- A name from a certificate is worth minutes: it goes ahead of the queue.
   ORDER BY (r.kind = 'candidate') DESC, r.queued_at, r.id
   LIMIT 1 FOR UPDATE OF r SKIP LOCKED
 )
-RETURNING id, program_id, kind, stage, wildcard_id, state, trigger, queued_at, started_at, finished_at, deadline, error, report_meta, ingest, targets
+RETURNING id, program_id, kind, stage, wildcard_id, state, trigger, queued_at, started_at, finished_at, deadline, error, report_meta, ingest, targets, runner, external_id
 `
 
 type ClaimQueuedRunParams struct {
 	Now      time.Time `json:"now"`
 	Deadline time.Time `json:"deadline"`
+	Runner   string    `json:"runner"`
+	Kinds    []string  `json:"kinds"`
 }
 
+// A runner claims the next run of the kinds it takes.
 func (q *Queries) ClaimQueuedRun(ctx context.Context, arg ClaimQueuedRunParams) (Run, error) {
-	row := q.db.QueryRow(ctx, claimQueuedRun, arg.Now, arg.Deadline)
+	row := q.db.QueryRow(ctx, claimQueuedRun,
+		arg.Now,
+		arg.Deadline,
+		arg.Runner,
+		arg.Kinds,
+	)
 	var i Run
 	err := row.Scan(
 		&i.ID,
@@ -48,16 +57,18 @@ func (q *Queries) ClaimQueuedRun(ctx context.Context, arg ClaimQueuedRunParams) 
 		&i.ReportMeta,
 		&i.Ingest,
 		&i.Targets,
+		&i.Runner,
+		&i.ExternalID,
 	)
 	return i, err
 }
 
 const countRunning = `-- name: CountRunning :one
-SELECT count(*)::int FROM run WHERE state = 'running'
+SELECT count(*)::int FROM run WHERE state = 'running' AND runner = $1
 `
 
-func (q *Queries) CountRunning(ctx context.Context) (int32, error) {
-	row := q.db.QueryRow(ctx, countRunning)
+func (q *Queries) CountRunning(ctx context.Context, runner string) (int32, error) {
+	row := q.db.QueryRow(ctx, countRunning, runner)
 	var column_1 int32
 	err := row.Scan(&column_1)
 	return column_1, err
@@ -67,7 +78,7 @@ const enqueueRun = `-- name: EnqueueRun :one
 INSERT INTO run (program_id, kind, stage, wildcard_id, trigger, queued_at)
 VALUES ($1, $2, $3, $5, $4, $6::timestamptz)
 ON CONFLICT (wildcard_id) WHERE state IN ('queued', 'running') DO NOTHING
-RETURNING id, program_id, kind, stage, wildcard_id, state, trigger, queued_at, started_at, finished_at, deadline, error, report_meta, ingest, targets
+RETURNING id, program_id, kind, stage, wildcard_id, state, trigger, queued_at, started_at, finished_at, deadline, error, report_meta, ingest, targets, runner, external_id
 `
 
 type EnqueueRunParams struct {
@@ -105,13 +116,15 @@ func (q *Queries) EnqueueRun(ctx context.Context, arg EnqueueRunParams) (Run, er
 		&i.ReportMeta,
 		&i.Ingest,
 		&i.Targets,
+		&i.Runner,
+		&i.ExternalID,
 	)
 	return i, err
 }
 
 const failInterruptedRuns = `-- name: FailInterruptedRuns :many
 UPDATE run SET state = 'failed', finished_at = $1::timestamptz, error = 'interrupted: the process stopped during the run'
-WHERE state = 'running'
+WHERE state = 'running' AND runner = 'serve'
 RETURNING id, kind, wildcard_id
 `
 
@@ -121,6 +134,8 @@ type FailInterruptedRunsRow struct {
 	WildcardID *uuid.UUID `json:"wildcard_id"`
 }
 
+// Only serve's: a synchronous call does not survive its caller, a job does
+// and is still waited for.
 func (q *Queries) FailInterruptedRuns(ctx context.Context, now time.Time) ([]FailInterruptedRunsRow, error) {
 	rows, err := q.db.Query(ctx, failInterruptedRuns, now)
 	if err != nil {
@@ -173,7 +188,7 @@ func (q *Queries) FinishRun(ctx context.Context, arg FinishRunParams) (int64, er
 }
 
 const getRun = `-- name: GetRun :one
-SELECT id, program_id, kind, stage, wildcard_id, state, trigger, queued_at, started_at, finished_at, deadline, error, report_meta, ingest, targets FROM run WHERE id = $1
+SELECT id, program_id, kind, stage, wildcard_id, state, trigger, queued_at, started_at, finished_at, deadline, error, report_meta, ingest, targets, runner, external_id FROM run WHERE id = $1
 `
 
 func (q *Queries) GetRun(ctx context.Context, id uuid.UUID) (Run, error) {
@@ -195,6 +210,8 @@ func (q *Queries) GetRun(ctx context.Context, id uuid.UUID) (Run, error) {
 		&i.ReportMeta,
 		&i.Ingest,
 		&i.Targets,
+		&i.Runner,
+		&i.ExternalID,
 	)
 	return i, err
 }
@@ -267,7 +284,7 @@ func (q *Queries) ListOpenRules(ctx context.Context, programID uuid.UUID) ([]Sco
 }
 
 const listRuns = `-- name: ListRuns :many
-SELECT r.id, r.program_id, r.kind, r.stage, r.wildcard_id, r.state, r.trigger, r.queued_at, r.started_at, r.finished_at, r.deadline, r.error, r.report_meta, r.ingest, r.targets, w.apex FROM run r LEFT JOIN wildcard w ON w.id = r.wildcard_id
+SELECT r.id, r.program_id, r.kind, r.stage, r.wildcard_id, r.state, r.trigger, r.queued_at, r.started_at, r.finished_at, r.deadline, r.error, r.report_meta, r.ingest, r.targets, r.runner, r.external_id, w.apex FROM run r LEFT JOIN wildcard w ON w.id = r.wildcard_id
 WHERE ($1::uuid IS NULL OR r.program_id = $1)
 ORDER BY r.queued_at DESC, r.id DESC
 LIMIT $2
@@ -308,6 +325,8 @@ func (q *Queries) ListRuns(ctx context.Context, arg ListRunsParams) ([]ListRunsR
 			&i.Run.ReportMeta,
 			&i.Run.Ingest,
 			&i.Run.Targets,
+			&i.Run.Runner,
+			&i.Run.ExternalID,
 			&i.Apex,
 		); err != nil {
 			return nil, err
@@ -318,6 +337,19 @@ func (q *Queries) ListRuns(ctx context.Context, arg ListRunsParams) ([]ListRunsR
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockRunningRun = `-- name: LockRunningRun :one
+SELECT id FROM run WHERE id = $1 AND state = 'running' FOR UPDATE NOWAIT
+`
+
+// The run a report is ingested for, locked for the transaction: a second copy
+// posted meanwhile finds it taken and is answered at once.
+func (q *Queries) LockRunningRun(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, lockRunningRun, id)
+	var id_2 uuid.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
 }
 
 const markWildcardRecon = `-- name: MarkWildcardRecon :exec
@@ -416,16 +448,70 @@ func (q *Queries) RequeueRun(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
+const runningJobs = `-- name: RunningJobs :many
+SELECT id, kind, wildcard_id, external_id FROM run
+WHERE state = 'running' AND runner = 'scaleway' AND external_id IS NOT NULL
+`
+
+type RunningJobsRow struct {
+	ID         uuid.UUID  `json:"id"`
+	Kind       string     `json:"kind"`
+	WildcardID *uuid.UUID `json:"wildcard_id"`
+	ExternalID *string    `json:"external_id"`
+}
+
+// The jobs a remote runner is waited for: their state is read every minute.
+func (q *Queries) RunningJobs(ctx context.Context) ([]RunningJobsRow, error) {
+	rows, err := q.db.Query(ctx, runningJobs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []RunningJobsRow
+	for rows.Next() {
+		var i RunningJobsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.WildcardID,
+			&i.ExternalID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const setExternalID = `-- name: SetExternalID :exec
+UPDATE run SET external_id = $2 WHERE id = $1
+`
+
+type SetExternalIDParams struct {
+	ID         uuid.UUID `json:"id"`
+	ExternalID *string   `json:"external_id"`
+}
+
+func (q *Queries) SetExternalID(ctx context.Context, arg SetExternalIDParams) error {
+	_, err := q.db.Exec(ctx, setExternalID, arg.ID, arg.ExternalID)
+	return err
+}
+
 const timeOutRuns = `-- name: TimeOutRuns :many
 UPDATE run SET state = 'timed_out', finished_at = $1::timestamptz, error = 'deadline passed'
 WHERE state = 'running' AND deadline < $1::timestamptz
-RETURNING id, kind, wildcard_id
+RETURNING id, kind, wildcard_id, runner, external_id
 `
 
 type TimeOutRunsRow struct {
 	ID         uuid.UUID  `json:"id"`
 	Kind       string     `json:"kind"`
 	WildcardID *uuid.UUID `json:"wildcard_id"`
+	Runner     string     `json:"runner"`
+	ExternalID *string    `json:"external_id"`
 }
 
 func (q *Queries) TimeOutRuns(ctx context.Context, now time.Time) ([]TimeOutRunsRow, error) {
@@ -437,7 +523,13 @@ func (q *Queries) TimeOutRuns(ctx context.Context, now time.Time) ([]TimeOutRuns
 	var items []TimeOutRunsRow
 	for rows.Next() {
 		var i TimeOutRunsRow
-		if err := rows.Scan(&i.ID, &i.Kind, &i.WildcardID); err != nil {
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.WildcardID,
+			&i.Runner,
+			&i.ExternalID,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

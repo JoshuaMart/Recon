@@ -14,6 +14,7 @@ import (
 
 	"github.com/JoshuaMart/recon/internal/fingerprint"
 	"github.com/JoshuaMart/recon/internal/render"
+	"github.com/JoshuaMart/recon/internal/runs"
 	"github.com/JoshuaMart/recon/internal/scope"
 	"github.com/JoshuaMart/recon/internal/store"
 	"github.com/JoshuaMart/recon/internal/version"
@@ -55,6 +56,10 @@ type Deps struct {
 	Channels []string
 	// CT says whether the certificate feed is being read; nil when it is off.
 	CT func() bool
+	// RunJobs and RunTokens serve the routes a remote job calls; nil when
+	// runs stay on serve.
+	RunJobs   Jobs
+	RunTokens *runs.Tokens
 }
 
 type server struct{ Deps }
@@ -67,6 +72,11 @@ func Handler(d Deps) http.Handler {
 	s := &server{d}
 	mux := http.NewServeMux()
 	mux.Handle("GET /api/health", s.health())
+	if d.RunJobs != nil && d.RunTokens != nil {
+		// Outside /api: a job holds a run token, never the API key.
+		mux.HandleFunc("GET /runs/{id}/targets", s.runTargets)
+		mux.HandleFunc("POST /runs/{id}/report", s.runReport)
+	}
 
 	if d.Auth != nil {
 		mux.HandleFunc("POST /api/session", d.Auth.Login)

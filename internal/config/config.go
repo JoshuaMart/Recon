@@ -6,6 +6,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"reflect"
@@ -40,6 +41,7 @@ type Config struct {
 	Screenshots     Screenshots     `koanf:"screenshots"`
 	Notify          Notify          `koanf:"notify"`
 	CT              CT              `koanf:"ct"`
+	Runner          Runner          `koanf:"runner"`
 	// GeoIPDir holds GeoLite2-ASN.mmdb and GeoLite2-City.mmdb. Without them,
 	// ASN and country stay empty.
 	GeoIPDir string `koanf:"geoip_dir"`
@@ -65,6 +67,69 @@ type Screenshots struct {
 	// DiskThreshold is the share of the screenshot filesystem in use past
 	// which a health notification fires.
 	DiskThreshold float64 `koanf:"disk_threshold"`
+}
+
+// Runner is where recon and verification runs go. serve keeps them on
+// fastrecon serve; scaleway starts a Serverless Job per run. CT candidates
+// always stay on serve.
+type Runner struct {
+	Provider  string `koanf:"provider"` // serve or scaleway
+	Endpoint  string `koanf:"endpoint"` // the Scaleway API
+	Region    string `koanf:"region"`
+	JobID     string `koanf:"job_id"` // the job definition, created once outside Recon
+	SecretKey string `koanf:"secret_key" secret:"true"`
+	// CallbackURL is where a job reaches Recon; public_url when empty.
+	CallbackURL string `koanf:"callback_url"`
+	Slots       int    `koanf:"slots"` // jobs in flight at once
+	// Grace is how long past its deadline a run's report token stays valid.
+	Grace time.Duration `koanf:"grace"`
+	// ReportTimeout is the job's wait for Recon to take its report.
+	ReportTimeout time.Duration `koanf:"report_timeout"`
+}
+
+// validate checks the runner. The Scaleway settings go together whenever one
+// is set: with serve in effect they still follow the jobs started before.
+func (r Runner) validate(callback string) []error {
+	var errs []error
+	if r.Provider != "serve" && r.Provider != "scaleway" {
+		errs = append(errs, fmt.Errorf("runner.provider %q is not serve or scaleway", r.Provider))
+	}
+	if r.Provider != "scaleway" && r.JobID == "" && r.SecretKey == "" {
+		return errs
+	}
+	if r.Region == "" || r.JobID == "" || r.SecretKey == "" {
+		errs = append(errs, errors.New("runner: region, job_id and secret_key go together, and scaleway needs them"))
+	}
+	if u, err := url.Parse(r.Endpoint); err != nil || u.Scheme != "https" || u.Host == "" {
+		errs = append(errs, fmt.Errorf("runner.endpoint %q must be an absolute https URL", r.Endpoint))
+	}
+	// The run tokens travel with every call: never in clear across a network,
+	// only to this machine.
+	u, err := url.Parse(callback)
+	secure := err == nil && u.Host != "" && (u.Scheme == "https" || (u.Scheme == "http" && loopback(u.Hostname())))
+	if !secure {
+		errs = append(errs, fmt.Errorf("the callback %q must be an https URL (http only to localhost)", callback))
+	}
+	if r.Slots < 1 || r.Grace < time.Minute || r.ReportTimeout < 30*time.Second {
+		errs = append(errs, errors.New("runner: slots at least 1, grace at least 1m, report_timeout at least 30s"))
+	}
+	return errs
+}
+
+func loopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// CallbackBase is where a job reaches Recon.
+func (c Config) CallbackBase() string {
+	if c.Runner.CallbackURL != "" {
+		return strings.TrimRight(c.Runner.CallbackURL, "/")
+	}
+	return strings.TrimRight(c.PublicURL, "/")
 }
 
 // CT is the Certificate Transparency feed. An empty URL leaves it off.
@@ -182,7 +247,11 @@ func Defaults() Config {
 		Screenshots: Screenshots{Dir: "/data/screenshots", Quality: 70, Keep: 3, DiskThreshold: 0.9},
 		Notify:      Notify{BrokenAfter: 5 * time.Minute},
 		CT:          CT{MaxPerHour: 40, Reload: 5 * time.Minute},
-		GeoIPDir:    "/data/geoip",
+		Runner: Runner{
+			Provider: "serve", Endpoint: "https://api.scaleway.com", Slots: 4,
+			Grace: 30 * time.Minute, ReportTimeout: 5 * time.Minute,
+		},
+		GeoIPDir: "/data/geoip",
 		Verification: Verification{
 			Enabled: true, Batch: 500, Resolve: 24 * time.Hour, Full: 72 * time.Hour,
 			Dormant: 7 * 24 * time.Hour, ArchiveAfter: 30 * 24 * time.Hour,
@@ -327,6 +396,7 @@ func (c Config) Validate() error {
 	if c.CT.MaxPerHour < 1 || c.CT.Reload < time.Minute {
 		errs = append(errs, errors.New("ct: max_per_hour at least 1, reload at least 1m"))
 	}
+	errs = append(errs, c.Runner.validate(c.CallbackBase())...)
 	if c.Notify.BrokenAfter < time.Minute {
 		errs = append(errs, errors.New("notify.broken_after must be at least 1m"))
 	}

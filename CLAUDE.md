@@ -22,7 +22,11 @@ and the health watcher; the feed is `search.Feed`, the language plus `change:`. 
 Transparency) is done: `internal/ct` walks each SAN's labels to the wildcards' apexes, and a matching
 name enters the CT lane (`asset_current.ct_lane`), probed by `candidate` runs even with verification
 off, until its first full or its archiving; the reader only matches in memory, a writer does the database
-work. Phase 9 (Scaleway runner) is next, then 10 (BBOT import). The design in `docs/` is the source of
+work. Phase 9 (Scaleway runner) is done: with
+`runner.provider: scaleway`, recon and verification start the job definition with their whole
+invocation as arguments (`runs.Scheduler.JobArgs`), the job reaches `/runs/{id}/targets` and
+`/runs/{id}/report` with HMAC run tokens (`runs.Tokens`), and the job's state is read every minute;
+CT candidates stay on serve. Then 10 (BBOT import). The design in `docs/` is the source of
 truth, and code follows it.
 
 ## Read before working

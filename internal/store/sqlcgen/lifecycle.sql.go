@@ -161,7 +161,7 @@ const enqueueVerification = `-- name: EnqueueVerification :one
 INSERT INTO run (program_id, kind, stage, targets, trigger, queued_at)
 VALUES ($1, 'verification', $2, $3::text[], 'schedule', $4::timestamptz)
 ON CONFLICT (kind) WHERE kind = 'verification' AND state IN ('queued', 'running') DO NOTHING
-RETURNING id, program_id, kind, stage, wildcard_id, state, trigger, queued_at, started_at, finished_at, deadline, error, report_meta, ingest, targets
+RETURNING id, program_id, kind, stage, wildcard_id, state, trigger, queued_at, started_at, finished_at, deadline, error, report_meta, ingest, targets, runner, external_id
 `
 
 type EnqueueVerificationParams struct {
@@ -195,6 +195,8 @@ func (q *Queries) EnqueueVerification(ctx context.Context, arg EnqueueVerificati
 		&i.ReportMeta,
 		&i.Ingest,
 		&i.Targets,
+		&i.Runner,
+		&i.ExternalID,
 	)
 	return i, err
 }
