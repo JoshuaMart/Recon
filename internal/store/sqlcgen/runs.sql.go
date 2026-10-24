@@ -200,7 +200,7 @@ func (q *Queries) GetRun(ctx context.Context, id uuid.UUID) (Run, error) {
 }
 
 const getWildcard = `-- name: GetWildcard :one
-SELECT w.id, w.program_id, w.rule_id, w.apex, w.last_recon_at, w.last_recon_run, w.assets_found, w.created_at, w.ct_wildcards, (r.valid_to IS NULL)::bool AS rule_in_force FROM wildcard w JOIN scope_rule r ON r.id = w.rule_id WHERE w.id = $1
+SELECT w.id, w.program_id, w.rule_id, w.apex, w.last_recon_at, w.last_recon_run, w.assets_found, w.created_at, (r.valid_to IS NULL)::bool AS rule_in_force FROM wildcard w JOIN scope_rule r ON r.id = w.rule_id WHERE w.id = $1
 `
 
 type GetWildcardRow struct {
@@ -212,7 +212,6 @@ type GetWildcardRow struct {
 	LastReconRun *uuid.UUID `json:"last_recon_run"`
 	AssetsFound  int32      `json:"assets_found"`
 	CreatedAt    time.Time  `json:"created_at"`
-	CtWildcards  int32      `json:"ct_wildcards"`
 	RuleInForce  bool       `json:"rule_in_force"`
 }
 
@@ -228,7 +227,6 @@ func (q *Queries) GetWildcard(ctx context.Context, id uuid.UUID) (GetWildcardRow
 		&i.LastReconRun,
 		&i.AssetsFound,
 		&i.CreatedAt,
-		&i.CtWildcards,
 		&i.RuleInForce,
 	)
 	return i, err

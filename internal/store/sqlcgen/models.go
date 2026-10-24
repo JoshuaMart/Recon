@@ -109,6 +109,16 @@ type Change struct {
 	At        time.Time  `json:"at"`
 }
 
+type CtApex struct {
+	WildcardID     uuid.UUID  `json:"wildcard_id"`
+	WatchedSince   time.Time  `json:"watched_since"`
+	Names          int64      `json:"names"`
+	Wildcards      int64      `json:"wildcards"`
+	Dropped        int64      `json:"dropped"`
+	LastNameAt     *time.Time `json:"last_name_at"`
+	LastWildcardAt *time.Time `json:"last_wildcard_at"`
+}
+
 type CtSession struct {
 	ID             int64      `json:"id"`
 	ConnectedAt    time.Time  `json:"connected_at"`
@@ -278,5 +288,4 @@ type Wildcard struct {
 	LastReconRun *uuid.UUID `json:"last_recon_run"`
 	AssetsFound  int32      `json:"assets_found"`
 	CreatedAt    time.Time  `json:"created_at"`
-	CtWildcards  int32      `json:"ct_wildcards"`
 }

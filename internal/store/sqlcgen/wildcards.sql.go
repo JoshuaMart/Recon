@@ -36,12 +36,15 @@ func (q *Queries) CreateWildcard(ctx context.Context, arg CreateWildcardParams) 
 }
 
 const listWildcards = `-- name: ListWildcards :many
-SELECT w.id, w.program_id, w.rule_id, w.apex, w.last_recon_at, w.last_recon_run, w.assets_found, w.created_at, w.ct_wildcards, p.name AS program_name, p.platform, p.state AS program_state,
+SELECT w.id, w.program_id, w.rule_id, w.apex, w.last_recon_at, w.last_recon_run, w.assets_found, w.created_at, p.name AS program_name, p.platform, p.state AS program_state,
   (r.valid_to IS NULL AND p.state = 'active')::bool AS active,
-  COALESCE(p.auto_scan, $1::text)::text AS auto_scan
+  COALESCE(p.auto_scan, $1::text)::text AS auto_scan,
+  ca.watched_since AS ct_watched_since, ca.names AS ct_names, ca.wildcards AS ct_wildcards,
+  ca.dropped AS ct_dropped, ca.last_name_at AS ct_last_name_at, ca.last_wildcard_at AS ct_last_wildcard_at
 FROM wildcard w
 JOIN program p ON p.id = w.program_id
 JOIN scope_rule r ON r.id = w.rule_id
+LEFT JOIN ct_apex ca ON ca.wildcard_id = w.id
 WHERE ($2::uuid IS NULL OR w.program_id = $2)
   AND ($3::bool OR (r.valid_to IS NULL AND p.state = 'active'))
 ORDER BY w.last_recon_at NULLS FIRST, w.created_at, w.id
@@ -54,20 +57,25 @@ type ListWildcardsParams struct {
 }
 
 type ListWildcardsRow struct {
-	ID           uuid.UUID  `json:"id"`
-	ProgramID    uuid.UUID  `json:"program_id"`
-	RuleID       uuid.UUID  `json:"rule_id"`
-	Apex         string     `json:"apex"`
-	LastReconAt  *time.Time `json:"last_recon_at"`
-	LastReconRun *uuid.UUID `json:"last_recon_run"`
-	AssetsFound  int32      `json:"assets_found"`
-	CreatedAt    time.Time  `json:"created_at"`
-	CtWildcards  int32      `json:"ct_wildcards"`
-	ProgramName  string     `json:"program_name"`
-	Platform     *string    `json:"platform"`
-	ProgramState string     `json:"program_state"`
-	Active       bool       `json:"active"`
-	AutoScan     string     `json:"auto_scan"`
+	ID               uuid.UUID  `json:"id"`
+	ProgramID        uuid.UUID  `json:"program_id"`
+	RuleID           uuid.UUID  `json:"rule_id"`
+	Apex             string     `json:"apex"`
+	LastReconAt      *time.Time `json:"last_recon_at"`
+	LastReconRun     *uuid.UUID `json:"last_recon_run"`
+	AssetsFound      int32      `json:"assets_found"`
+	CreatedAt        time.Time  `json:"created_at"`
+	ProgramName      string     `json:"program_name"`
+	Platform         *string    `json:"platform"`
+	ProgramState     string     `json:"program_state"`
+	Active           bool       `json:"active"`
+	AutoScan         string     `json:"auto_scan"`
+	CtWatchedSince   *time.Time `json:"ct_watched_since"`
+	CtNames          *int64     `json:"ct_names"`
+	CtWildcards      *int64     `json:"ct_wildcards"`
+	CtDropped        *int64     `json:"ct_dropped"`
+	CtLastNameAt     *time.Time `json:"ct_last_name_at"`
+	CtLastWildcardAt *time.Time `json:"ct_last_wildcard_at"`
 }
 
 func (q *Queries) ListWildcards(ctx context.Context, arg ListWildcardsParams) ([]ListWildcardsRow, error) {
@@ -88,12 +96,17 @@ func (q *Queries) ListWildcards(ctx context.Context, arg ListWildcardsParams) ([
 			&i.LastReconRun,
 			&i.AssetsFound,
 			&i.CreatedAt,
-			&i.CtWildcards,
 			&i.ProgramName,
 			&i.Platform,
 			&i.ProgramState,
 			&i.Active,
 			&i.AutoScan,
+			&i.CtWatchedSince,
+			&i.CtNames,
+			&i.CtWildcards,
+			&i.CtDropped,
+			&i.CtLastNameAt,
+			&i.CtLastWildcardAt,
 		); err != nil {
 			return nil, err
 		}

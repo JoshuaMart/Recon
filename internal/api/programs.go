@@ -74,14 +74,40 @@ type wildcardView struct {
 	LastReconAt *time.Time `json:"last_recon_at"`
 	AssetsFound int32      `json:"assets_found"`
 	CreatedAt   time.Time  `json:"created_at"`
+	// CT is what the certificate feed brought under the apex since it is
+	// watched; nil when it is not.
+	CT *ctCoverage `json:"ct"`
+}
+
+type ctCoverage struct {
+	WatchedSince   time.Time  `json:"watched_since"`
+	Names          int64      `json:"names"`
+	Wildcards      int64      `json:"wildcards"`
+	Dropped        int64      `json:"dropped"`
+	LastNameAt     *time.Time `json:"last_name_at"`
+	LastWildcardAt *time.Time `json:"last_wildcard_at"`
 }
 
 func viewWildcard(w sqlcgen.ListWildcardsRow) wildcardView {
-	return wildcardView{
+	v := wildcardView{
 		ID: w.ID, ProgramID: w.ProgramID, ProgramName: w.ProgramName, Platform: w.Platform, Apex: w.Apex,
 		Active: w.Active, AutoScan: w.AutoScan, LastReconAt: w.LastReconAt, AssetsFound: w.AssetsFound,
 		CreatedAt: w.CreatedAt,
 	}
+	if w.CtWatchedSince != nil {
+		v.CT = &ctCoverage{
+			WatchedSince: *w.CtWatchedSince, Names: deref64(w.CtNames), Wildcards: deref64(w.CtWildcards),
+			Dropped: deref64(w.CtDropped), LastNameAt: w.CtLastNameAt, LastWildcardAt: w.CtLastWildcardAt,
+		}
+	}
+	return v
+}
+
+func deref64(p *int64) int64 {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 type untrackedView struct {

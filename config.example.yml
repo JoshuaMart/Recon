@@ -60,7 +60,7 @@ screenshots:
 
 ct:
   url: ""              # the certstream websocket; empty leaves CT off
-  max_per_hour: 200    # names a program may gain from CT in an hour, the overflow counted
+  max_per_hour: 40     # names a program may gain from CT in an hour, the overflow counted
   reload: 5m           # how often the apex set is read again
 
 notify:

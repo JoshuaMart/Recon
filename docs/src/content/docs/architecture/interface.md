@@ -84,7 +84,8 @@ The answer to "what have I not scanned in a while".
 | `*.foo.com` | Foo | 94 days ago | 1 204 | on_new |
 | `*.acme.com` | Acme | 3 days ago | 3 310 | on_new |
 
-Auto-scan shows the value in effect, from the program or the global default. Sorted oldest first, never
+Auto-scan shows the value in effect, from the program or the global default. A CT column shows what the
+feed brought under the apex: names, or only wildcard certificates, or nothing since it is watched. Sorted oldest first, never
 scanned on top. Actions: **scan this one**, **scan the N oldest**, filter by
 program or platform.
 

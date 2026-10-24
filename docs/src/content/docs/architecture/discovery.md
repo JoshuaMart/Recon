@@ -120,13 +120,29 @@ matching apex, so one name under two programs creates two assets.
 
 | Risk | Guard |
 |---|---|
-| a broad apex floods the inventory | a per program ceiling per hour, and the overflow is counted, not hidden |
-| a burst of reissued certificates | an in-memory cache on `(program, SAN)`, filled once a name is written. Correctness rests on the unique key, never the cache |
+| a broad apex floods the inventory | a per program ceiling per hour, and the overflow is counted on its apex, once per name, not hidden |
+| a burst of reissued certificates | an in-memory cache on `(program, SAN)`, filled once a name is written and forgetting it after an hour, so a name archived since is revived by its next certificate. Correctness rests on the unique key, never the cache |
+| a message from someone else's feed | read up to 1 MB: the widest seen is under 8 kB |
 | the websocket drops | connected periods are recorded, so a gap reads as a gap |
 | the writer falls behind | the reader never waits on the database: a match with no room in the queue is dropped and counted on its session |
 
 A gap is not backfilled. It is covered by wildcard recon, and the [wildcards view](/architecture/interface/#wildcards)
 shows which ones have not been scanned for a long time.
+
+### Coverage per apex
+
+What CT delivers differs per apex: one gets a certificate per host, another only `*.apex`, a third
+nothing at all. `ct_apex` keeps, per wildcard being watched, what the feed brought since then.
+
+| Column | Counts |
+|---|---|
+| `watched_since` | when the apex entered the set; the row goes when it leaves, so a gap in watching is not read as coverage |
+| `names`, `last_name_at` | names under the apex, once per name and hour |
+| `wildcards`, `last_wildcard_at` | wildcard certificates, which name no host |
+| `dropped` | names the program's ceiling refused |
+
+The wildcards view shows it: an apex watched for weeks with no name and only wildcards is one CT cannot
+see into, which recon covers.
 
 ### The CT lane
 
@@ -159,7 +175,7 @@ flowchart LR
 | Setting | Default | Meaning |
 |---|---|---|
 | `ct.url` | empty (off) | the certstream websocket; the stack sets `ws://certstream:8080/` |
-| `ct.max_per_hour` | 200 | names a program may gain from CT in an hour, the overflow counted |
+| `ct.max_per_hour` | 40 | names a program may gain from CT in an hour: generous for a real perimeter, tight against an apex rule pointing at shared infrastructure |
 | `ct.reload` | 5m | how often the apex set is read again |
 
 ## BBOT import

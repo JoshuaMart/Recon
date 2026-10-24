@@ -79,6 +79,14 @@ export interface Wildcard {
 	last_recon_at: string | null;
 	assets_found: number;
 	created_at: string;
+	ct: {
+		watched_since: string;
+		names: number;
+		wildcards: number;
+		dropped: number;
+		last_name_at: string | null;
+		last_wildcard_at: string | null;
+	} | null;
 }
 
 export interface Run {

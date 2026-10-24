@@ -152,6 +152,7 @@
 					<th scope="col">Last recon</th>
 					<th scope="col" class="end">Assets</th>
 					<th scope="col">Auto-scan</th>
+					<th scope="col"><abbr title="Certificate Transparency: what the feed brought under the apex">CT</abbr></th>
 					<th scope="col"><span class="sr-only">Action</span></th>
 				</tr>
 			</thead>
@@ -166,6 +167,20 @@
 							{#if w.assets_found}<a class="plain" href={'/' + qs({ q: 'apex:' + w.apex, view: 'hosts' })}>{count(w.assets_found)}</a>{:else}—{/if}
 						</td>
 						<td class="muted">{label(w.auto_scan)}</td>
+						<td class="ct">
+							{#if !w.ct}
+								<span class="muted">not watched</span>
+							{:else if w.ct.names}
+								<span class="num" title="Since {ago(w.ct.watched_since)}{w.ct.dropped ? `, ${count(w.ct.dropped)} held back by the hourly ceiling` : ''}">
+									{count(w.ct.names)} name{w.ct.names === 1 ? '' : 's'}, last {ago(w.ct.last_name_at)}
+								</span>
+								{#if w.ct.dropped}<span class="badge warn">{count(w.ct.dropped)} held back</span>{/if}
+							{:else if w.ct.wildcards}
+								<span class="muted" title="Only wildcard certificates since {ago(w.ct.watched_since)}: CT names no host here, recon does">wildcards only</span>
+							{:else}
+								<span class="muted" title="Watched since {ago(w.ct.watched_since)}">nothing yet</span>
+							{/if}
+						</td>
 						<td class="end">
 							{#if run}
 								<a class="running" href="/runs/{run.id}"><span class="dot" aria-hidden="true"></span>{run.state === 'running' ? 'Running' : 'Queued'}</a>
@@ -175,7 +190,7 @@
 						</td>
 					</tr>
 				{:else}
-					<tr><td colspan="6" class="empty">{loaded ? 'No wildcard matches.' : 'Loading…'}</td></tr>
+					<tr><td colspan="7" class="empty">{loaded ? 'No wildcard matches.' : 'Loading…'}</td></tr>
 				{/each}
 			</tbody>
 		</table>
@@ -213,7 +228,17 @@
 		font-size: 12px;
 	}
 	table {
-		min-width: 820px;
+		min-width: 960px;
+	}
+	.ct {
+		font-size: 12px;
+		white-space: nowrap;
+	}
+	.ct .badge {
+		margin-left: 6px;
+	}
+	abbr {
+		text-decoration: none;
 	}
 	.strong {
 		color: var(--text-strong);

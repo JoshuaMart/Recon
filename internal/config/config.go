@@ -181,7 +181,7 @@ func Defaults() Config {
 		},
 		Screenshots: Screenshots{Dir: "/data/screenshots", Quality: 70, Keep: 3, DiskThreshold: 0.9},
 		Notify:      Notify{BrokenAfter: 5 * time.Minute},
-		CT:          CT{MaxPerHour: 200, Reload: 5 * time.Minute},
+		CT:          CT{MaxPerHour: 40, Reload: 5 * time.Minute},
 		GeoIPDir:    "/data/geoip",
 		Verification: Verification{
 			Enabled: true, Batch: 500, Resolve: 24 * time.Hour, Full: 72 * time.Hour,

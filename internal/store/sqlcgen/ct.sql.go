@@ -92,6 +92,36 @@ func (q *Queries) CTLiveServices(ctx context.Context, arg CTLiveServicesParams) 
 	return items, nil
 }
 
+const countCTApex = `-- name: CountCTApex :exec
+UPDATE ct_apex SET
+  names = names + $2::bigint, wildcards = wildcards + $3::bigint,
+  dropped = dropped + $4::bigint,
+  last_name_at = GREATEST(last_name_at, $5::timestamptz),
+  last_wildcard_at = GREATEST(last_wildcard_at, $6::timestamptz)
+WHERE wildcard_id = $1
+`
+
+type CountCTApexParams struct {
+	WildcardID     uuid.UUID  `json:"wildcard_id"`
+	Names          int64      `json:"names"`
+	WildcardCerts  int64      `json:"wildcard_certs"`
+	Dropped        int64      `json:"dropped"`
+	LastNameAt     *time.Time `json:"last_name_at"`
+	LastWildcardAt *time.Time `json:"last_wildcard_at"`
+}
+
+func (q *Queries) CountCTApex(ctx context.Context, arg CountCTApexParams) error {
+	_, err := q.db.Exec(ctx, countCTApex,
+		arg.WildcardID,
+		arg.Names,
+		arg.WildcardCerts,
+		arg.Dropped,
+		arg.LastNameAt,
+		arg.LastWildcardAt,
+	)
+	return err
+}
+
 const countCTSession = `-- name: CountCTSession :exec
 UPDATE ct_session SET certificates = certificates + $2::bigint, matched = matched + $3::bigint,
   created = created + $4::bigint, revived = revived + $5::bigint,
@@ -119,20 +149,6 @@ func (q *Queries) CountCTSession(ctx context.Context, arg CountCTSessionParams) 
 		arg.Overflow,
 		arg.Dropped,
 	)
-	return err
-}
-
-const countWildcardSAN = `-- name: CountWildcardSAN :exec
-UPDATE wildcard SET ct_wildcards = ct_wildcards + $2::int WHERE id = $1
-`
-
-type CountWildcardSANParams struct {
-	ID uuid.UUID `json:"id"`
-	N  int32     `json:"n"`
-}
-
-func (q *Queries) CountWildcardSAN(ctx context.Context, arg CountWildcardSANParams) error {
-	_, err := q.db.Exec(ctx, countWildcardSAN, arg.ID, arg.N)
 	return err
 }
 
@@ -356,4 +372,31 @@ func (q *Queries) StartCTSession(ctx context.Context, now time.Time) (int64, err
 	var id int64
 	err := row.Scan(&id)
 	return id, err
+}
+
+const unwatchCTApexes = `-- name: UnwatchCTApexes :exec
+DELETE FROM ct_apex WHERE NOT (wildcard_id = ANY($1::uuid[]))
+`
+
+func (q *Queries) UnwatchCTApexes(ctx context.Context, wildcards []uuid.UUID) error {
+	_, err := q.db.Exec(ctx, unwatchCTApexes, wildcards)
+	return err
+}
+
+const watchCTApexes = `-- name: WatchCTApexes :exec
+INSERT INTO ct_apex (wildcard_id, watched_since)
+SELECT unnest($1::uuid[]), $2::timestamptz
+ON CONFLICT (wildcard_id) DO NOTHING
+`
+
+type WatchCTApexesParams struct {
+	Wildcards []uuid.UUID `json:"wildcards"`
+	Now       time.Time   `json:"now"`
+}
+
+// The watched apexes follow the set: new ones start watched now, those that
+// left go with their counts.
+func (q *Queries) WatchCTApexes(ctx context.Context, arg WatchCTApexesParams) error {
+	_, err := q.db.Exec(ctx, watchCTApexes, arg.Wildcards, arg.Now)
+	return err
 }

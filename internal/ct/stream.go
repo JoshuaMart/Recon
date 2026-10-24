@@ -17,10 +17,6 @@ import (
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
 
-// seenCap bounds the cache of names already handled. It only spares the
-// database a write: correctness rests on the asset's unique key.
-const seenCap = 200_000
-
 // queueSize is how many matching certificates wait for the writer. The
 // reader never waits on the database: past this, a certificate is dropped
 // and counted, a gap that reads as one.
@@ -28,6 +24,10 @@ const queueSize = 2_000
 
 // flushEvery is how often a session's counters are written.
 const flushEvery = 30 * time.Second
+
+// maxMessage bounds one message of someone else's feed: the widest seen is
+// under 8 kB.
+const maxMessage = 1 << 20
 
 // Stream reads the certstream feed and turns matching names into
 // candidates. A reader decodes and matches in memory; a writer does the
@@ -44,17 +44,37 @@ type Stream struct {
 	index     Index
 	rules     map[uuid.UUID]*scope.Classifier
 	loaded    time.Time
-	seen      map[string]struct{}
+	cache     cache
 	hour      time.Time
 	perHour   map[uuid.UUID]int
 	over      map[string]struct{}
-	wildcards map[uuid.UUID]int
+	apexes    map[uuid.UUID]*apexCount
 	connected bool
 	session   int64
 	counts    counts
 }
 
 type counts struct{ certificates, matched, created, revived, overflow, dropped int64 }
+
+// apexCount is what the feed brought under one watched wildcard since the
+// last flush.
+type apexCount struct {
+	names, wildcards, dropped int64
+	lastName, lastWildcard    *time.Time
+}
+
+// apex returns the counter of a wildcard. The caller holds the lock.
+func (s *Stream) apex(id uuid.UUID) *apexCount {
+	if s.apexes == nil {
+		s.apexes = map[uuid.UUID]*apexCount{}
+	}
+	a := s.apexes[id]
+	if a == nil {
+		a = &apexCount{}
+		s.apexes[id] = a
+	}
+	return a
+}
 
 type match struct {
 	cert    Certificate
@@ -127,7 +147,7 @@ func (s *Stream) write(ctx context.Context, work <-chan match) {
 			}
 		case m := <-work:
 			for _, t := range m.targets {
-				if _, err := s.claim(ctx, t.ProgramID, m.name, m.cert); err != nil && ctx.Err() == nil {
+				if _, err := s.claim(ctx, t, m.name, m.cert); err != nil && ctx.Err() == nil {
 					s.Log.ErrorContext(ctx, "ct: writing a candidate", "name", m.name, "err", err)
 				}
 			}
@@ -142,7 +162,7 @@ func (s *Stream) connect(ctx context.Context, work chan<- match) error {
 		return err
 	}
 	defer func() { _ = c.CloseNow() }()
-	c.SetReadLimit(4 << 20)
+	c.SetReadLimit(maxMessage)
 	id, err := s.Store.Q.StartCTSession(ctx, s.now())
 	if err != nil {
 		return err
@@ -203,44 +223,41 @@ func (s *Stream) read(ctx context.Context, c *websocket.Conn, work chan<- match)
 	}
 }
 
-// matches lists the names of a certificate to write. Wildcard names are only
-// counted, once per wildcard and name while the cache holds them.
+// matches lists the names of a certificate to write, and counts what it
+// brings per apex: each name once an hour, as the same certificate arrives
+// from several logs. Wildcard names are only counted.
 func (s *Stream) matches(cert Certificate) []match {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := s.now()
 	var out []match
 	for _, san := range cert.Names {
 		name, targets, wildcard := s.index.Match(san)
 		if len(targets) == 0 {
 			continue
 		}
-		if wildcard {
-			for _, t := range targets {
-				if s.remember("w|" + t.WildcardID.String() + "|" + name) {
-					if s.wildcards == nil {
-						s.wildcards = map[uuid.UUID]int{}
-					}
-					s.wildcards[t.WildcardID]++
-				}
+		for _, t := range targets {
+			kind := "n|"
+			if wildcard {
+				kind = "w|"
 			}
-			continue
+			if !s.cache.first(kind+t.WildcardID.String()+"|"+name, now) {
+				continue
+			}
+			a := s.apex(t.WildcardID)
+			if wildcard {
+				a.wildcards++
+				a.lastWildcard = &now
+			} else {
+				a.names++
+				a.lastName = &now
+			}
 		}
-		out = append(out, match{cert: cert, name: name, targets: targets})
+		if !wildcard {
+			out = append(out, match{cert: cert, name: name, targets: targets})
+		}
 	}
 	return out
-}
-
-// remember adds a key to the seen cache and says whether it was new. The
-// caller holds the lock.
-func (s *Stream) remember(key string) bool {
-	if _, ok := s.seen[key]; ok {
-		return false
-	}
-	if s.seen == nil || len(s.seen) >= seenCap {
-		s.seen = map[string]struct{}{}
-	}
-	s.seen[key] = struct{}{}
-	return true
 }
 
 func (s *Stream) loadedAt() time.Time {
@@ -249,16 +266,18 @@ func (s *Stream) loadedAt() time.Time {
 	return s.loaded
 }
 
-// Flush writes the counters: the session's, and the wildcard names counted
-// per wildcard.
+// Flush writes the counters: the session's, and each apex's.
 func (s *Stream) Flush(ctx context.Context) {
 	s.mu.Lock()
-	c, w, session := s.counts, s.wildcards, s.session
-	s.counts, s.wildcards = counts{}, nil
+	c, apexes, session := s.counts, s.apexes, s.session
+	s.counts, s.apexes = counts{}, nil
 	s.mu.Unlock()
-	for id, n := range w {
-		if err := s.Store.Q.CountWildcardSAN(ctx, sqlcgen.CountWildcardSANParams{ID: id, N: int32(n)}); err != nil { //nolint:gosec // a count of names
-			s.Log.ErrorContext(ctx, "ct: counting wildcard names", "err", err)
+	for id, a := range apexes {
+		if err := s.Store.Q.CountCTApex(ctx, sqlcgen.CountCTApexParams{
+			WildcardID: id, Names: a.names, WildcardCerts: a.wildcards, Dropped: a.dropped,
+			LastNameAt: a.lastName, LastWildcardAt: a.lastWildcard,
+		}); err != nil {
+			s.Log.ErrorContext(ctx, "ct: counting an apex", "err", err)
 		}
 	}
 	if session == 0 {
@@ -281,8 +300,10 @@ func (s *Stream) LoadApexes(ctx context.Context) error {
 	}
 	ix := Index{}
 	rules := map[uuid.UUID]*scope.Classifier{}
+	watched := make([]uuid.UUID, 0, len(rows))
 	for _, r := range rows {
 		ix.Add(Target{WildcardID: r.ID, ProgramID: r.ProgramID, Apex: r.Apex})
+		watched = append(watched, r.ID)
 		if _, ok := rules[r.ProgramID]; ok {
 			continue
 		}
@@ -291,6 +312,15 @@ func (s *Stream) LoadApexes(ctx context.Context) error {
 			return err
 		}
 		rules[r.ProgramID] = c
+	}
+	// Counts still in memory for an apex that leaves would land on no row:
+	// flushed first, they are dropped with it.
+	s.Flush(ctx)
+	if err := s.Store.Q.WatchCTApexes(ctx, sqlcgen.WatchCTApexesParams{Wildcards: watched, Now: s.now()}); err != nil {
+		return err
+	}
+	if err := s.Store.Q.UnwatchCTApexes(ctx, watched); err != nil {
+		return err
 	}
 	s.mu.Lock()
 	s.index, s.rules, s.loaded = ix, rules, s.now()
@@ -303,7 +333,7 @@ func (s *Stream) LoadApexes(ctx context.Context) error {
 func (s *Stream) Handle(ctx context.Context, cert Certificate) error {
 	for _, m := range s.matches(cert) {
 		for _, t := range m.targets {
-			if _, err := s.claim(ctx, t.ProgramID, m.name, cert); err != nil {
+			if _, err := s.claim(ctx, t, m.name, cert); err != nil {
 				return err
 			}
 		}
@@ -311,27 +341,29 @@ func (s *Stream) Handle(ctx context.Context, cert Certificate) error {
 	return nil
 }
 
-// admit applies the guards: a name already handled is skipped, and a
-// program past its hourly ceiling counts the overflow, once per name. The
-// name is remembered only once written, by done.
-func (s *Stream) admit(program uuid.UUID, key string) bool {
+// admit applies the guards: a name written within the hour is skipped, and
+// a program past its hourly ceiling counts the overflow on the apex, once
+// per name. The name is remembered only once written, by done.
+func (s *Stream) admit(t Target, key string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.seen[key]; ok {
+	now := s.now()
+	if s.cache.seen(key, now) {
 		return false
 	}
-	if h := s.now().Truncate(time.Hour); !h.Equal(s.hour) {
+	if h := now.Truncate(time.Hour); !h.Equal(s.hour) {
 		s.hour, s.perHour, s.over = h, map[uuid.UUID]int{}, map[string]struct{}{}
 	}
-	if s.perHour[program] >= s.MaxPerHour {
+	if s.perHour[t.ProgramID] >= s.MaxPerHour {
 		if _, ok := s.over[key]; !ok {
 			s.over[key] = struct{}{}
 			s.counts.overflow++
+			s.apex(t.WildcardID).dropped++
 		}
 		return false
 	}
 	s.counts.matched++
-	s.perHour[program]++
+	s.perHour[t.ProgramID]++
 	return true
 }
 
@@ -342,18 +374,19 @@ func (s *Stream) done(program uuid.UUID, key string, written bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if written {
-		s.remember(key)
+		s.cache.record(key, s.now())
 		return
 	}
 	s.counts.matched--
 	s.perHour[program]--
 }
 
-// claim writes one name for one program, in its own transaction, and says
-// whether it entered the CT lane.
-func (s *Stream) claim(ctx context.Context, program uuid.UUID, name string, cert Certificate) (bool, error) {
-	key := program.String() + "|" + name
-	if !s.admit(program, key) {
+// claim writes one name for the program of one wildcard, in its own
+// transaction, and says whether it entered the CT lane.
+func (s *Stream) claim(ctx context.Context, t Target, name string, cert Certificate) (bool, error) {
+	program := t.ProgramID
+	key := "p|" + program.String() + "|" + name
+	if !s.admit(t, key) {
 		return false, nil
 	}
 	entered, revived, err := s.writeName(ctx, program, name, cert)

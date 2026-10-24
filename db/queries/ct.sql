@@ -6,8 +6,23 @@ JOIN scope_rule r ON r.id = w.rule_id
 JOIN program p ON p.id = w.program_id
 WHERE r.valid_to IS NULL AND p.state = 'active';
 
--- name: CountWildcardSAN :exec
-UPDATE wildcard SET ct_wildcards = ct_wildcards + sqlc.arg(n)::int WHERE id = $1;
+-- The watched apexes follow the set: new ones start watched now, those that
+-- left go with their counts.
+-- name: WatchCTApexes :exec
+INSERT INTO ct_apex (wildcard_id, watched_since)
+SELECT unnest(sqlc.arg(wildcards)::uuid[]), sqlc.arg(now)::timestamptz
+ON CONFLICT (wildcard_id) DO NOTHING;
+
+-- name: UnwatchCTApexes :exec
+DELETE FROM ct_apex WHERE NOT (wildcard_id = ANY(sqlc.arg(wildcards)::uuid[]));
+
+-- name: CountCTApex :exec
+UPDATE ct_apex SET
+  names = names + sqlc.arg(names)::bigint, wildcards = wildcards + sqlc.arg(wildcard_certs)::bigint,
+  dropped = dropped + sqlc.arg(dropped)::bigint,
+  last_name_at = GREATEST(last_name_at, sqlc.narg(last_name_at)::timestamptz),
+  last_wildcard_at = GREATEST(last_wildcard_at, sqlc.narg(last_wildcard_at)::timestamptz)
+WHERE wildcard_id = $1;
 
 -- A host a certificate named, in scope: probed now, in the CT lane.
 -- name: EnterCTLane :execrows

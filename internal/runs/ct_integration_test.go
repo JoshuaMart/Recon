@@ -64,9 +64,15 @@ func TestCertificateNamesEnterTheLane(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Flush(ctx)
-	w, _ := f.st.Q.GetWildcard(ctx, f.wildcard)
-	if w.CtWildcards != 1 {
-		t.Errorf("wildcard SANs counted = %d, want 1", w.CtWildcards)
+	var names, wildcards int64
+	var lastName *time.Time
+	if err := f.st.Pool.QueryRow(ctx, `SELECT names, wildcards, last_name_at FROM ct_apex WHERE wildcard_id = $1`, f.wildcard).Scan(&names, &wildcards, &lastName); err != nil {
+		t.Fatal(err)
+	}
+	// staging and admin (excluded, but a name CT brought) are names; the
+	// wildcard certificate counted once whatever the logs.
+	if names != 2 || wildcards != 1 || lastName == nil {
+		t.Errorf("apex coverage = %d names, %d wildcards, last %v; want 2, 1, set", names, wildcards, lastName)
 	}
 	var source, step string
 	_ = f.st.Pool.QueryRow(ctx, `SELECT discovery_source, discovery_path->0->>'step' FROM asset WHERE key = 'staging.example.com'`).Scan(&source, &step)
@@ -96,7 +102,8 @@ func TestCertificateNamesEnterTheLane(t *testing.T) {
 	if _, err := f.st.Pool.Exec(ctx, `UPDATE asset_current SET lifecycle = 'active', ct_lane = false, next_resolve_at = NULL WHERE key = 'b.example.com'`); err != nil {
 		t.Fatal(err)
 	}
-	s = stream(t, f, c, 10) // a fresh cache, as after a restart
+	// Past the cache's TTL, the same stream looks at both again.
+	c.set(c.now().Add(3 * time.Hour))
 	if err := s.Handle(ctx, certificate("a.example.com", "b.example.com")); err != nil {
 		t.Fatal(err)
 	}
