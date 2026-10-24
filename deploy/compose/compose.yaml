@@ -143,10 +143,12 @@ services:
       - ./fingerprinter.yml:/app/config.yml:ro
     ports:
       - "127.0.0.1:${FINGERPRINTER_PORT:-3001}:3001"
+    # Restarted with the browsers: its connections to a recreated Chrome are
+    # dead, and its reconnects close the new one in a loop.
     depends_on:
-      chrome-1: {condition: service_healthy}
-      chrome-2: {condition: service_healthy}
-      chrome-3: {condition: service_healthy}
+      chrome-1: {condition: service_healthy, restart: true}
+      chrome-2: {condition: service_healthy, restart: true}
+      chrome-3: {condition: service_healthy, restart: true}
     restart: unless-stopped
 
   # One run at a time per instance: Recon's slots follow the instance count.
