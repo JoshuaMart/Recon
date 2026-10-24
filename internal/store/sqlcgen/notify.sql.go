@@ -159,6 +159,35 @@ func (q *Queries) DueNotifications(ctx context.Context, now time.Time) ([]Notifi
 	return items, nil
 }
 
+const failingComponents = `-- name: FailingComponents :many
+SELECT component, failing_since, announced, detail FROM health_state WHERE failing_since IS NOT NULL ORDER BY failing_since
+`
+
+func (q *Queries) FailingComponents(ctx context.Context) ([]HealthState, error) {
+	rows, err := q.db.Query(ctx, failingComponents)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []HealthState
+	for rows.Next() {
+		var i HealthState
+		if err := rows.Scan(
+			&i.Component,
+			&i.FailingSince,
+			&i.Announced,
+			&i.Detail,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getHealthState = `-- name: GetHealthState :one
 SELECT component, failing_since, announced, detail FROM health_state WHERE component = $1
 `

@@ -31,6 +31,22 @@ flowchart LR
 | **Runs** | running and past runs, per source accounting, errors |
 | **Settings** | saved searches, config in effect (read-only), storage usage, health |
 
+## Activity
+
+The status in the navigation opens a panel of what is happening now, refreshed every few seconds while
+open. It answers "is my scan running, and where" without leaving the page.
+
+| Block | Shows |
+|---|---|
+| Runs | running and queued runs: kind, wildcard or host count, runner (`serve` or `scaleway`), since when |
+| Renders | the queue per priority, renders in flight against the current concurrency |
+| CT feed | connected or not, what the session saw: certificates, names matched, created |
+| Scope sync | last success, the last error while it fails |
+| Problems | each failing component, since when and why, as the health watcher keeps it |
+
+It is read from `GET /api/activity`, behind the session like the rest of the API: `/api/health` stays
+public and says states only.
+
 ## Search
 
 ```

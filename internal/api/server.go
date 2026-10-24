@@ -115,6 +115,7 @@ func Handler(d Deps) http.Handler {
 		authed("PATCH /api/saved-searches/{id}", s.patchSavedSearch)
 		authed("DELETE /api/saved-searches/{id}", s.deleteSavedSearch)
 		authed("GET /api/settings", s.settings)
+		authed("GET /api/activity", s.activity)
 	}
 	// An unknown API path is a JSON 404, never the interface's page.
 	if d.Auth != nil || d.UI != nil {

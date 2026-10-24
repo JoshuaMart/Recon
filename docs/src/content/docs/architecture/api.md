@@ -55,6 +55,7 @@ The API key is set in the config. A write with the cookie must also carry an `Or
 | `GET /api/runs`, `GET /api/runs/{id}` | runs, with per source accounting |
 | `GET`, `POST`, `PATCH`, `DELETE /api/saved-searches` | saved searches |
 | `GET /api/health` | sync, CT, Fingerprinter, runners, render queue (public, states only) |
+| `GET /api/activity` | what is happening now: runs, renders, CT feed, sync, failing components |
 | `GET /api/settings` | the config in effect without its secrets, and screenshot storage used |
 | `GET /*` (anything else) | the interface, `index.html` for any path it routes itself |
 | `GET /runs/{id}/targets` | one host per line, for that run only, while it runs |

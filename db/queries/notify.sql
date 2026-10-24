@@ -60,3 +60,6 @@ SELECT * FROM health_state WHERE component = $1;
 -- name: PutHealthState :exec
 INSERT INTO health_state (component, failing_since, announced, detail) VALUES ($1, sqlc.narg(failing_since), $2, sqlc.narg(detail))
 ON CONFLICT (component) DO UPDATE SET failing_since = EXCLUDED.failing_since, announced = EXCLUDED.announced, detail = EXCLUDED.detail;
+
+-- name: FailingComponents :many
+SELECT * FROM health_state WHERE failing_since IS NOT NULL ORDER BY failing_since;

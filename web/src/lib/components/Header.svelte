@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { onMount } from 'svelte';
+	import Activity from './Activity.svelte';
 	import Logo from './Logo.svelte';
 	import { refreshUnseen, unseen } from '#lib/unseen.svelte.ts';
 
@@ -21,6 +22,8 @@
 	];
 
 	let health = $state<Health | null>(null);
+	let open = $state(false);
+	let anchor = $state<HTMLElement>();
 
 	async function load() {
 		try {
@@ -56,6 +59,10 @@
 	});
 </script>
 
+<svelte:window
+	onpointerdown={(e) => open && anchor && !anchor.contains(e.target as Node) && (open = false)}
+/>
+
 <header>
 	<div class="bar">
 		<a class="brand" href="/"><Logo /> Recon</a>
@@ -70,10 +77,19 @@
 			{/each}
 		</nav>
 		{#if health}
-			<a class="health" href="/settings" class:degraded={health.status !== 'ok'}>
-				<span class="dot" aria-hidden="true"></span>
-				{summary}{#if queued !== null}<span class="num"> · render queue {queued}</span>{/if}
-			</a>
+			<div class="status" bind:this={anchor}>
+				<button
+					class="health"
+					class:degraded={health.status !== 'ok'}
+					aria-expanded={open}
+					aria-haspopup="dialog"
+					onclick={() => (open = !open)}
+				>
+					<span class="dot" aria-hidden="true"></span>
+					{summary}{#if queued !== null}<span class="num"> · render queue {queued}</span>{/if}
+				</button>
+				{#if open}<Activity onclose={() => (open = false)} />{/if}
+			</div>
 		{/if}
 	</div>
 </header>
@@ -133,8 +149,16 @@
 		color: var(--text-strong);
 		background: oklch(0.22 0.007 260);
 	}
+	.status {
+		position: relative;
+	}
 	.health {
 		display: inline-flex;
+		background: none;
+		border: 0;
+		padding: 4px 0;
+		cursor: pointer;
+		font: inherit;
 		align-items: center;
 		gap: 8px;
 		font-size: 12px;

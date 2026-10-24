@@ -86,3 +86,15 @@ WHERE wildcard.id = sqlc.arg(id);
 -- posted meanwhile finds it taken and is answered at once.
 -- name: LockRunningRun :one
 SELECT id FROM run WHERE id = $1 AND state = 'running' FOR UPDATE NOWAIT;
+
+-- What the activity panel lists: every run in flight, and the next queued.
+-- name: ActiveRuns :many
+SELECT r.id, r.kind, r.stage, r.state, r.runner, r.trigger, r.queued_at, r.started_at, r.deadline,
+  COALESCE(cardinality(r.targets), 0)::int AS targets, w.apex, p.name AS program
+FROM run r JOIN program p ON p.id = r.program_id LEFT JOIN wildcard w ON w.id = r.wildcard_id
+WHERE r.state IN ('running', 'queued')
+ORDER BY r.state DESC, r.started_at, r.queued_at, r.id
+LIMIT 50;
+
+-- name: QueuedRunCount :one
+SELECT count(*)::int FROM run WHERE state = 'queued';

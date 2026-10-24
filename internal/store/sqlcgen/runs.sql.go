@@ -12,6 +12,64 @@ import (
 	"github.com/google/uuid"
 )
 
+const activeRuns = `-- name: ActiveRuns :many
+SELECT r.id, r.kind, r.stage, r.state, r.runner, r.trigger, r.queued_at, r.started_at, r.deadline,
+  COALESCE(cardinality(r.targets), 0)::int AS targets, w.apex, p.name AS program
+FROM run r JOIN program p ON p.id = r.program_id LEFT JOIN wildcard w ON w.id = r.wildcard_id
+WHERE r.state IN ('running', 'queued')
+ORDER BY r.state DESC, r.started_at, r.queued_at, r.id
+LIMIT 50
+`
+
+type ActiveRunsRow struct {
+	ID        uuid.UUID  `json:"id"`
+	Kind      string     `json:"kind"`
+	Stage     string     `json:"stage"`
+	State     string     `json:"state"`
+	Runner    string     `json:"runner"`
+	Trigger   string     `json:"trigger"`
+	QueuedAt  time.Time  `json:"queued_at"`
+	StartedAt *time.Time `json:"started_at"`
+	Deadline  *time.Time `json:"deadline"`
+	Targets   int32      `json:"targets"`
+	Apex      *string    `json:"apex"`
+	Program   string     `json:"program"`
+}
+
+// What the activity panel lists: every run in flight, and the next queued.
+func (q *Queries) ActiveRuns(ctx context.Context) ([]ActiveRunsRow, error) {
+	rows, err := q.db.Query(ctx, activeRuns)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ActiveRunsRow
+	for rows.Next() {
+		var i ActiveRunsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Kind,
+			&i.Stage,
+			&i.State,
+			&i.Runner,
+			&i.Trigger,
+			&i.QueuedAt,
+			&i.StartedAt,
+			&i.Deadline,
+			&i.Targets,
+			&i.Apex,
+			&i.Program,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const claimQueuedRun = `-- name: ClaimQueuedRun :one
 UPDATE run SET state = 'running', started_at = $1::timestamptz, deadline = $2::timestamptz,
   runner = $3
@@ -437,6 +495,17 @@ func (q *Queries) OldestWildcards(ctx context.Context, arg OldestWildcardsParams
 		return nil, err
 	}
 	return items, nil
+}
+
+const queuedRunCount = `-- name: QueuedRunCount :one
+SELECT count(*)::int FROM run WHERE state = 'queued'
+`
+
+func (q *Queries) QueuedRunCount(ctx context.Context) (int32, error) {
+	row := q.db.QueryRow(ctx, queuedRunCount)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const requeueRun = `-- name: RequeueRun :exec

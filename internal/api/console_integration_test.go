@@ -3,6 +3,7 @@
 package api
 
 import (
+	"net/http"
 	"net/url"
 	"testing"
 	"time"
@@ -146,5 +147,42 @@ func TestProbeNow(t *testing.T) {
 	id := assetID(t, off, pid, "a.acme.com")
 	if code, r := off.do("POST", "/api/assets/"+id+"/probe", ""); r["queued"] != false || r["reason"] != "verification is disabled" {
 		t.Fatalf("probe with verification off = %d %v", code, r)
+	}
+}
+
+func TestActivity(t *testing.T) {
+	c := newClient(t)
+	pid, _ := declare(t, c, `["a.acme.com"]`)
+	res, err := http.Get(c.srv.URL + "/api/activity")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != 401 {
+		t.Fatalf("activity without a session = %d, want 401: it says why a component fails", res.StatusCode)
+	}
+	if _, err := c.st.Q.EnqueueRun(t.Context(), sqlcgen.EnqueueRunParams{ProgramID: uuid.MustParse(pid), Kind: "verification", Stage: "resolve", Trigger: "schedule", Now: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	since, detail := time.Now().Add(-time.Hour), "connection refused"
+	if err := c.st.Q.PutHealthState(t.Context(), sqlcgen.PutHealthStateParams{Component: "sync", FailingSince: &since, Detail: &detail}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.st.Q.PutHealthState(t.Context(), sqlcgen.PutHealthStateParams{Component: "render"}); err != nil {
+		t.Fatal(err)
+	}
+
+	code, a := c.do("GET", "/api/activity", "")
+	if code != 200 {
+		t.Fatalf("activity = %d %v", code, a)
+	}
+	runs := a["runs"].([]any)
+	if len(runs) != 1 || a["queued"] != float64(1) || runs[0].(map[string]any)["program"] != "Acme" {
+		t.Fatalf("runs = %v queued = %v", runs, a["queued"])
+	}
+	// Only what fails now: a component that recovered is not a problem.
+	problems := a["problems"].([]any)
+	if len(problems) != 1 || problems[0].(map[string]any)["component"] != "sync" || problems[0].(map[string]any)["detail"] != detail {
+		t.Fatalf("problems = %v", problems)
 	}
 }
