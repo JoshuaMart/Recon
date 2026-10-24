@@ -34,7 +34,6 @@
 		<input id="key" class="input mono" type="password" autocomplete="current-password" bind:value={key} required />
 		{#if error}<p class="error" role="alert">{error}</p>{/if}
 		<button class="btn btn-primary" type="submit" disabled={busy || !key}>Sign in</button>
-		<p class="muted hint">The key set as <code class="mono">api_key</code> in the config. The session lasts 30 days.</p>
 	</form>
 </div>
 
@@ -65,9 +64,5 @@
 	}
 	.btn {
 		justify-content: center;
-	}
-	.hint {
-		margin: 0;
-		font-size: 12px;
 	}
 </style>
