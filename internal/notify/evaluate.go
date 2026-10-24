@@ -120,7 +120,7 @@ func (e *Evaluator) evaluate(ctx context.Context, s sqlcgen.SavedSearch) error {
 		}
 		items := make([]string, 0, len(labels))
 		for _, l := range labels {
-			items = append(items, label(l))
+			items = append(items, Label(l.Key, l.StatusCode, l.Title))
 		}
 		if err := Enqueue(ctx, q, Event{
 			Kind: KindSavedSearch, Group: "search:" + s.ID.String(), Title: s.Name, Items: items, Count: len(added),
@@ -150,14 +150,14 @@ func (e *Evaluator) searchLink(s sqlcgen.SavedSearch) string {
 	return link
 }
 
-// label is how a match is listed: its key, status and title.
-func label(l sqlcgen.MatchLabelsRow) string {
-	out := strings.TrimSuffix(l.Key, "/tcp")
-	if l.StatusCode != nil {
-		out += fmt.Sprintf(" · %d", *l.StatusCode)
+// Label is how an asset is listed in a message: its key, status and title.
+func Label(key string, status *int32, title *string) string {
+	out := strings.TrimSuffix(key, "/tcp")
+	if status != nil {
+		out += fmt.Sprintf(" · %d", *status)
 	}
-	if l.Title != nil && *l.Title != "" {
-		t := *l.Title
+	if title != nil && *title != "" {
+		t := *title
 		if r := []rune(t); len(r) > 60 {
 			t = string(r[:59]) + "…"
 		}

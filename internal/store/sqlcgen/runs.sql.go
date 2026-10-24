@@ -17,7 +17,8 @@ UPDATE run SET state = 'running', started_at = $1::timestamptz, deadline = $2::t
 WHERE id = (
   SELECT r.id FROM run r JOIN program p ON p.id = r.program_id
   WHERE r.state = 'queued' AND p.state = 'active'
-  ORDER BY r.queued_at, r.id
+  -- A name from a certificate is worth minutes: it goes ahead of the queue.
+  ORDER BY (r.kind = 'candidate') DESC, r.queued_at, r.id
   LIMIT 1 FOR UPDATE OF r SKIP LOCKED
 )
 RETURNING id, program_id, kind, stage, wildcard_id, state, trigger, queued_at, started_at, finished_at, deadline, error, report_meta, ingest, targets
@@ -199,7 +200,7 @@ func (q *Queries) GetRun(ctx context.Context, id uuid.UUID) (Run, error) {
 }
 
 const getWildcard = `-- name: GetWildcard :one
-SELECT w.id, w.program_id, w.rule_id, w.apex, w.last_recon_at, w.last_recon_run, w.assets_found, w.created_at, (r.valid_to IS NULL)::bool AS rule_in_force FROM wildcard w JOIN scope_rule r ON r.id = w.rule_id WHERE w.id = $1
+SELECT w.id, w.program_id, w.rule_id, w.apex, w.last_recon_at, w.last_recon_run, w.assets_found, w.created_at, w.ct_wildcards, (r.valid_to IS NULL)::bool AS rule_in_force FROM wildcard w JOIN scope_rule r ON r.id = w.rule_id WHERE w.id = $1
 `
 
 type GetWildcardRow struct {
@@ -211,6 +212,7 @@ type GetWildcardRow struct {
 	LastReconRun *uuid.UUID `json:"last_recon_run"`
 	AssetsFound  int32      `json:"assets_found"`
 	CreatedAt    time.Time  `json:"created_at"`
+	CtWildcards  int32      `json:"ct_wildcards"`
 	RuleInForce  bool       `json:"rule_in_force"`
 }
 
@@ -226,6 +228,7 @@ func (q *Queries) GetWildcard(ctx context.Context, id uuid.UUID) (GetWildcardRow
 		&i.LastReconRun,
 		&i.AssetsFound,
 		&i.CreatedAt,
+		&i.CtWildcards,
 		&i.RuleInForce,
 	)
 	return i, err

@@ -36,7 +36,7 @@ func (q *Queries) CreateWildcard(ctx context.Context, arg CreateWildcardParams) 
 }
 
 const listWildcards = `-- name: ListWildcards :many
-SELECT w.id, w.program_id, w.rule_id, w.apex, w.last_recon_at, w.last_recon_run, w.assets_found, w.created_at, p.name AS program_name, p.platform, p.state AS program_state,
+SELECT w.id, w.program_id, w.rule_id, w.apex, w.last_recon_at, w.last_recon_run, w.assets_found, w.created_at, w.ct_wildcards, p.name AS program_name, p.platform, p.state AS program_state,
   (r.valid_to IS NULL AND p.state = 'active')::bool AS active,
   COALESCE(p.auto_scan, $1::text)::text AS auto_scan
 FROM wildcard w
@@ -62,6 +62,7 @@ type ListWildcardsRow struct {
 	LastReconRun *uuid.UUID `json:"last_recon_run"`
 	AssetsFound  int32      `json:"assets_found"`
 	CreatedAt    time.Time  `json:"created_at"`
+	CtWildcards  int32      `json:"ct_wildcards"`
 	ProgramName  string     `json:"program_name"`
 	Platform     *string    `json:"platform"`
 	ProgramState string     `json:"program_state"`
@@ -87,6 +88,7 @@ func (q *Queries) ListWildcards(ctx context.Context, arg ListWildcardsParams) ([
 			&i.LastReconRun,
 			&i.AssetsFound,
 			&i.CreatedAt,
+			&i.CtWildcards,
 			&i.ProgramName,
 			&i.Platform,
 			&i.ProgramState,

@@ -58,6 +58,11 @@ screenshots:
   keep: 3              # visually distinct screenshots kept per asset
   disk_threshold: 0.9  # share of the filesystem in use past which a health notification fires
 
+ct:
+  url: ""              # the certstream websocket; empty leaves CT off
+  max_per_hour: 200    # names a program may gain from CT in an hour, the overflow counted
+  reload: 5m           # how often the apex set is read again
+
 notify:
   discord_url: ""      # a Discord webhook URL; empty sends nothing there
   webhook_url: ""      # a generic webhook receiving a JSON body

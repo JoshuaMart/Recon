@@ -53,6 +53,8 @@ type Deps struct {
 	Evaluate func()
 	// Channels names the notification channels set, for the settings page.
 	Channels []string
+	// CT says whether the certificate feed is being read; nil when it is off.
+	CT func() bool
 }
 
 type server struct{ Deps }
@@ -126,6 +128,7 @@ type healthResponse struct {
 	Database string `json:"database"`
 	Sync     string `json:"sync,omitempty"`
 	Render   string `json:"render,omitempty"`
+	CT       string `json:"ct,omitempty"`
 	// RenderQueue is the number of renders due, per priority: high, normal, low.
 	RenderQueue map[string]int `json:"render_queue,omitempty"`
 }
@@ -144,6 +147,13 @@ func (s *server) health() http.Handler {
 		} else if s.Store != nil {
 			res.Sync = s.syncHealth(ctx)
 			res.Render, res.RenderQueue = s.renderHealth(ctx)
+			res.CT = "disabled"
+			if s.CT != nil {
+				res.CT = "disconnected"
+				if s.CT() {
+					res.CT = "ok"
+				}
+			}
 			if res.Sync == "failing" || res.Render == "unreachable" {
 				res.Status = "degraded"
 			}

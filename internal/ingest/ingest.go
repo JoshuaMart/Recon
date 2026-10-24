@@ -66,7 +66,9 @@ type Input struct {
 	GeoIP *enrich.GeoIP
 }
 
-func (in Input) verify() bool { return in.Run.Kind == "verification" }
+// verify is a run over known hosts, the verification schedule's or the CT
+// lane's, rather than a recon of a wildcard.
+func (in Input) verify() bool { return in.Run.Kind == "verification" || in.Run.Kind == "candidate" }
 
 type ingester struct {
 	in      Input

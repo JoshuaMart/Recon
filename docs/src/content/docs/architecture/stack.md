@@ -126,7 +126,7 @@ A slot is a run in `running`.
 |---|---|---|
 | recon | 1 per `fastrecon serve` instance | queue order, and `scan the N oldest` queues oldest first |
 | verification | 1 | due date |
-| CT candidates | 1, separate | so a candidate never waits behind a batch |
+| CT candidates | 1, separate, ahead of the queue | so a candidate never waits behind a batch; runs with verification off |
 | renders | adaptive, see [absorbing a burst](/architecture/fingerprinting/#absorbing-a-burst) | priority, then due date |
 
 ## Backups

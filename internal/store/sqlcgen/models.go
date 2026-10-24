@@ -74,6 +74,7 @@ type AssetCurrent struct {
 	Asn            *int32       `json:"asn"`
 	AsnOrg         *string      `json:"asn_org"`
 	Country        *string      `json:"country"`
+	CtLane         bool         `json:"ct_lane"`
 }
 
 type AssetLayer struct {
@@ -106,6 +107,19 @@ type Change struct {
 	After     []byte     `json:"after"`
 	RunID     *uuid.UUID `json:"run_id"`
 	At        time.Time  `json:"at"`
+}
+
+type CtSession struct {
+	ID             int64      `json:"id"`
+	ConnectedAt    time.Time  `json:"connected_at"`
+	DisconnectedAt *time.Time `json:"disconnected_at"`
+	Error          *string    `json:"error"`
+	Certificates   int64      `json:"certificates"`
+	Matched        int64      `json:"matched"`
+	Created        int64      `json:"created"`
+	Revived        int64      `json:"revived"`
+	Overflow       int64      `json:"overflow"`
+	Dropped        int64      `json:"dropped"`
 }
 
 type HealthState struct {
@@ -264,4 +278,5 @@ type Wildcard struct {
 	LastReconRun *uuid.UUID `json:"last_recon_run"`
 	AssetsFound  int32      `json:"assets_found"`
 	CreatedAt    time.Time  `json:"created_at"`
+	CtWildcards  int32      `json:"ct_wildcards"`
 }

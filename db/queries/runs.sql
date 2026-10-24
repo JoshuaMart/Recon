@@ -9,7 +9,8 @@ UPDATE run SET state = 'running', started_at = sqlc.arg(now)::timestamptz, deadl
 WHERE id = (
   SELECT r.id FROM run r JOIN program p ON p.id = r.program_id
   WHERE r.state = 'queued' AND p.state = 'active'
-  ORDER BY r.queued_at, r.id
+  -- A name from a certificate is worth minutes: it goes ahead of the queue.
+  ORDER BY (r.kind = 'candidate') DESC, r.queued_at, r.id
   LIMIT 1 FOR UPDATE OF r SKIP LOCKED
 )
 RETURNING *;

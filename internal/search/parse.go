@@ -98,6 +98,9 @@ func (v Value) String() string {
 	return v.Op + quote(v.Lit)
 }
 
+// Quote prints a literal as the language reads it back.
+func Quote(s string) string { return quote(s) }
+
 // quote prints a literal, quoted when printed bare it would end early or read
 // as something else: a comparison, a regex, a range.
 func quote(s string) string {

@@ -23,6 +23,7 @@ import (
 
 	"github.com/JoshuaMart/recon/internal/api"
 	"github.com/JoshuaMart/recon/internal/config"
+	"github.com/JoshuaMart/recon/internal/ct"
 	"github.com/JoshuaMart/recon/internal/enrich"
 	"github.com/JoshuaMart/recon/internal/fingerprint"
 	"github.com/JoshuaMart/recon/internal/ingest"
@@ -303,6 +304,19 @@ func serve(ctx context.Context, log *slog.Logger, cfg config.Config, st *store.S
 	}
 	if cfg.ScopesExtractor.URL != "" {
 		checks = append(checks, notify.SyncCheck(st.Q))
+	}
+	if c := cfg.CT; c.URL != "" {
+		stream := &ct.Stream{Store: st, URL: c.URL, Log: log, Now: time.Now, MaxPerHour: c.MaxPerHour, Reload: c.Reload}
+		spawn(stream.Loop)
+		deps.CT = stream.Connected
+		checks = append(checks, notify.Check{Component: "CT feed", Probe: func(context.Context) (bool, string) {
+			if stream.Connected() {
+				return true, ""
+			}
+			return false, "disconnected"
+		}})
+	} else {
+		log.InfoContext(ctx, "no ct.url: Certificate Transparency is off")
 	}
 	spawn((&notify.Watcher{
 		Pool: st.Pool, Q: st.Q, Log: log, Now: time.Now, Checks: checks,

@@ -21,7 +21,12 @@ const (
 	KindSavedSearch   = "saved_search"
 	KindBroken        = "broken"
 	KindRecovered     = "recovered"
+	KindCTLive        = "ct_live"
 )
+
+// CTWindow is how long a program's first name from a certificate serving
+// HTTP waits for the next ones.
+const CTWindow = 5 * time.Minute
 
 // SavedSearchWindow is how long a saved search's first new match waits for
 // the next ones.
@@ -89,8 +94,15 @@ func Compose(n sqlcgen.Notification) Message {
 	if m.Items == nil {
 		m.Items = []string{}
 	}
-	if n.Kind == KindSavedSearch {
+	switch n.Kind {
+	case KindSavedSearch:
 		m.Title = fmt.Sprintf("saved search %q: %d new match%s", n.Title, n.Total, plural(int(n.Total), "es"))
+	case KindCTLive:
+		if n.Total == 1 {
+			m.Title = n.Title + ": a name from a certificate now serves HTTP"
+		} else {
+			m.Title = fmt.Sprintf("%s: %d names from certificates now serve HTTP", n.Title, n.Total)
+		}
 	}
 	if n.Link != nil {
 		m.Link = *n.Link

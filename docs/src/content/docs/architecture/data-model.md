@@ -38,6 +38,9 @@ erDiagram
   asset ||--o{ saved_search_match : "matched by"
 ```
 
+The CT feed keeps `ct_session` (one row per connected period, with what it saw), and `asset_current.ct_lane`
+marks a host a certificate brought until it is measured or archived.
+
 Notifications keep their own state, outside the inventory: `notification` (one message per window,
 its items, when it is due and when it was sent) and `health_state` (per component, since when it fails
 and whether that was announced).
@@ -46,7 +49,7 @@ and whether that was announced).
 |---|---|
 | `program` | origin (`scopesextractor` or `manual`), platform and slug, state, auto-scan override |
 | `scope_rule` | include or exclude, matcher, pattern, `origin` (`sync` or `local`), `valid_from`, `valid_to` |
-| `wildcard` | one per apex rule: `last_recon_at`, `last_recon_run`, `assets_found` |
+| `wildcard` | one per apex rule: `last_recon_at`, `last_recon_run`, `assets_found`, `ct_wildcards` (wildcard SANs seen) |
 | `asset` | program, kind, canonical key, parent, lineage, scope status, first and last seen |
 | `observation` | asset, layer, outcome, data, `observed_at`, `last_confirmed_at`, run, `producer_version`. Partitioned by month |
 | `asset_layer` | per asset and layer: state, informative and non informative failure counters, `first_failure_at`, `last_ok_at` |

@@ -15,11 +15,14 @@ parsed versions, a fingerprint observation and a deduplicated screenshot. The se
 (`internal/search`) parses text to an AST that prints back, and compiles it to parameterized SQL; a
 test runs every query of `search.md`, so a new example there must work. The interface (`web/`, SvelteKit 3,
 static, `#lib/x.ts` imports) is embedded by `internal/ui`, which serves `index.html` for every path the
-API does not own, with a CSP that allows only its own inline boot script by hash. Phase 7 is built and
-waits on its done-when (a week of use): `internal/notify` holds the outbox with its trailing windows,
+API does not own, with a CSP that allows only its own inline boot script by hash. Phase 7 is done, its
+notification volume to be watched over its first week: `internal/notify` holds the outbox with its trailing windows,
 the channels (Discord, webhook), the saved search evaluator (its first pass records matches silently)
-and the health watcher; the feed is `search.Feed`, the language plus `change:`. Phase 8 (CT and BBOT)
-is next. The design in `docs/` is the source of
+and the health watcher; the feed is `search.Feed`, the language plus `change:`. Phase 8 (Certificate
+Transparency) is done: `internal/ct` walks each SAN's labels to the wildcards' apexes, and a matching
+name enters the CT lane (`asset_current.ct_lane`), probed by `candidate` runs even with verification
+off, until its first full or its archiving; the reader only matches in memory, a writer does the database
+work. Phase 9 (Scaleway runner) is next, then 10 (BBOT import). The design in `docs/` is the source of
 truth, and code follows it.
 
 ## Read before working

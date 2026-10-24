@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"github.com/JoshuaMart/recon/internal/lifecycle"
 	"github.com/JoshuaMart/recon/internal/notify"
 	"github.com/JoshuaMart/recon/internal/scope"
+	"github.com/JoshuaMart/recon/internal/search"
 	"github.com/JoshuaMart/recon/internal/store"
 	"github.com/JoshuaMart/recon/internal/store/sqlcgen"
 )
@@ -111,6 +113,11 @@ func (s *Scheduler) Pass(ctx context.Context) error {
 		return err
 	}
 	if err := s.archiveStale(ctx); err != nil {
+		return err
+	}
+	// The CT lane runs whether verification is on or not: it only ever
+	// probes the names a certificate brought.
+	if err := s.enqueueCandidate(ctx); err != nil {
 		return err
 	}
 	if s.Verification {
@@ -217,6 +224,75 @@ func (s *Scheduler) enqueueVerification(ctx context.Context) error {
 	return err
 }
 
+// enqueueCandidate queues one run over the CT lane's due hosts of the program
+// holding the oldest of them, full before resolve.
+func (s *Scheduler) enqueueCandidate(ctx context.Context) error {
+	now := s.now()
+	programID, err := s.Store.Q.NextDueCTProgram(ctx, now)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	lim := int32(s.Batch) //nolint:gosec // validated by the config
+	stage := "full"
+	targets, err := s.Store.Q.DueFullCT(ctx, sqlcgen.DueFullCTParams{ProgramID: programID, Now: now, Lim: lim})
+	if err != nil {
+		return err
+	}
+	if len(targets) == 0 {
+		stage = "resolve"
+		if targets, err = s.Store.Q.DueResolveCT(ctx, sqlcgen.DueResolveCTParams{ProgramID: programID, Now: now, Lim: lim}); err != nil {
+			return err
+		}
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+	_, err = s.Store.Q.EnqueueCandidate(ctx, sqlcgen.EnqueueCandidateParams{ProgramID: programID, Stage: stage, Targets: targets, Now: now})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil // one is already queued or running
+	}
+	return err
+}
+
+// ctLane closes a candidate run in its transaction: the services its full
+// found answering HTTP are announced, and the hosts measured or archived leave
+// the lane.
+func (s *Scheduler) ctLane(ctx context.Context, q *sqlcgen.Queries, r sqlcgen.Run, now time.Time) error {
+	full := r.Stage == "full"
+	if full {
+		since := r.QueuedAt
+		if r.StartedAt != nil {
+			since = *r.StartedAt
+		}
+		live, err := q.CTLiveServices(ctx, sqlcgen.CTLiveServicesParams{ProgramID: r.ProgramID, Since: since, Hosts: r.Targets})
+		if err != nil {
+			return err
+		}
+		if len(live) > 0 {
+			p, err := q.GetProgram(ctx, r.ProgramID)
+			if err != nil {
+				return err
+			}
+			items := make([]string, 0, min(len(live), notify.MaxItems))
+			for _, l := range live[:min(len(live), notify.MaxItems)] {
+				items = append(items, notify.Label(l.Key, l.StatusCode, l.Title))
+			}
+			if err := notify.Enqueue(ctx, q, notify.Event{
+				Kind: notify.KindCTLive, Group: "ct:" + r.ProgramID.String(), Title: p.Name, Items: items, Count: len(live),
+				Link:   strings.TrimRight(s.PublicURL, "/") + "/?q=" + url.QueryEscape("source:certstream program:"+search.Quote(p.Name)),
+				Window: notify.CTWindow,
+			}, now); err != nil {
+				return err
+			}
+		}
+	}
+	_, err := q.LeaveCTLane(ctx, sqlcgen.LeaveCTLaneParams{ProgramID: r.ProgramID, Hosts: r.Targets, AfterFull: full})
+	return err
+}
+
 // archiveStale takes assets inactive or unobservable for too long out of the
 // scheduler. They are kept: archived is never deleted.
 func (s *Scheduler) archiveStale(ctx context.Context) error {
@@ -249,7 +325,7 @@ func (s *Scheduler) ports() string {
 }
 
 func (s *Scheduler) request(ctx context.Context, r sqlcgen.Run) (Request, string, error) {
-	if r.Kind == "verification" {
+	if r.Kind == "verification" || r.Kind == "candidate" {
 		rules, err := s.Store.Q.ListOpenRules(ctx, r.ProgramID)
 		if err != nil {
 			return Request{}, "", err
@@ -306,7 +382,7 @@ func (s *Scheduler) ingest(ctx context.Context, r sqlcgen.Run, apex string, raw 
 		return ingest.Summary{}, err
 	}
 	want := "domain"
-	if r.Kind == "verification" {
+	if r.Kind == "verification" || r.Kind == "candidate" {
 		want = "targets"
 	}
 	if rep.Run.Input != want {
@@ -344,6 +420,11 @@ func (s *Scheduler) ingest(ctx context.Context, r sqlcgen.Run, apex string, raw 
 	}
 	if r.WildcardID != nil {
 		if err := q.MarkWildcardRecon(ctx, sqlcgen.MarkWildcardReconParams{ID: *r.WildcardID, RunID: &r.ID, Now: now}); err != nil {
+			return ingest.Summary{}, err
+		}
+	}
+	if r.Kind == "candidate" {
+		if err := s.ctLane(ctx, q, r, now); err != nil {
 			return ingest.Summary{}, err
 		}
 	}

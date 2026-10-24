@@ -17,20 +17,20 @@ WHERE asset_id = $1;
 -- The program holding the oldest due date, among active programs.
 -- name: NextDueProgram :one
 SELECT ac.program_id FROM asset_current ac JOIN program p ON p.id = ac.program_id
-WHERE p.state = 'active' AND ac.kind = 'fqdn'
+WHERE p.state = 'active' AND ac.kind = 'fqdn' AND NOT ac.ct_lane
   AND (ac.next_full_at <= sqlc.arg(now)::timestamptz OR ac.next_resolve_at <= sqlc.arg(now)::timestamptz)
 ORDER BY LEAST(COALESCE(ac.next_full_at, 'infinity'), COALESCE(ac.next_resolve_at, 'infinity')), ac.asset_id
 LIMIT 1;
 
 -- name: DueFull :many
 SELECT key FROM asset_current
-WHERE program_id = $1 AND kind = 'fqdn' AND next_full_at <= sqlc.arg(now)::timestamptz
+WHERE program_id = $1 AND kind = 'fqdn' AND NOT ct_lane AND next_full_at <= sqlc.arg(now)::timestamptz
 ORDER BY next_full_at, asset_id
 LIMIT sqlc.arg(lim);
 
 -- name: DueResolve :many
 SELECT key FROM asset_current
-WHERE program_id = $1 AND kind = 'fqdn' AND next_resolve_at <= sqlc.arg(now)::timestamptz
+WHERE program_id = $1 AND kind = 'fqdn' AND NOT ct_lane AND next_resolve_at <= sqlc.arg(now)::timestamptz
   AND (next_full_at IS NULL OR next_full_at > sqlc.arg(now)::timestamptz)
 ORDER BY next_resolve_at, asset_id
 LIMIT sqlc.arg(lim);

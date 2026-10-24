@@ -17,8 +17,9 @@ flowchart LR
   P4 --> P5[5 Search language]
   P5 --> P6[6 Interface]
   P6 --> P7[7 Changes and notifications]
-  P7 --> P8[8 CT and BBOT]
+  P7 --> P8[8 Certificate Transparency]
   P8 --> P9[9 Scaleway runner]
+  P9 --> P10[10 BBOT import]
 ```
 
 | Phase | Delivers | Done when |
@@ -30,9 +31,10 @@ flowchart LR
 | **4 Fingerprinting** ✓ | render triggers, `asset_tech`, versions, screenshots and storage | every new service gets a render, screenshot sizes measured |
 | **5 Search language** ✓ | parser, compiler, fields, facets, pivots, export | every example of the search page returns what it says |
 | **6 Interface** ✓ | the screens, triage, wildcards view | a full hunt session without touching the API |
-| **7 Changes and notifications** | change rows, feed, saved search alerts, Discord | a week of use sends only what the defaults list |
-| **8 CT and BBOT** | CT matcher, candidate flow, BBOT import | a certificate for a new name under a wildcard is probed within a minute |
+| **7 Changes and notifications** ✓ | change rows, feed, saved search alerts, Discord | a week of use sends only what the defaults list |
+| **8 Certificate Transparency** ✓ | CT matcher, candidate flow, the certificate notification | a certificate for a new name under a wildcard is probed within a minute |
 | **9 Scaleway runner** | the [`scaleway` runner](/architecture/stack/#runs): FastRecon in a Serverless Job, `GET /runs/{id}/targets` and `POST /runs/{id}/report` behind HMAC tokens, the runner chosen per run kind in the config | a recon and a verification run in a job, scanning from an address other than the VPS, and their reports are ingested like a `serve` run's |
+| **10 BBOT import** | the [BBOT import](/architecture/discovery/#bbot-import): parser, the import route and `recon import bbot` | a BBOT `output.json` declares its names, classified against the program's scope, and observes nothing |
 
 ## Later
 

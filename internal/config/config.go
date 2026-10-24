@@ -39,6 +39,7 @@ type Config struct {
 	Render          Render          `koanf:"render"`
 	Screenshots     Screenshots     `koanf:"screenshots"`
 	Notify          Notify          `koanf:"notify"`
+	CT              CT              `koanf:"ct"`
 	// GeoIPDir holds GeoLite2-ASN.mmdb and GeoLite2-City.mmdb. Without them,
 	// ASN and country stay empty.
 	GeoIPDir string `koanf:"geoip_dir"`
@@ -64,6 +65,15 @@ type Screenshots struct {
 	// DiskThreshold is the share of the screenshot filesystem in use past
 	// which a health notification fires.
 	DiskThreshold float64 `koanf:"disk_threshold"`
+}
+
+// CT is the Certificate Transparency feed. An empty URL leaves it off.
+type CT struct {
+	URL string `koanf:"url"` // the certstream websocket
+	// MaxPerHour is how many names a program may gain from CT in an hour;
+	// the overflow is counted, not created.
+	MaxPerHour int           `koanf:"max_per_hour"`
+	Reload     time.Duration `koanf:"reload"` // how often the apex set is read again
 }
 
 // Notify holds the channels notifications go to. With none, they are kept and
@@ -171,6 +181,7 @@ func Defaults() Config {
 		},
 		Screenshots: Screenshots{Dir: "/data/screenshots", Quality: 70, Keep: 3, DiskThreshold: 0.9},
 		Notify:      Notify{BrokenAfter: 5 * time.Minute},
+		CT:          CT{MaxPerHour: 200, Reload: 5 * time.Minute},
 		GeoIPDir:    "/data/geoip",
 		Verification: Verification{
 			Enabled: true, Batch: 500, Resolve: 24 * time.Hour, Full: 72 * time.Hour,
@@ -307,6 +318,14 @@ func (c Config) Validate() error {
 		if name, value, ok := strings.Cut(h, ":"); !ok || strings.TrimSpace(name) == "" || strings.TrimSpace(value) == "" {
 			errs = append(errs, errors.New("notify.webhook_header must be in 'Name: value' form"))
 		}
+	}
+	if u := c.CT.URL; u != "" {
+		if p, err := url.Parse(u); err != nil || (p.Scheme != "ws" && p.Scheme != "wss") || p.Host == "" {
+			errs = append(errs, fmt.Errorf("ct.url %q must be an absolute ws or wss URL", u))
+		}
+	}
+	if c.CT.MaxPerHour < 1 || c.CT.Reload < time.Minute {
+		errs = append(errs, errors.New("ct: max_per_hour at least 1, reload at least 1m"))
 	}
 	if c.Notify.BrokenAfter < time.Minute {
 		errs = append(errs, errors.New("notify.broken_after must be at least 1m"))

@@ -42,7 +42,7 @@ A `change` row is written in the same transaction as what caused it
 | **A name from a certificate now serves HTTP** | the freshness advantage: a service going live minutes after its certificate | 5 min after the first one, grouped per program |
 | **A wildcard recon finished** | you started it, or auto-scan did | when the run ends, one message with counts, or with the error if it failed |
 | **An alerting saved search has new matches** | you asked for it | 15 min after the first new match, grouped per search |
-| **Something is broken** | ScopesExtractor sync, CT feed, Fingerprinter or FastRecon (`/healthz`) failing for more than 5 minutes, the screenshot disk past its threshold | once when it starts, once when it recovers |
+| **Something is broken** | ScopesExtractor sync, the CT feed (disconnected), Fingerprinter or FastRecon (`/healthz`) failing for more than 5 minutes, the screenshot disk past its threshold | once when it starts, once when it recovers |
 
 The windows are trailing: the first event opens the window, and everything arriving before it closes
 goes in the same message.

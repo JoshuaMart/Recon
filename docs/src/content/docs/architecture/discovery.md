@@ -121,11 +121,46 @@ matching apex, so one name under two programs creates two assets.
 | Risk | Guard |
 |---|---|
 | a broad apex floods the inventory | a per program ceiling per hour, and the overflow is counted, not hidden |
-| a burst of reissued certificates | an in-memory cache on `(program, SAN)`. Correctness rests on the unique key, never the cache |
+| a burst of reissued certificates | an in-memory cache on `(program, SAN)`, filled once a name is written. Correctness rests on the unique key, never the cache |
 | the websocket drops | connected periods are recorded, so a gap reads as a gap |
+| the writer falls behind | the reader never waits on the database: a match with no room in the queue is dropped and counted on its session |
 
 A gap is not backfilled. It is covered by wildcard recon, and the [wildcards view](/architecture/interface/#wildcards)
 shows which ones have not been scanned for a long time.
+
+### The CT lane
+
+A name from a certificate is worth minutes, so it does not wait for the verification schedule, and it is
+probed **even with verification off**: only the names a certificate brought, never the rest of the
+inventory.
+
+```mermaid
+flowchart LR
+  M[matcher] -->|create or revive| L[asset in the CT lane,<br/>resolve due now]
+  L --> R[candidate run:<br/>resolve]
+  R -->|resolves| F[full within 5 min]
+  R -->|does not| C[candidate curve,<br/>still in the lane]
+  F --> H{a service<br/>answers HTTP?}
+  H -->|yes| N[notification,<br/>grouped per program]
+  F --> O[leaves the lane]
+  C -->|curve exhausted| O
+```
+
+| Rule | Value |
+|---|---|
+| run | kind `candidate`, one program and one stage at a time, its own slot, ahead of the queue |
+| targets | the program's hosts in the lane that are due, `full` before `resolve` |
+| leaving the lane | after its first `full`, or archived: from then on the verification schedule, if on, takes it |
+| with verification on | the lane's hosts are left to the lane until they leave it |
+| one `fastrecon serve` | a candidate run waits for the run in progress, a recon or a verification batch, then goes first |
+
+### Settings
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `ct.url` | empty (off) | the certstream websocket; the stack sets `ws://certstream:8080/` |
+| `ct.max_per_hour` | 200 | names a program may gain from CT in an hour, the overflow counted |
+| `ct.reload` | 5m | how often the apex set is read again |
 
 ## BBOT import
 

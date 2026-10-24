@@ -92,7 +92,7 @@ func (q *Queries) ClearRenderSchedule(ctx context.Context, id uuid.UUID) (int64,
 
 const dueFull = `-- name: DueFull :many
 SELECT key FROM asset_current
-WHERE program_id = $1 AND kind = 'fqdn' AND next_full_at <= $2::timestamptz
+WHERE program_id = $1 AND kind = 'fqdn' AND NOT ct_lane AND next_full_at <= $2::timestamptz
 ORDER BY next_full_at, asset_id
 LIMIT $3
 `
@@ -125,7 +125,7 @@ func (q *Queries) DueFull(ctx context.Context, arg DueFullParams) ([]string, err
 
 const dueResolve = `-- name: DueResolve :many
 SELECT key FROM asset_current
-WHERE program_id = $1 AND kind = 'fqdn' AND next_resolve_at <= $2::timestamptz
+WHERE program_id = $1 AND kind = 'fqdn' AND NOT ct_lane AND next_resolve_at <= $2::timestamptz
   AND (next_full_at IS NULL OR next_full_at > $2::timestamptz)
 ORDER BY next_resolve_at, asset_id
 LIMIT $3
@@ -338,7 +338,7 @@ func (q *Queries) ListChildServices(ctx context.Context, parentAssetID *uuid.UUI
 
 const nextDueProgram = `-- name: NextDueProgram :one
 SELECT ac.program_id FROM asset_current ac JOIN program p ON p.id = ac.program_id
-WHERE p.state = 'active' AND ac.kind = 'fqdn'
+WHERE p.state = 'active' AND ac.kind = 'fqdn' AND NOT ac.ct_lane
   AND (ac.next_full_at <= $1::timestamptz OR ac.next_resolve_at <= $1::timestamptz)
 ORDER BY LEAST(COALESCE(ac.next_full_at, 'infinity'), COALESCE(ac.next_resolve_at, 'infinity')), ac.asset_id
 LIMIT 1

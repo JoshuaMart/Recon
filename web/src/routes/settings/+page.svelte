@@ -16,6 +16,7 @@
 		database: string;
 		sync?: string;
 		render?: string;
+		ct?: string;
 		render_queue?: Record<string, number>;
 	}
 
@@ -179,6 +180,14 @@
 			]
 		},
 		{
+			title: 'Certificate Transparency',
+			rows: [
+				{ key: 'ct.url', label: 'Feed', kind: 'mono', hint: 'names under a wildcard are probed at once, verification on or off' },
+				{ key: 'ct.max_per_hour', label: 'Per program and hour', kind: 'text', hint: 'names created at most, the rest counted' },
+				{ key: 'ct.reload', label: 'Wildcards read every', kind: 'duration' }
+			]
+		},
+		{
 			title: 'Notifications',
 			rows: [
 				{ key: 'notify.discord_url', label: 'Discord webhook', kind: 'secret' },
@@ -249,6 +258,10 @@
 			<div class="tile">
 				<span class="label">Fingerprinter</span>
 				<span class="state {tone(health.render)}"><span class="dot" aria-hidden="true"></span>{health.render ?? '—'}</span>
+			</div>
+			<div class="tile">
+				<span class="label">CT feed</span>
+				<span class="state {health.ct === 'disconnected' ? 'bad' : tone(health.ct)}"><span class="dot" aria-hidden="true"></span>{health.ct ?? '—'}</span>
 			</div>
 			<div class="tile">
 				<span class="label">Verification</span>
@@ -324,7 +337,7 @@
 					<li>
 						<time class="muted num" datetime={n.created_at} title={dateTime(n.created_at)}>{ago(n.created_at)}</time>
 						<div class="what">
-							<span>{n.kind === 'saved_search' ? `Saved search “${n.title}”: ${n.total} new match${n.total === 1 ? '' : 'es'}` : n.title}</span>
+							<span>{n.kind === 'saved_search' ? `Saved search “${n.title}”: ${n.total} new match${n.total === 1 ? '' : 'es'}` : n.kind === 'ct_live' ? `${n.title}: ${n.total} name${n.total === 1 ? '' : 's'} from certificates now serving HTTP` : n.title}</span>
 							{#if n.items.length}
 								<span class="mono muted q">{n.items.slice(0, 3).join(' · ')}{n.total > 3 ? ` · and ${n.total - 3} more` : ''}</span>
 							{/if}
