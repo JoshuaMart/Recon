@@ -153,7 +153,11 @@ func TestProbeNow(t *testing.T) {
 func TestActivity(t *testing.T) {
 	c := newClient(t)
 	pid, _ := declare(t, c, `["a.acme.com"]`)
-	res, err := http.Get(c.srv.URL + "/api/activity")
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, c.srv.URL+"/api/activity", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

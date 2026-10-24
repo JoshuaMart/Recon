@@ -64,7 +64,7 @@ jobs:
       - name: Compose file is valid
         run: |
           cp .env.example .env
-          sed -i 's/^RECON_API_KEY=$/RECON_API_KEY=0123456789abcdef0123456789abcdef/' .env
+          sed -i 's/^RECON_API_KEY=$/RECON_API_KEY=0123456789abcdef0123456789abcdef/; s/^FASTRECON_API_TOKEN=$/FASTRECON_API_TOKEN=0123456789abcdef0123456789abcdef/' .env
           docker compose --env-file .env -f deploy/compose/compose.yaml config --quiet
 
   docs:

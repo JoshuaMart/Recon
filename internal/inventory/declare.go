@@ -69,12 +69,13 @@ func (w *Writer) declareURL(ctx context.Context, out Declared, e, source string)
 		port = 80
 	}
 	if i := strings.LastIndex(authority, ":"); i > strings.LastIndex(authority, "]") {
-		p, err := strconv.Atoi(authority[i+1:])
+		// canon.URL refused a port out of range; 16 bits say so here too.
+		p, err := strconv.ParseUint(authority[i+1:], 10, 16)
 		if err != nil {
 			out.Error = err.Error()
 			return out, nil
 		}
-		host, port = authority[:i], p
+		host, port = authority[:i], int(p)
 	}
 	host = strings.Trim(host, "[]")
 	path := []map[string]any{{"step": "declared", "source": source, "url": u}}

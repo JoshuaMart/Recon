@@ -30,6 +30,7 @@ type clock struct{ t time.Time }
 func (c *clock) now() time.Time      { return c.t }
 func (c *clock) add(d time.Duration) { c.t = c.t.Add(d) }
 func newClock() *clock               { return &clock{time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)} }
+
 func notifications(t *testing.T, st *store.Store) []sqlcgen.Notification {
 	t.Helper()
 	rows, err := st.Q.RecentNotifications(context.Background())
@@ -168,8 +169,10 @@ func TestWatcherAnnouncesABreakOnceThenTheRecovery(t *testing.T) {
 	st := storetest.New(t)
 	c := newClock()
 	ok := false
-	w := &Watcher{Pool: st.Pool, Q: st.Q, Log: quiet, Now: c.now, BrokenAfter: 5 * time.Minute,
-		Checks: []Check{{Component: "FastRecon", Probe: func(context.Context) (bool, string) { return ok, "unreachable" }}}}
+	w := &Watcher{
+		Pool: st.Pool, Q: st.Q, Log: quiet, Now: c.now, BrokenAfter: 5 * time.Minute,
+		Checks: []Check{{Component: "FastRecon", Probe: func(context.Context) (bool, string) { return ok, "unreachable" }}},
+	}
 	pass := func() {
 		t.Helper()
 		if err := w.Pass(context.Background()); err != nil {
