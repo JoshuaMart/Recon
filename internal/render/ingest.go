@@ -99,8 +99,12 @@ func (w *Writer) retryAfter(failures int) time.Duration {
 	return min(d, w.Settings.Periodic)
 }
 
-// redirect says whether the render ended on a redirect, which has no page.
+// redirect says whether the render ended on a redirect, which has no page of
+// the target: an HTTP one, or the page sending the browser to another host.
 func redirect(r *fingerprint.Result) bool {
+	if r.ExternalRedirect != "" {
+		return true
+	}
 	if len(r.Chain) == 0 {
 		return false
 	}

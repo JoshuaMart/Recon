@@ -47,6 +47,7 @@ POST /scan
 | `cookies` | name to value | names only, `cookie:` pivot |
 | `scripts[]` | `url`, `internal`, `hash` (SHA-256) | `script:` pivot |
 | `external_hosts[]` | third party hosts contacted during the render | `external:` filter |
+| `external_redirect` | the URL the browser ended on when the page sent it to another host (an SSO login, by JavaScript or a meta refresh), absent otherwise. The page is then not captured and `chain` stops at the last hop on the target | kept in the observation without its query (an SSO state changes on every render). A render without a capture is not retried |
 | `web_sockets[]` | WebSocket URLs the page opened | `websocket:` filter |
 | `metadata` | `robots_txt`, `llms_txt`, `sitemap`, `favicon` (data URI), `favicon_url`, `favicon_hash` (mmh3) | `has:robots`, `has:llms_txt`, `favicon:` pivot |
 | `network` | `host`, `ips`, `cname` | dropped: DNS belongs to FastRecon ([P4](/architecture/principles/#p4-one-producer-per-value)) |
@@ -142,6 +143,7 @@ queue is not an incident, so it does not notify.
 | Fingerprinter answer | Observation | Due date |
 |---|---|---|
 | `200`, result | written, normalized and deduplicated, `outcome = ok` | the periodic cadence (21 d) |
+| `200`, result without a screenshot, ending on an HTTP redirect (`3xx`) or an `external_redirect` | written as above: there is no page of the target to capture | the periodic cadence (21 d), no retry |
 | `200`, result without a usable screenshot, on a page that is not a redirect | written as above: the page answered | as a target failure: 6 h, doubled, capped at the periodic cadence. A loaded renderer drops the capture when the page takes its whole budget |
 | `500` "no responses received", `500` "navigating to …" (a `net::ERR_*` or a page that never loads), `408` scan timed out | the target did not answer the browser: `outcome = error` with the reason (`connection_refused`, `timeout`, …), which counts toward `unobservable`, never `inactive` | retried after 6 h, doubled on each failure in a row, capped at the periodic cadence |
 | `429` | **nothing**: the service was busy, the asset did nothing | unchanged |

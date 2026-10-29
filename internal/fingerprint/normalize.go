@@ -24,6 +24,9 @@ type Data struct {
 	Sitemap       string       `json:"sitemap,omitempty"`
 	FaviconURL    string       `json:"favicon_url,omitempty"`
 	FaviconHash   string       `json:"favicon_hash,omitempty"`
+	// ExternalRedirect is where the page sent the browser, on another host,
+	// without its query: an SSO request carries a fresh state on every render.
+	ExternalRedirect string `json:"external_redirect,omitempty"`
 }
 
 // HopData is one hop: the chain's order is the information, so it is kept.
@@ -126,6 +129,7 @@ func Normalize(r *Result) Data {
 	d.Scripts = slices.Compact(d.Scripts)
 	d.ExternalHosts = hosts(r.ExternalHosts)
 	d.WebSockets = sortedLower(r.WebSockets)
+	d.ExternalRedirect = canonicalURL(r.ExternalRedirect)
 	if m := r.Metadata; m != nil {
 		d.Robots, d.LLMsTXT = m.RobotsTXT, m.LLMsTXT
 		d.Sitemap = deref(m.Sitemap)

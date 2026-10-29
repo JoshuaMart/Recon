@@ -29,6 +29,9 @@ type Result struct {
 	Screenshot    *string        `json:"screenshot"`
 	ScannedAt     string         `json:"scanned_at"`
 	Version       string         `json:"version"`
+	// ExternalRedirect is where the browser ended when the page sent it to
+	// another host, an SSO login: there is then no page of the target to capture.
+	ExternalRedirect string `json:"external_redirect"`
 }
 
 // Hop is one response of the redirect chain.

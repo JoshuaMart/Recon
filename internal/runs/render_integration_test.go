@@ -311,6 +311,31 @@ func TestARenderWithoutItsCaptureIsRetried(t *testing.T) {
 	}
 }
 
+// A page that sends the browser to another host by JavaScript, an SSO login,
+// has no page of the target to capture either: it is not retried, and where it
+// went is kept, without the query that changes on every render.
+func TestAnExternalRedirectIsNotRetried(t *testing.T) {
+	r := renderSetup(t)
+	const sso = "https://login.example.net/authorize?client=api&state=x1"
+	r.scanner.result = func(url string) (*fingerprint.Result, error) {
+		res := page(t, "1.24", 240)
+		res.Chain[0].URL = url
+		res.Screenshot = nil
+		res.ExternalRedirect = sso
+		return res, nil
+	}
+	r.drain(t)
+	now := r.clock.now().Truncate(time.Microsecond)
+	for _, key := range []string{"api.example.com:443/tcp", "api.example.com:80/tcp"} {
+		if s := current(t, r.st, r.program.ID, "service", key); s.RenderFailures != 0 || s.NextRenderAt.Before(now.Add(20*24*time.Hour)) {
+			t.Errorf("%s: count %d next %v, want 0 and the periodic cadence", key, s.RenderFailures, s.NextRenderAt)
+		}
+	}
+	if n := count(t, r, `SELECT count(*) FROM observation WHERE layer = 'fingerprint' AND data->>'external_redirect' = 'https://login.example.net/authorize'`); n != 2 {
+		t.Errorf("the destination is in %d observations, want 2", n)
+	}
+}
+
 func TestMajorVersionMakesEverythingDue(t *testing.T) {
 	r := renderSetup(t)
 	r.scanner.result = func(string) (*fingerprint.Result, error) { return page(t, "1.24", 240), nil }
