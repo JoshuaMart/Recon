@@ -103,6 +103,11 @@ func renderSetup(t *testing.T) *renderFixture {
 func (r *renderFixture) drain(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
+	// The daily maintenance keeps the monthly partitions ahead of the clock; a
+	// test moving its clock weeks ahead must too, or its writes have no month.
+	if err := r.st.EnsurePartitions(ctx, r.clock.now()); err != nil {
+		t.Fatal(err)
+	}
 	for range 50 {
 		if err := r.disp.Pass(ctx); err != nil {
 			t.Fatal(err)
