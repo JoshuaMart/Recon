@@ -40,29 +40,46 @@ The settings screen shows the config values read-only, so you can check what is 
 
 ```mermaid
 flowchart TB
-  subgraph VPS[VPS, docker compose]
-    R[recon<br/>API, UI, loops]
+  T[Traefik<br/>production only] --> R
+  subgraph control[control, no internet]
     PG[(postgres)]
+    BK[backup]
+  end
+  subgraph scan[scan, internet]
+    R[recon<br/>API, UI, loops]
+    FR[fastrecon serve]
     CS[certstream]
-    subgraph ISO[isolated network]
-      FP[fingerprinter]
-      CH[chrome × 3]
-    end
-    DISK[(screenshots dir)]
+    FP[fingerprinter]
+  end
+  subgraph browser[browser, internet]
+    CH[chrome × 3]
   end
   R --- PG
-  R --- CS
+  BK --- PG
+  R --> FR
+  R --> CS
   R --> FP --> CH
-  R --- DISK
-  R -->|start| RUN[FastRecon<br/>runner]
-  RUN -.->|report| R
+  R -->|start| JOB[Scaleway job]
+  JOB -.->|targets, report| R
   CH -->|renders| NET((internet))
-  RUN -->|scans| NET
+  FR & JOB -->|scans| NET
 ```
 
-The Fingerprinter and Chrome sit on a network with internet access and no route to PostgreSQL, and the
-database network has no internet access. Recon calls them, they never call back. `make verify-isolation`
-checks both properties on the running stack, each next to a probe that must succeed.
+Recon is the only service on both sides. The database network has no internet access and holds only
+PostgreSQL, Recon and the backup. Chrome, the one process running code a target wrote, shares its
+network with the Fingerprinter alone, so it reaches neither Recon nor the database. `make
+verify-isolation` checks these properties on the running stack, each next to a probe that must succeed.
+
+| | `compose.yaml`, local | `compose.prod.yaml`, the VPS |
+|---|---|---|
+| Entry | ports on 127.0.0.1 | none: Traefik on its own network, `RECON_HOST` gives the route and `https://` the public URL |
+| Backups | `var/backups` in the checkout | `BACKUP_DIR`, an absolute path outside the checkout a redeploy replaces |
+| Render concurrency | 20 | 10 (`RENDER_CONCURRENCY`): a VPS shared with other services drops captures at 20 |
+| certstream | unbounded | `cpus: 4` (`CERTSTREAM_CPUS`) and `cpu_shares: 256`: it takes 8 to 12 cores when free to, and yields to the rest under contention |
+| Logs | Chrome's discarded | capped everywhere |
+
+The Fingerprinter restarts with the browsers (`depends_on` with `restart: true`): its connections to a
+recreated Chrome are dead, and its reconnects would close the new one in a loop.
 
 ## Runs
 

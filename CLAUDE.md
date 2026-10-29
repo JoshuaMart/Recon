@@ -84,6 +84,8 @@ make up                     # build and start the stack, wait until healthy
 make check                  # vet, lint, unit tests, sqlc diff
 make test-integration       # needs Docker, finds the socket from the Docker context
 make verify-isolation       # network isolation of the running stack
+docker compose --env-file .env -f deploy/compose/compose.prod.yaml up -d --build --wait   # the VPS, behind Traefik
+RECON_COMPOSE=deploy/compose/compose.prod.yaml deploy/compose/verify-isolation.sh       # its isolation
 make ui                     # build the interface into internal/ui/dist, then rebuild
 make ui-dev                 # the interface with reload on :5173, against the API on :8080
 make help                   # everything else

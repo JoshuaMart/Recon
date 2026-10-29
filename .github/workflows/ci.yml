@@ -66,6 +66,8 @@ jobs:
           cp .env.example .env
           sed -i 's/^RECON_API_KEY=$/RECON_API_KEY=0123456789abcdef0123456789abcdef/; s/^FASTRECON_API_TOKEN=$/FASTRECON_API_TOKEN=0123456789abcdef0123456789abcdef/' .env
           docker compose --env-file .env -f deploy/compose/compose.yaml config --quiet
+          printf 'RECON_HOST=recon.example.com\nBACKUP_DIR=/srv/recon/backups\n' >> .env
+          docker compose --env-file .env -f deploy/compose/compose.prod.yaml config --quiet
 
   docs:
     runs-on: ubuntu-latest

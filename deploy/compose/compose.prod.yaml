@@ -1,0 +1,233 @@
+# The production stack, behind a Traefik already running on the host. Same services as
+# compose.yaml, with what changes on a public address:
+#
+#   1. Nothing publishes a port. Traefik reaches recon over its own network; everything else
+#      is reachable only inside this project, psql and logs through `docker compose exec`.
+#   2. The browsers are on a network of their own with the fingerprinter, so the one process
+#      running code a target wrote reaches neither recon nor the database.
+#   3. Backups go to an absolute path on the host, outside the checkout a redeploy replaces.
+#   4. Logs are capped.
+#
+# From the repository root, on the host:
+#   docker compose --env-file .env -f deploy/compose/compose.prod.yaml config --quiet
+#   docker compose --env-file .env -f deploy/compose/compose.prod.yaml up -d --build --wait
+#
+# Still true, as in the local stack: the database network has no internet access, and nothing
+# outside recon and the backup reaches PostgreSQL.
+
+name: recon
+
+networks:
+  # The database and what may reach it. No internet access.
+  control:
+    internal: true
+  # Recon's egress and its calls to the fingerprinter, the CT feed and FastRecon.
+  scan:
+  # The browsers and the fingerprinter driving them, nothing else.
+  browser:
+  # Traefik's network, created outside this project. Only recon joins it.
+  traefik:
+    external: true
+    name: ${TRAEFIK_NETWORK:-traefik}
+
+volumes:
+  pgdata:
+  screenshots:
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+# Noisy, so capped tighter, but kept: a browser restarting in a loop must say why.
+x-chrome: &chrome
+  networks: [browser]
+  image: ${CHROME_IMAGE:-chromedp/headless-shell:latest}
+  init: true
+  shm_size: 1g
+  command:
+    # A bad certificate is often what makes a host worth a look.
+    - --ignore-certificate-errors
+    - --remote-allow-origins=*
+    - --disable-dev-shm-usage
+    - --disable-gpu
+    - --disable-background-networking
+    - --disable-default-apps
+    - --disable-extensions
+    - --disable-sync
+    - --no-first-run
+  logging:
+    driver: json-file
+    options:
+      max-size: "5m"
+      max-file: "2"
+  healthcheck:
+    test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/9222' 2>/dev/null"]
+    interval: 5s
+    timeout: 3s
+    retries: 10
+    start_period: 10s
+  restart: unless-stopped
+
+x-pg-env: &pg-env
+  PGHOST: postgres
+  PGUSER: recon
+  PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+  PGDATABASE: recon
+
+services:
+  postgres:
+    networks: [control]
+    image: postgres:18-alpine
+    logging: *logging
+    environment:
+      POSTGRES_USER: recon
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: recon
+      # Read at initdb only: silent corruption below becomes an error naming the page.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "recon", "-d", "recon"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+      start_period: 10s
+    # A fast shutdown, not the immediate one ten seconds would force.
+    stop_grace_period: 1m
+    restart: unless-stopped
+
+  recon:
+    networks: [control, scan, traefik]
+    logging: *logging
+    # A static binary on distroless nonroot needs none.
+    cap_drop: [ALL]
+    build:
+      context: ../..
+      dockerfile: deploy/compose/Dockerfile
+      args:
+        VERSION: ${RECON_VERSION:-prod}
+    environment:
+      RECON_API_KEY: ${RECON_API_KEY:?set RECON_API_KEY in .env}
+      # Derived from the route below, not configured twice: the session cookie is Secure
+      # from it, and a Scaleway job posts its report there.
+      RECON_PUBLIC_URL: https://${RECON_HOST:?set RECON_HOST to the public hostname}
+      RECON_DATABASE__URL: postgres://recon:${POSTGRES_PASSWORD}@postgres:5432/recon?sslmode=disable
+      RECON_LOG__LEVEL: ${RECON_LOG_LEVEL:-info}
+      RECON_SCOPES_EXTRACTOR__URL: ${SCOPES_EXTRACTOR_URL:-}
+      RECON_SCOPES_EXTRACTOR__API_KEY: ${SCOPES_EXTRACTOR_API_KEY:-}
+      RECON_DISCOVERY__AUTO_SCAN: ${AUTO_SCAN:-off}
+      RECON_FASTRECON__URL: http://fastrecon:8080
+      RECON_FASTRECON__API_TOKEN: ${FASTRECON_API_TOKEN:?set FASTRECON_API_TOKEN in .env}
+      RECON_FASTRECON__TIMEOUT: ${FASTRECON_TIMEOUT:-30m}
+      RECON_VERIFICATION__ENABLED: ${VERIFICATION_ENABLED:-false}
+      RECON_RENDER__URL: http://fingerprinter:3001
+      # Half the default: a VPS shared with other services drops captures at 20.
+      RECON_RENDER__CONCURRENCY: ${RENDER_CONCURRENCY:-10}
+      # Unset: the stack's feed. Set empty: CT off.
+      RECON_CT__URL: ${CT_URL-ws://certstream:8080/}
+      RECON_RUNNER__PROVIDER: ${RUNNER_PROVIDER:-serve}
+      RECON_RUNNER__REGION: ${RUNNER_REGION:-}
+      RECON_RUNNER__JOB_ID: ${RUNNER_JOB_ID:-}
+      RECON_RUNNER__SECRET_KEY: ${RUNNER_SECRET_KEY:-}
+      # Empty: the public URL, which is what a job on another network needs.
+      RECON_RUNNER__CALLBACK_URL: ${RUNNER_CALLBACK_URL:-}
+      RECON_NOTIFY__DISCORD_URL: ${DISCORD_WEBHOOK_URL:-}
+      RECON_NOTIFY__WEBHOOK_URL: ${WEBHOOK_URL:-}
+      RECON_NOTIFY__WEBHOOK_HEADER: ${WEBHOOK_HEADER:-}
+    volumes:
+      - screenshots:/data/screenshots
+      - ${GEOIP_DIR:-../../var/geoip}:/data/geoip:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.recon.rule=Host(`${RECON_HOST}`)"
+      - "traefik.http.routers.recon.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}"
+      - "traefik.http.routers.recon.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}"
+      - "traefik.http.services.recon.loadbalancer.server.port=8080"
+      # Named: recon is on three networks, and Traefik dialing another one answers 502.
+      - "traefik.docker.network=${TRAEFIK_NETWORK:-traefik}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/recon", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    # Lets a report being ingested finish on a redeploy.
+    stop_grace_period: 45s
+    restart: unless-stopped
+
+  backup:
+    networks: [control]
+    image: postgres:18-alpine
+    logging: *logging
+    entrypoint: ["/backup.sh"]
+    command: ["loop"]
+    environment:
+      <<: *pg-env
+      BACKUP_HOUR: ${BACKUP_HOUR:-3}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+    volumes:
+      - ./backup.sh:/backup.sh:ro
+      - ${BACKUP_DIR:?set BACKUP_DIR to an absolute path on the host}:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  chrome-1: *chrome
+  chrome-2: *chrome
+  chrome-3: *chrome
+
+  # On both sides: recon calls it on scan, it drives the browsers on browser.
+  fingerprinter:
+    networks: [scan, browser]
+    image: ${FINGERPRINTER_IMAGE:-ghcr.io/joshuamart/fingerprinter:latest}
+    logging: *logging
+    volumes:
+      - ./fingerprinter.yml:/app/config.yml:ro
+    # Restarted with the browsers: its connections to a recreated Chrome are
+    # dead, and its reconnects close the new one in a loop.
+    depends_on:
+      chrome-1: {condition: service_healthy, restart: true}
+      chrome-2: {condition: service_healthy, restart: true}
+      chrome-3: {condition: service_healthy, restart: true}
+    restart: unless-stopped
+
+  # CT candidates always run here, whatever the runner; recon and verification too with serve.
+  fastrecon:
+    networks: [scan]
+    image: ${FASTRECON_IMAGE:-ghcr.io/joshuamart/fastrecon:main}
+    logging: *logging
+    command: ["serve"]
+    environment:
+      FASTRECON_API_TOKEN: ${FASTRECON_API_TOKEN:?set FASTRECON_API_TOKEN in .env}
+      FASTRECON_ENVIRONMENT: compose
+      CHAOS_API_KEY: ${CHAOS_API_KEY:-}
+      SECURITYTRAILS_API_KEY: ${SECURITYTRAILS_API_KEY:-}
+      C99_API_KEY: ${C99_API_KEY:-}
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/fastrecon", "version"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # It parses every public CT log, 8 to 12 cores on its own when free to.
+  # cpu_shares lets it have what nobody else wants and yield under contention;
+  # cpus caps it, and GOMAXPROCS keeps the Go runtime to that cap. A log it
+  # cannot keep up with drops its oldest entries (drop_old_logs).
+  certstream:
+    networks: [scan]
+    image: ghcr.io/d-rickyy-b/certstream-server-go:v1.9.0
+    logging: *logging
+    cpus: ${CERTSTREAM_CPUS:-4}
+    cpu_shares: 256
+    environment:
+      GOMAXPROCS: ${CERTSTREAM_CPUS:-4}
+    volumes:
+      - ./certstream.yml:/app/config/config.yaml:ro
+    restart: unless-stopped

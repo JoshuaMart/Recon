@@ -8,15 +8,18 @@ networks:
   # The database and what may reach it. No internet access.
   control:
     internal: true
-  # The renderer, its browsers and the CT feed: internet access, no route to the database.
+  # Recon's egress and its calls to the renderer, the CT feed and FastRecon.
   scan:
+  # The browsers and the renderer driving them, nothing else: Chrome runs code a
+  # target wrote, and reaches neither recon nor the database.
+  browser:
 
 volumes:
   pgdata:
   screenshots:
 
 x-chrome: &chrome
-  networks: [scan]
+  networks: [browser]
   image: chromedp/headless-shell:latest
   init: true
   shm_size: 1g
@@ -137,7 +140,7 @@ services:
   chrome-3: *chrome
 
   fingerprinter:
-    networks: [scan]
+    networks: [scan, browser]
     image: ghcr.io/joshuamart/fingerprinter:latest
     volumes:
       - ./fingerprinter.yml:/app/config.yml:ro
