@@ -83,6 +83,11 @@ func setup(t *testing.T, reports ...[]byte) *fixture {
 	}
 	f := &fakeRunner{reports: reports}
 	c := &clock{t: time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)}
+	// The migration creates the partitions from the real month: the fixed
+	// clock's month must exist too, as the daily maintenance ensures.
+	if err := st.EnsurePartitions(ctx, c.now()); err != nil {
+		t.Fatal(err)
+	}
 	return &fixture{
 		st: st, program: p, wildcard: ws[0].ID, runner: f,
 		sched: &runs.Scheduler{
