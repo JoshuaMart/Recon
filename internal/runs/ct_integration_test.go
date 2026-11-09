@@ -183,3 +183,41 @@ func TestTheLaneRunsWithVerificationOff(t *testing.T) {
 		t.Fatalf("notifications = %+v %v", ns, err)
 	}
 }
+
+func TestAWildcardOffTheFeedIsNotWatched(t *testing.T) {
+	ctx := context.Background()
+	f := setup(t)
+	c := &manualClock{t: time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)}
+	if _, err := f.st.Pool.Exec(ctx, `UPDATE wildcard SET ct_watch = false WHERE id = $1`, f.wildcard); err != nil {
+		t.Fatal(err)
+	}
+	s := stream(t, f, c, 10)
+
+	if err := s.Handle(ctx, certificate("staging.example.com")); err != nil {
+		t.Fatal(err)
+	}
+	s.Flush(ctx)
+	var n int
+	_ = f.st.Pool.QueryRow(ctx, `SELECT count(*) FROM asset WHERE key = 'staging.example.com'`).Scan(&n)
+	if n != 0 {
+		t.Error("a name under a wildcard off the feed was created")
+	}
+	_ = f.st.Pool.QueryRow(ctx, `SELECT count(*) FROM ct_apex WHERE wildcard_id = $1`, f.wildcard).Scan(&n)
+	if n != 0 {
+		t.Error("a wildcard off the feed is still counted as watched")
+	}
+
+	// Back on: the next load watches it again.
+	if _, err := f.st.Pool.Exec(ctx, `UPDATE wildcard SET ct_watch = true WHERE id = $1`, f.wildcard); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.LoadApexes(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Handle(ctx, certificate("staging.example.com")); err != nil {
+		t.Fatal(err)
+	}
+	if !inLane(t, f, "staging.example.com") {
+		t.Error("a wildcard back on the feed did not bring its name")
+	}
+}

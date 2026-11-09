@@ -99,6 +99,19 @@
 		}
 	}
 
+	// The feed reads its apex set again every few minutes: the row says the
+	// switch at once, the coverage follows on the next load.
+	async function watch(w: Wildcard, on: boolean) {
+		notice = '';
+		try {
+			await api.patch(`/api/wildcards/${w.id}`, { ct_watch: on });
+			w.ct_watch = on;
+			notice = on ? `CT feed on for ${w.apex}, within a few minutes.` : `CT feed off for ${w.apex}, within a few minutes.`;
+		} catch (err) {
+			notice = `${w.apex}: ${err instanceof ApiError ? err.message : String(err)}`;
+		}
+	}
+
 	function tone(w: Wildcard): string {
 		const d = daysSince(w.last_recon_at);
 		if (d === null) return 'never';
@@ -168,7 +181,16 @@
 						</td>
 						<td class="muted">{label(w.auto_scan)}</td>
 						<td class="ct">
-							{#if !w.ct}
+							<input
+								type="checkbox"
+								checked={w.ct_watch}
+								aria-label="Watch {w.apex} in the CT feed"
+								title={w.ct_watch ? 'Watched by the CT feed' : 'Off the CT feed: recon and verification go on'}
+								onchange={(e) => watch(w, e.currentTarget.checked)}
+							/>
+							{#if !w.ct_watch}
+								<span class="muted">off</span>
+							{:else if !w.ct}
 								<span class="muted">not watched</span>
 							{:else if w.ct.names}
 								<span class="num" title="Since {ago(w.ct.watched_since)}{w.ct.dropped ? `, ${count(w.ct.dropped)} held back by the hourly ceiling` : ''}">
@@ -233,6 +255,10 @@
 	.ct {
 		font-size: 12px;
 		white-space: nowrap;
+	}
+	.ct input {
+		margin: 0 6px 0 0;
+		vertical-align: middle;
 	}
 	.ct .badge {
 		margin-left: 6px;

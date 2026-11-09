@@ -90,6 +90,7 @@ func Handler(d Deps) http.Handler {
 		authed("POST /api/programs/{id}/assets", s.declareAssets)
 		authed("PATCH /api/programs/{id}/rules/{rule}", s.patchRule)
 		authed("GET /api/wildcards", s.listWildcards)
+		authed("PATCH /api/wildcards/{id}", s.patchWildcard)
 		authed("POST /api/wildcards/{id}/recon", s.reconWildcard)
 		authed("POST /api/wildcards/recon", s.reconOldest)
 		authed("GET /api/runs", s.listRuns)

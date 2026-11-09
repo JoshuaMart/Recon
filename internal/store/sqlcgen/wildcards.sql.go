@@ -36,7 +36,7 @@ func (q *Queries) CreateWildcard(ctx context.Context, arg CreateWildcardParams) 
 }
 
 const listWildcards = `-- name: ListWildcards :many
-SELECT w.id, w.program_id, w.rule_id, w.apex, w.last_recon_at, w.last_recon_run, w.assets_found, w.created_at, p.name AS program_name, p.platform, p.state AS program_state,
+SELECT w.id, w.program_id, w.rule_id, w.apex, w.last_recon_at, w.last_recon_run, w.assets_found, w.created_at, w.ct_watch, p.name AS program_name, p.platform, p.state AS program_state,
   (r.valid_to IS NULL AND p.state = 'active')::bool AS active,
   COALESCE(p.auto_scan, $1::text)::text AS auto_scan,
   ca.watched_since AS ct_watched_since, ca.names AS ct_names, ca.wildcards AS ct_wildcards,
@@ -65,6 +65,7 @@ type ListWildcardsRow struct {
 	LastReconRun     *uuid.UUID `json:"last_recon_run"`
 	AssetsFound      int32      `json:"assets_found"`
 	CreatedAt        time.Time  `json:"created_at"`
+	CtWatch          bool       `json:"ct_watch"`
 	ProgramName      string     `json:"program_name"`
 	Platform         *string    `json:"platform"`
 	ProgramState     string     `json:"program_state"`
@@ -96,6 +97,7 @@ func (q *Queries) ListWildcards(ctx context.Context, arg ListWildcardsParams) ([
 			&i.LastReconRun,
 			&i.AssetsFound,
 			&i.CreatedAt,
+			&i.CtWatch,
 			&i.ProgramName,
 			&i.Platform,
 			&i.ProgramState,
@@ -116,4 +118,21 @@ func (q *Queries) ListWildcards(ctx context.Context, arg ListWildcardsParams) ([
 		return nil, err
 	}
 	return items, nil
+}
+
+const setWildcardCTWatch = `-- name: SetWildcardCTWatch :one
+UPDATE wildcard SET ct_watch = $2 WHERE id = $1
+RETURNING id
+`
+
+type SetWildcardCTWatchParams struct {
+	ID      uuid.UUID `json:"id"`
+	CtWatch bool      `json:"ct_watch"`
+}
+
+func (q *Queries) SetWildcardCTWatch(ctx context.Context, arg SetWildcardCTWatchParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, setWildcardCTWatch, arg.ID, arg.CtWatch)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
 }

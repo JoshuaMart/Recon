@@ -3,6 +3,10 @@ INSERT INTO wildcard (program_id, rule_id, apex, created_at)
 VALUES ($1, $2, $3, sqlc.arg(now)::timestamptz)
 ON CONFLICT (rule_id) DO NOTHING;
 
+-- name: SetWildcardCTWatch :one
+UPDATE wildcard SET ct_watch = $2 WHERE id = $1
+RETURNING id;
+
 -- name: ListWildcards :many
 SELECT w.*, p.name AS program_name, p.platform, p.state AS program_state,
   (r.valid_to IS NULL AND p.state = 'active')::bool AS active,

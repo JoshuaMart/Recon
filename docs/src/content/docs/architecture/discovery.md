@@ -97,6 +97,11 @@ flowchart LR
   M -->|wildcard SAN| K[counter only]
 ```
 
+The apex set holds the wildcards of active programs whose `ct_watch` is on, the default. Turning it off
+on one wildcard stops the feed for that apex only: a domain that issues a certificate per customer stays
+in scope and in recon, without the noise. Its [coverage](#coverage-per-apex) row goes, as for any apex
+that leaves the set.
+
 ### Matching walks labels
 
 ```

@@ -50,6 +50,7 @@ The API key is set in the config. A write with the cookie must also carry an `Or
 | `POST /api/programs/{id}/imports/bbot` | import a BBOT `output.json` |
 | `POST /api/sync` | run a ScopesExtractor sync now |
 | `GET /api/wildcards?sort=oldest` | recon coverage |
+| `PATCH /api/wildcards/{id}` | turn the CT feed on or off for that apex |
 | `POST /api/wildcards/{id}/recon` | queue a recon on one wildcard |
 | `POST /api/wildcards/recon` | queue a recon on the N oldest, optionally per program |
 | `GET /api/runs`, `GET /api/runs/{id}` | runs, with per source accounting |

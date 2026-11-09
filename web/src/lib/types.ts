@@ -76,6 +76,7 @@ export interface Wildcard {
 	apex: string;
 	active: boolean;
 	auto_scan: string;
+	ct_watch: boolean;
 	last_recon_at: string | null;
 	assets_found: number;
 	created_at: string;

@@ -50,7 +50,7 @@ and whether that was announced).
 |---|---|
 | `program` | origin (`scopesextractor` or `manual`), platform and slug, state, auto-scan override |
 | `scope_rule` | include or exclude, matcher, pattern, `origin` (`sync` or `local`), `valid_from`, `valid_to` |
-| `wildcard` | one per apex rule: `last_recon_at`, `last_recon_run`, `assets_found` |
+| `wildcard` | one per apex rule: `last_recon_at`, `last_recon_run`, `assets_found`, `ct_watch` (whether the CT feed watches its apex) |
 | `asset` | program, kind, canonical key, parent, lineage, scope status, first and last seen |
 | `observation` | asset, layer, outcome, data, `observed_at`, `last_confirmed_at`, run, `producer_version`. Partitioned by month |
 | `asset_layer` | per asset and layer: state, informative and non informative failure counters, `first_failure_at`, `last_ok_at` |

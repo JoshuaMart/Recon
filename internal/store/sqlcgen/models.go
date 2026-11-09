@@ -291,4 +291,5 @@ type Wildcard struct {
 	LastReconRun *uuid.UUID `json:"last_recon_run"`
 	AssetsFound  int32      `json:"assets_found"`
 	CreatedAt    time.Time  `json:"created_at"`
+	CtWatch      bool       `json:"ct_watch"`
 }

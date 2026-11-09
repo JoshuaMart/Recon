@@ -1,10 +1,10 @@
 -- The apexes the matcher walks to: the wildcards of active programs whose
--- rule is in force.
+-- rule is in force and that the feed is set to watch.
 -- name: CTApexes :many
 SELECT w.id, w.apex, w.program_id FROM wildcard w
 JOIN scope_rule r ON r.id = w.rule_id
 JOIN program p ON p.id = w.program_id
-WHERE r.valid_to IS NULL AND p.state = 'active';
+WHERE r.valid_to IS NULL AND p.state = 'active' AND w.ct_watch;
 
 -- The watched apexes follow the set: new ones start watched now, those that
 -- left go with their counts.

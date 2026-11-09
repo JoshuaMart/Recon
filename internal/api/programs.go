@@ -64,13 +64,15 @@ func viewRule(r sqlcgen.ScopeRule) ruleView {
 }
 
 type wildcardView struct {
-	ID          uuid.UUID  `json:"id"`
-	ProgramID   uuid.UUID  `json:"program_id"`
-	ProgramName string     `json:"program_name"`
-	Platform    *string    `json:"platform"`
-	Apex        string     `json:"apex"`
-	Active      bool       `json:"active"`
-	AutoScan    string     `json:"auto_scan"`
+	ID          uuid.UUID `json:"id"`
+	ProgramID   uuid.UUID `json:"program_id"`
+	ProgramName string    `json:"program_name"`
+	Platform    *string   `json:"platform"`
+	Apex        string    `json:"apex"`
+	Active      bool      `json:"active"`
+	AutoScan    string    `json:"auto_scan"`
+	// CTWatch says whether the certificate feed watches the apex.
+	CTWatch     bool       `json:"ct_watch"`
 	LastReconAt *time.Time `json:"last_recon_at"`
 	AssetsFound int32      `json:"assets_found"`
 	CreatedAt   time.Time  `json:"created_at"`
@@ -91,7 +93,7 @@ type ctCoverage struct {
 func viewWildcard(w sqlcgen.ListWildcardsRow) wildcardView {
 	v := wildcardView{
 		ID: w.ID, ProgramID: w.ProgramID, ProgramName: w.ProgramName, Platform: w.Platform, Apex: w.Apex,
-		Active: w.Active, AutoScan: w.AutoScan, LastReconAt: w.LastReconAt, AssetsFound: w.AssetsFound,
+		Active: w.Active, AutoScan: w.AutoScan, CTWatch: w.CtWatch, LastReconAt: w.LastReconAt, AssetsFound: w.AssetsFound,
 		CreatedAt: w.CreatedAt,
 	}
 	if w.CtWatchedSince != nil {
@@ -485,6 +487,34 @@ func (s *server) listWildcards(w http.ResponseWriter, r *http.Request) {
 		out = append(out, viewWildcard(row))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"wildcards": out})
+}
+
+// patchWildcard turns the CT feed on or off for one apex. The feed follows
+// within its reload period, as it does for a paused program.
+func (s *server) patchWildcard(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	var body struct {
+		CTWatch *bool `json:"ct_watch"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	if body.CTWatch == nil {
+		writeError(w, http.StatusBadRequest, "bad_field", "ct_watch is required")
+		return
+	}
+	if _, err := s.Store.Q.SetWildcardCTWatch(r.Context(), sqlcgen.SetWildcardCTWatchParams{ID: id, CtWatch: *body.CTWatch}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "not_found", "id not found")
+			return
+		}
+		s.internal(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "ct_watch": *body.CTWatch})
 }
 
 func (s *server) runSync(w http.ResponseWriter, r *http.Request) {
